@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Panel running order</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; margin: 24px; color: #111; }
+  section { page-break-after: always; }
+  section:last-child { page-break-after: auto; }
+  h1 { font-size: 16px; margin-bottom: 2px; }
+  h2 { font-size: 12px; font-weight: normal; color: #555; margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 11px; }
+  th, td { border: 1px solid #999; padding: 4px 6px; text-align: left; }
+  th { background: #eee; }
+  td.clash { background: #ffc7ce; color: #9c0006; font-weight: bold; }
+  td.locked { font-style: italic; }
+  @media print { body { margin: 0; } }
+</style>
+</head>
+<body>
+{% for view in panel_views %}
+<section>
+  <h1>Panel {{ view.panel_id }} — {{ view.division.value }}</h1>
+  <h2>Room {{ view.room }}</h2>
+  <table>
+    <thead>
+      <tr><th>Date</th><th>Time</th><th>Applicant</th><th>Sub-division</th><th>Choice</th></tr>
+    </thead>
+    <tbody>
+      {% for row in view.rows %}
+      <tr>
+        <td>{{ row.date }}</td>
+        <td>{{ row.start_time.strftime('%H:%M') }}–{{ row.end_time.strftime('%H:%M') }}</td>
+        <td class="{{ 'clash' if row.is_clash else ('locked' if row.is_locked else '') }}">
+          {{ row.full_name }} ({{ row.applicant_id }})
+        </td>
+        <td>{{ row.sub_division }}</td>
+        <td>{{ row.choice_index }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No interviews scheduled.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endfor %}
+</body>
+</html>

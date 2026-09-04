@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Applicant interview schedule</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; margin: 24px; color: #111; }
+  h1 { font-size: 18px; margin-bottom: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 11px; }
+  th, td { border: 1px solid #999; padding: 4px 6px; text-align: left; vertical-align: top; }
+  th { background: #eee; }
+  td.clash { background: #ffc7ce; color: #9c0006; font-weight: bold; }
+  td.locked { font-style: italic; }
+  @media print { body { margin: 0; } }
+</style>
+</head>
+<body>
+  <h1>Applicant interview schedule</h1>
+  <table>
+    <thead>
+      <tr><th>Applicant</th><th>Email</th><th>Choice 1</th><th>Choice 2</th></tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.full_name }} ({{ row.applicant_id }})</td>
+        <td>{{ row.email }}</td>
+        <td class="{{ 'clash' if row.choice1 and row.choice1.is_clash else ('locked' if row.choice1 and row.choice1.is_locked else '') }}">
+          {% if row.choice1 %}
+          {{ row.choice1.division.value }} / {{ row.choice1.sub_division }}<br>
+          {{ row.choice1.panel_id }} · Room {{ row.choice1.room }}<br>
+          {{ row.choice1.date }} {{ row.choice1.start_time.strftime('%H:%M') }}–{{ row.choice1.end_time.strftime('%H:%M') }}
+          {% else %}—{% endif %}
+        </td>
+        <td class="{{ 'clash' if row.choice2 and row.choice2.is_clash else ('locked' if row.choice2 and row.choice2.is_locked else '') }}">
+          {% if row.choice2 %}
+          {{ row.choice2.division.value }} / {{ row.choice2.sub_division }}<br>
+          {{ row.choice2.panel_id }} · Room {{ row.choice2.room }}<br>
+          {{ row.choice2.date }} {{ row.choice2.start_time.strftime('%H:%M') }}–{{ row.choice2.end_time.strftime('%H:%M') }}
+          {% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

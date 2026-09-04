@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Room {{ room_id }} — {{ day_label }}</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; margin: 24px; color: #111; }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  h2 { font-size: 13px; font-weight: normal; color: #555; margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 11px; }
+  th, td { border: 1px solid #999; padding: 4px 6px; text-align: left; vertical-align: top; }
+  th { background: #eee; }
+  td.empty { color: #bbb; }
+  td.clash { background: #ffc7ce; color: #9c0006; font-weight: bold; }
+  td.locked { font-style: italic; }
+  @media print { body { margin: 0; } }
+</style>
+</head>
+<body>
+  <h1>Room {{ room_id }} — {{ day_label }}</h1>
+  <h2>{{ date }}</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Slot</th>
+        {% for pid in panel_ids %}
+        <th>{{ pid }} ({{ panel_divisions[pid] }})</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.start_time.strftime('%H:%M') }}–{{ row.end_time.strftime('%H:%M') }}</td>
+        {% for pid in panel_ids %}
+          {% set cell = row.cells[pid] %}
+          {% if cell %}
+          <td class="{{ 'clash' if cell.is_clash else ('locked' if cell.is_locked else '') }}">
+            {{ cell.full_name }} ({{ cell.sub_division }})
+          </td>
+          {% else %}
+          <td class="empty">—</td>
+          {% endif %}
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

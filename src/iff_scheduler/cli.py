@@ -12,9 +12,18 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from iff_scheduler.domain.enums import DivisionCode
+from iff_scheduler.domain.enums import DivisionCode, Severity
 from iff_scheduler.domain.grid import build_slot_grid
-from iff_scheduler.domain.models import Applicant, Assignment
+from iff_scheduler.domain.models import Applicant, Assignment, Conflict
+from iff_scheduler.export.applicant_view import build_applicant_view
+from iff_scheduler.export.html_writer import (
+    write_applicant_view_html,
+    write_panel_view_html,
+    write_room_view_html,
+)
+from iff_scheduler.export.panel_view import build_panel_views
+from iff_scheduler.export.room_view import build_room_views
+from iff_scheduler.export.xlsx_writer import write_xlsx
 from iff_scheduler.ingest.csv_source import CsvApplicantSource
 from iff_scheduler.ingest.validate import run_ingest, write_outputs
 from iff_scheduler.scheduling.base import (
@@ -240,6 +249,14 @@ def _assignments_frame(assignments: list[Assignment]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=ASSIGNMENT_COLUMNS)
 
 
+CONFLICT_COLUMNS = ["applicant_id", "severity", "type", "message"]
+
+
+def _conflicts_frame(conflicts: list[Conflict]) -> pd.DataFrame:
+    rows = [c.model_dump(mode="json") for c in conflicts]
+    return pd.DataFrame(rows, columns=CONFLICT_COLUMNS)
+
+
 def _snapshot_config(config_dir: Path, run_dir: Path) -> None:
     """Every run keeps the exact config it used, so any published schedule can
     be reproduced later (CLAUDE.md, "Conventions")."""
@@ -370,10 +387,7 @@ def solve(
     metrics = compute_metrics(result, problem) | {"run_id": run_id}
 
     _assignments_frame(result.assignments).to_csv(run_dir / "assignments.csv", index=False)
-    pd.DataFrame(
-        [c.model_dump(mode="json") for c in conflicts],
-        columns=["applicant_id", "severity", "type", "message"],
-    ).to_csv(run_dir / "conflicts.csv", index=False)
+    _conflicts_frame(conflicts).to_csv(run_dir / "conflicts.csv", index=False)
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     (run_dir / "solve.log").write_text("\n".join(result.log) + "\n", encoding="utf-8")
     _snapshot_config(config_dir, run_dir)
@@ -432,6 +446,101 @@ def _load_assignments(path: Path) -> list[Assignment]:
         )
         for row in df.to_dict(orient="records")
     ]
+
+
+# ----------------------------------------------------------------- publish
+
+
+@app.command()
+def publish(
+    run: str = typer.Option("latest", "--run", help="Run id under runs/, or 'latest'"),
+    input_path: Path = typer.Option(
+        Path("data/interim/applicants.clean.csv"),
+        "--input",
+        help="applicants.clean.csv produced by `iffsched ingest`",
+    ),
+    runs_dir: Path = typer.Option(Path("runs"), "--runs-dir"),
+    config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
+    out_dir: Path = typer.Option(
+        None, "--out-dir", help="Output directory (default: data/output/<run_id>)"
+    ),
+    formats: str = typer.Option(
+        "xlsx,html", "--formats", help="Comma-separated output formats: xlsx, html"
+    ),
+) -> None:
+    """Publish room, applicant and panel views from a solved run (FR-50..FR-54).
+
+    Conflicts (clashes + capacity warnings) are recomputed from the current
+    assignments and applicants and written to `conflicts.csv` alongside the
+    views, so publish always reflects what is actually on the grid."""
+    run_dir = runs_dir / run
+    if not run_dir.exists():
+        console.print(f"[red]Run not found: {run_dir}. Run `iffsched solve` first.[/red]")
+        raise typer.Exit(code=1)
+    assignments_path = run_dir / "assignments.csv"
+    if not assignments_path.exists():
+        console.print(f"[red]{assignments_path} not found — is this a completed run?[/red]")
+        raise typer.Exit(code=1)
+    if not input_path.exists():
+        console.print(
+            f"[red]Input file not found: {input_path}. Run `iffsched ingest` first.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    wanted_formats = {f.strip().lower() for f in formats.split(",") if f.strip()}
+    unknown_formats = wanted_formats - {"xlsx", "html"}
+    if unknown_formats:
+        console.print(
+            f"[red]Unknown format(s): {sorted(unknown_formats)}. Use xlsx and/or html.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    settings = load_settings(config_dir)
+    grid = build_slot_grid(settings.event)
+    applicants = _load_clean_applicants(input_path)
+    panels = resolve_panels(settings.panels, grid)
+    rooms = resolve_rooms(settings.rooms)
+    assignments = _load_assignments(assignments_path)
+
+    resolved_run_id = run_dir.resolve().name
+    publish_dir = out_dir if out_dir is not None else Path("data/output") / resolved_run_id
+    publish_dir.mkdir(parents=True, exist_ok=True)
+
+    conflicts = build_conflicts(assignments, applicants, panels)
+    _conflicts_frame(conflicts).to_csv(publish_dir / "conflicts.csv", index=False)
+
+    room_views = build_room_views(assignments, panels, rooms, grid.slots)
+    applicant_rows = build_applicant_view(assignments)
+    panel_views = build_panel_views(assignments, panels, grid.slots)
+
+    if "xlsx" in wanted_formats:
+        write_xlsx(
+            publish_dir / "schedule.xlsx", room_views, applicant_rows, panel_views, conflicts
+        )
+    if "html" in wanted_formats:
+        html_dir = publish_dir / "html"
+        write_room_view_html(room_views, html_dir)
+        write_applicant_view_html(applicant_rows, html_dir)
+        write_panel_view_html(panel_views, html_dir)
+
+    red = sum(1 for c in conflicts if c.severity == Severity.RED)
+    amber = sum(1 for c in conflicts if c.severity == Severity.AMBER)
+
+    table = Table(title=f"Publish {resolved_run_id}")
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_row("Room views", str(len(room_views)))
+    table.add_row("Applicants", str(len(applicant_rows)))
+    table.add_row("Panels", str(len(panel_views)))
+    table.add_row("Clashes (RED)", str(red))
+    table.add_row("Capacity warnings (AMBER)", str(amber))
+    console.print(table)
+
+    if red:
+        console.print(
+            f"[bold red]{red} clash(es) are marked red in schedule.xlsx (FR-54).[/bold red]"
+        )
+    console.print(f"Wrote {publish_dir}")
 
 
 if __name__ == "__main__":
