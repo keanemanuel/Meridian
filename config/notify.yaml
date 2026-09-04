@@ -1,0 +1,15 @@
+# Sender identity and template map for the notify stage (FR-60..FR-67).
+# Values below are placeholders — fill in before running `iffsched notify`.
+# See docs/SPEC.md §10 for how sending method and quotas are chosen.
+
+sender_name: ""             # e.g. "IFF Recruitment Committee"
+sender_email: ""             # e.g. "recruitment@iff.example"
+reply_to: ""                  # e.g. "recruitment@iff.example"
+throttle_seconds: 1.0         # pause between sends, to respect provider quotas
+
+templates:
+  invite_html: "templates/email/invite.html.j2"
+  invite_text: "templates/email/invite.txt.j2"
+  result_accepted: "templates/email/result_accepted.html.j2"
+  result_waitlist: "templates/email/result_waitlist.html.j2"
+  result_rejected: "templates/email/result_rejected.html.j2"

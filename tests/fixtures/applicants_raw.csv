@@ -1,0 +1,11 @@
+Timestamp,Email address,Full name,Student/member ID,Phone / WhatsApp,First-choice sub-division,Second-choice sub-division,Availability — Thu,Availability — Fri,Accessibility / scheduling notes
+2026-08-15T10:00:00,ayu@example.com,Ayu Prameswari,IFF-0001,+62-812-0001,Media Marketing,Media Documentation,"18:00-18:30, 18:30-19:00, 19:00-19:30","19:00-19:30, 19:30-20:00",
+2026-08-15T10:05:00,bagas@example.com,Bagas Santoso,IFF-0002,+62-812-0002,Creative,Logistics,"20:00-20:30, 20:30-21:00","18:00-18:30, 18:30-19:00",
+2026-08-15T10:10:00,citra@example.com,Citra Wulandari,IFF-0003,+62-812-0003,Program,Program,"18:00-18:30, 18:30-19:00, 19:00-19:30",,
+2026-08-15T10:15:00,dimas@example.com,Dimas Aditya,IFF-0004,+62-812-0004,Liaison,Finance & Booth,,,
+2026-08-01T09:00:00,eka@example.com,Eka Nur Fadilah,IFF-0005,+62-812-0005,Logistics,Liaison,19:00-19:30,,
+2026-08-10T09:00:00,eka@example.com,Eka Nur Fadilah,IFF-0005,+62-812-0005,WebMaster,Creative,"20:00-20:30, 20:30-21:00, 21:00-21:30",,
+2026-08-15T10:20:00,fajar@example.com,Fajar Ramadhan,IFF-0007,+62-812-0007,Finance & Booth,Program,21:30-22:00,,
+2026-08-15T10:25:00,gita@example.com,Gita Ayu Lestari,IFF-0008,+62-812-0008,Media Markting,Program,"18:00-18:30, 18:30-19:00, 19:00-19:30",,
+2026-08-15T10:30:00,hendra@example.com,Hendra Kusuma,IFF-0009,+62-812-0009,Liaison,Program,"18:00-18:30, 18:30-19:00, 19:00-19:30, 19:30-20:00",,
+2026-08-15T10:35:00,indah@example.com,,IFF-0010,+62-812-0010,Creative,Logistics,"18:00-18:30, 18:30-19:00, 19:00-19:30",,

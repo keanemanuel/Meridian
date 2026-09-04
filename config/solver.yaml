@@ -1,0 +1,13 @@
+solver: cpsat
+random_seed: 42
+time_limit_seconds: 60
+two_phase: true            # try zero-clash first, then relax
+phase1_time_fraction: 0.5  # share of the time budget the zero-clash phase may use (§5.4)
+weights:
+  clash:    10000          # dominant — never trade an extra clash for anything
+  repeat_panel: 50         # C8: same panel for both interviews of a same-parent pair
+  spread:      10
+  balance:      5
+  lateness:     1
+applicant_cap: 120         # confirmed cap; Capacity Advisor plans against this
+target_utilisation: 0.83   # baseline: 12 panels x 24 slots vs 240 interviews

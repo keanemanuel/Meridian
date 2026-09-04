@@ -1,0 +1,23 @@
+# BALANCED BASELINE for 120 applicants / 240 interviews / 24 slots:
+# 2 panels per division = 12 panels = 288 capacity = 83% utilisation.
+panels:
+  - {id: MEDMARDOC-A, division: MEDMARDOC, room: "2014"}
+  - {id: MEDMARDOC-B, division: MEDMARDOC, room: "2014"}
+  - {id: CREATIVE-A,  division: CREATIVE,  room: "2014"}
+  - {id: CREATIVE-B,  division: CREATIVE,  room: "2014"}
+  - {id: LOGISTICS-A, division: LOGISTICS, room: "2014"}
+  - {id: LOGISTICS-B, division: LOGISTICS, room: "2014"}
+  - {id: FNB-A,       division: FNB,       room: "2016"}
+  - {id: FNB-B,       division: FNB,       room: "2016"}
+  - {id: PROGRAM-A,   division: PROGRAM,   room: "2016"}
+  - {id: PROGRAM-B,   division: PROGRAM,   room: "2016"}
+  - {id: PROGRAM-C,   division: PROGRAM,   room: "2016"}   # +1 for high demand
+  - {id: LIAISON-A,   division: LIAISON,   room: "2016"}
+  - {id: LIAISON-B,   division: LIAISON,   room: "2016"}
+
+# Panels may also declare limited availability:
+#  - id: LIAISON-B
+#    division: LIAISON
+#    room: "2016"
+#    active_windows:
+#      - {date: 2026-09-17, start: "18:00", end: "22:00"}   # Thursday only

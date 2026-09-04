@@ -1,0 +1,9 @@
+# Current 2-room plan. At the 12-panel baseline this means 6 simultaneous
+# interviews per room — only viable if these are halls. See SPEC.md §1.2, Finding A.
+rooms:
+  - id: "2014"
+    max_concurrent_panels: 6
+    divisions: [MEDMARDOC, CREATIVE, LOGISTICS]
+  - id: "2016"
+    max_concurrent_panels: 6
+    divisions: [FNB, PROGRAM, LIAISON]

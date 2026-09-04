@@ -1,0 +1,23 @@
+# Secrets and PII — never committed
+.env
+credentials/
+data/
+runs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+
+# OS / editor
+.DS_Store
+.Rhistory
+.vscode/

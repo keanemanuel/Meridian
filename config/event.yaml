@@ -1,0 +1,17 @@
+event_name: "IFF Recruitment 2026"
+timezone: "Asia/Jakarta"          # confirm; drives ICS and all displayed times
+interview_duration_minutes: 20    # change to 30 and the whole grid regenerates
+min_gap_slots: 0                  # slots required between an applicant's 2 interviews
+availability_matching: strict     # strict = interview must sit fully inside ticked blocks;
+                                   # lenient = >=50% overlap counts (SPEC.md §9.2, E-05)
+days:
+  - date: 2026-09-17
+    label: "Thu"
+    start: "18:00"
+    end:   "22:00"
+    breaks: []                    # e.g. [{start: "19:40", end: "20:00"}]
+  - date: 2026-09-18
+    label: "Fri"
+    start: "18:00"
+    end:   "22:00"
+    breaks: []

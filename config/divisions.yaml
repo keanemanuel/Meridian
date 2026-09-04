@@ -1,0 +1,23 @@
+divisions:
+  - code: MEDMARDOC
+    display: "Media Marketing & Documentation"
+  - code: CREATIVE
+    display: "Creative"
+  - code: LOGISTICS
+    display: "Logistics"
+  - code: LIAISON
+    display: "Liaison"
+  - code: FNB
+    display: "Finance & Booth"
+  - code: PROGRAM
+    display: "Program"
+
+sub_division_mapping:
+  "Media Marketing":     MEDMARDOC
+  "Media Documentation": MEDMARDOC
+  "Creative":            CREATIVE
+  "WebMaster":           CREATIVE
+  "Logistics":           LOGISTICS
+  "Liaison":             LIAISON
+  "Finance & Booth":     FNB
+  "Program":             PROGRAM

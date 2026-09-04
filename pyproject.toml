@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "iff-scheduler"
+version = "0.1.0"
+description = "Interview scheduler for IFF recruitment"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "ortools>=9.9",
+    "pydantic>=2.5",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+    "rich>=13.7",
+    "pandas>=2.2",
+    "jinja2>=3.1",
+    "openpyxl>=3.1",
+    "icalendar>=5.0",
+    "gspread>=6.0",
+    "google-auth>=2.28",
+    "google-api-python-client>=2.120",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+iffsched = "iff_scheduler.cli:app"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "mypy>=1.9",
+    "types-PyYAML>=6.0",
+    "pandas-stubs>=2.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/iff_scheduler"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# typer.Option(...) as an argument default is the documented Typer pattern.
+"src/iff_scheduler/cli.py" = ["B008"]
+
+[tool.mypy]
+# No explicit python_version pin: some dependency stubs (numpy, via
+# pandas-stubs) use syntax newer than our 3.11 floor, and pinning here makes
+# mypy fail parsing those stubs. requires-python in [project] is what actually
+# enforces the 3.11+ floor for our own code.
+mypy_path = "src"
+warn_return_any = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = "iff_scheduler.domain.*"
+strict = true
+
+[[tool.mypy.overrides]]
+module = "iff_scheduler.scheduling.*"
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: full-scale solves (the 240-interview instance, FR-39)",
+]
