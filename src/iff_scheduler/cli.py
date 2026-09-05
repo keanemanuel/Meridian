@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import cast
 
 import pandas as pd
 import typer
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
-from iff_scheduler.domain.enums import DivisionCode, Severity
+from iff_scheduler.domain.enums import DivisionCode, SendStatus, Severity
 from iff_scheduler.domain.grid import build_slot_grid
-from iff_scheduler.domain.models import Applicant, Assignment, Conflict
+from iff_scheduler.domain.models import Applicant, Assignment, Conflict, SendLedgerEntry
 from iff_scheduler.export.applicant_view import build_applicant_view
 from iff_scheduler.export.html_writer import (
     write_applicant_view_html,
@@ -27,6 +30,21 @@ from iff_scheduler.export.room_view import build_room_views
 from iff_scheduler.export.xlsx_writer import write_xlsx
 from iff_scheduler.ingest.csv_source import CsvApplicantSource
 from iff_scheduler.ingest.validate import run_ingest, write_outputs
+from iff_scheduler.notify.audit import audit_invite_recipients, partition_clash_recipients
+from iff_scheduler.notify.base import EmailMessage, SendError
+from iff_scheduler.notify.gmail_mailer import GmailMailer
+from iff_scheduler.notify.ledger import (
+    LEDGER_COLUMNS,
+    already_sent,
+    ledger_entry_to_row,
+    parse_ledger_rows,
+    record_attempt,
+)
+from iff_scheduler.notify.renderer import (
+    build_invite_recipients,
+    render_invites,
+    write_rendered_emails,
+)
 from iff_scheduler.review.edit_validator import validate_edits
 from iff_scheduler.review.locks import (
     LOCK_COLUMNS,
@@ -53,7 +71,11 @@ from iff_scheduler.scheduling.solver_cpsat import CpSatSolver
 from iff_scheduler.settings import DEFAULT_CONFIG_DIR, Settings, load_settings
 
 app = typer.Typer(add_completion=False, help="IFF recruitment interview scheduler.")
+notify_app = typer.Typer(add_completion=False, help="Email notifications (SPEC.md §10).")
+app.add_typer(notify_app, name="notify")
 console = Console()
+
+INVITE_TEMPLATE = "invite"
 
 
 @app.callback()
@@ -627,6 +649,240 @@ def lock(
 
     console.print(f"Locked {len(incoming)} assignment(s) from {from_path}.")
     console.print(f"{locks_path} now holds {len(merged)} pinned assignment(s) in total.")
+
+
+# --------------------------------------------------------------- notify invite
+
+
+def _load_ledger(path: Path) -> list[SendLedgerEntry]:
+    """Read the send ledger (FR-62). Missing file means nobody has been sent
+    to yet — not an error."""
+    if not path.exists():
+        return []
+    df = pd.read_csv(path, dtype=str, keep_default_na=False, na_filter=False)
+    rows = cast("list[dict[str, str]]", df.to_dict(orient="records"))
+    try:
+        return parse_ledger_rows(rows)
+    except ValueError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+
+
+def _write_ledger(entries: list[SendLedgerEntry], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [ledger_entry_to_row(e) for e in sorted(entries, key=lambda e: e.ledger_id)]
+    pd.DataFrame(rows, columns=LEDGER_COLUMNS).to_csv(path, index=False)
+
+
+@notify_app.command("invite")
+def notify_invite(
+    run: str = typer.Option("latest", "--run", help="Run id under runs/, or 'latest'"),
+    input_path: Path = typer.Option(
+        Path("data/interim/applicants.clean.csv"),
+        "--input",
+        help="applicants.clean.csv produced by `iffsched ingest`",
+    ),
+    runs_dir: Path = typer.Option(Path("runs"), "--runs-dir"),
+    config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
+    out_dir: Path = typer.Option(
+        None, "--out-dir", help="Where rendered emails are written (default: <run>/emails)"
+    ),
+    ledger_path: Path = typer.Option(
+        Path("data/ledger/send_ledger.csv"), "--ledger", help="Send ledger (FR-62)."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Render every email to disk. Sends nothing (FR-63)."
+    ),
+    send: bool = typer.Option(
+        False, "--send", help="Actually send. Requires typed confirmation (FR-64)."
+    ),
+    service_account_file: Path = typer.Option(
+        None, "--service-account", help="Overrides GOOGLE_SERVICE_ACCOUNT_FILE from .env"
+    ),
+) -> None:
+    """Send invite emails for a solved run (FR-60..FR-64, SPEC.md §10.2, §10.3).
+
+    Exactly one of --dry-run or --send is required. Both render every email
+    first and run the pre-send audit (FR-64) — any blank merge field,
+    invalid/duplicate address, or applicant missing an assignment hard-fails
+    the whole batch, nothing is sent. Clash assignments (FR-34) are held
+    back from the automated send and listed separately for manual, personal
+    sending (SPEC.md §10.3). --send additionally requires typing the
+    expected recipient count and checks the ledger for idempotency (FR-62)."""
+    if dry_run == send:
+        console.print("[red]Pass exactly one of --dry-run or --send.[/red]")
+        raise typer.Exit(code=1)
+
+    run_dir = runs_dir / run
+    assignments_path = run_dir / "assignments.csv"
+    if not assignments_path.exists():
+        console.print(f"[red]{assignments_path} not found. Run `iffsched solve` first.[/red]")
+        raise typer.Exit(code=1)
+    if not input_path.exists():
+        console.print(
+            f"[red]Input file not found: {input_path}. Run `iffsched ingest` first.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    settings = load_settings(config_dir)
+    assignments = _load_assignments(assignments_path)
+    resolved_run_id = run_dir.resolve().name
+
+    recipients = build_invite_recipients(assignments, settings.divisions, settings.event)
+
+    issues = audit_invite_recipients(recipients)
+    if issues:
+        console.print(
+            f"[bold red]{len(issues)} audit issue(s) — nothing rendered or sent (FR-64):[/bold red]"
+        )
+        for issue in issues:
+            console.print(f"  [red]{issue.code}[/red] {issue.applicant_id}: {issue.message}")
+        raise typer.Exit(code=1)
+
+    auto, manual = partition_clash_recipients(recipients)
+    rendered_auto = render_invites(auto, settings.event, settings.notify)
+    rendered_manual = render_invites(manual, settings.event, settings.notify)
+
+    emails_dir = out_dir if out_dir is not None else run_dir / "emails"
+    write_rendered_emails(rendered_auto, emails_dir)
+    if manual:
+        write_rendered_emails(rendered_manual, emails_dir / "manual_review")
+        pd.DataFrame(
+            [
+                {"applicant_id": r.applicant_id, "full_name": r.full_name, "email": r.email}
+                for r in manual
+            ]
+        ).to_csv(emails_dir / "manual_review.csv", index=False)
+
+    table = Table(title=f"Notify invite — {resolved_run_id}")
+    table.add_column("Metric")
+    table.add_column("Count", justify="right")
+    table.add_row("Total applicants", str(len(recipients)))
+    table.add_row("Auto-sendable", str(len(auto)))
+    table.add_row("Held for manual send (clash)", str(len(manual)))
+    console.print(table)
+
+    if manual:
+        console.print(
+            f"[yellow]{len(manual)} applicant(s) have a clash assignment (FR-34) and are held "
+            f"back for manual, personal sending — see {emails_dir / 'manual_review.csv'} "
+            "(SPEC.md §10.3).[/yellow]"
+        )
+
+    if dry_run:
+        console.print(
+            f"Rendered {len(rendered_auto) + len(rendered_manual)} email(s) to {emails_dir} "
+            "(dry run — nothing sent)."
+        )
+        for email in rendered_auto[:3]:
+            console.print(
+                f"\n[bold]Sample — {email.applicant_id} <{email.to_email}>[/bold]\n"
+                f"Subject: {email.subject}\n{email.text_body}"
+            )
+        return
+
+    # --send
+    ledger = _load_ledger(ledger_path)
+    pending = [r for r in auto if not already_sent(ledger, r.applicant_id, INVITE_TEMPLATE)]
+    already_sent_count = len(auto) - len(pending)
+
+    if not pending:
+        console.print(
+            f"All {len(auto)} auto-sendable applicant(s) are already SENT in {ledger_path}. "
+            "Nothing to do."
+        )
+        return
+
+    console.print(f"{already_sent_count} already sent, {len(pending)} pending.")
+    expected = typer.prompt(
+        f"Type the number of recipients to confirm sending ({len(pending)} expected)", type=int
+    )
+    if expected != len(pending):
+        console.print(
+            f"[red]Confirmation count {expected} does not match {len(pending)} pending "
+            "recipient(s). Aborted — nothing was sent.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    load_dotenv()
+    sa_file = (
+        str(service_account_file)
+        if service_account_file is not None
+        else os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    )
+    sender_email = settings.notify.sender_email or os.environ.get("GMAIL_SENDER_EMAIL", "")
+    if not sa_file:
+        console.print(
+            "[red]No service account file: pass --service-account or set "
+            "GOOGLE_SERVICE_ACCOUNT_FILE in .env.[/red]"
+        )
+        raise typer.Exit(code=1)
+    if not sender_email:
+        console.print(
+            "[red]No sender email: set sender_email in config/notify.yaml or "
+            "GMAIL_SENDER_EMAIL in .env.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    mailer = GmailMailer(
+        service_account_file=sa_file,
+        sender_email=sender_email,
+        sender_name=settings.notify.sender_name,
+    )
+
+    rendered_by_applicant = {email.applicant_id: email for email in rendered_auto}
+    sent_count = 0
+    failed: list[str] = []
+    for recipient in pending:
+        email = rendered_by_applicant[recipient.applicant_id]
+        try:
+            provider_message_id = mailer.send(
+                EmailMessage(
+                    to_email=email.to_email,
+                    to_name=email.to_name,
+                    subject=email.subject,
+                    html_body=email.html_body,
+                    text_body=email.text_body,
+                )
+            )
+        except SendError as exc:
+            ledger = record_attempt(
+                ledger,
+                applicant_id=recipient.applicant_id,
+                email=recipient.email,
+                template=INVITE_TEMPLATE,
+                run_id=resolved_run_id,
+                status=SendStatus.FAILED,
+                error=str(exc),
+            )
+            failed.append(recipient.applicant_id)
+            console.print(
+                f"  [red]FAILED[/red] {recipient.applicant_id} <{recipient.email}>: {exc}"
+            )
+        else:
+            ledger = record_attempt(
+                ledger,
+                applicant_id=recipient.applicant_id,
+                email=recipient.email,
+                template=INVITE_TEMPLATE,
+                run_id=resolved_run_id,
+                status=SendStatus.SENT,
+                provider_message_id=provider_message_id,
+                sent_at=datetime.now(),
+            )
+            sent_count += 1
+            console.print(f"  [green]SENT[/green] {recipient.applicant_id} <{recipient.email}>")
+        # Written immediately after every attempt (SPEC.md §10.2 step 5) — a
+        # crash mid-batch leaves every prior send recorded, so a re-run skips
+        # them via `already_sent` instead of double-sending.
+        _write_ledger(ledger, ledger_path)
+        time.sleep(settings.notify.throttle_seconds)
+
+    console.print(f"Sent {sent_count}/{len(pending)}. Failed: {len(failed)}.")
+    if failed:
+        console.print(
+            f"[bold red]Failed applicant(s): {', '.join(failed)} — re-run `notify invite --send` "
+            "to retry; the ledger keeps their FAILED rows (FR-66).[/bold red]"
+        )
 
 
 if __name__ == "__main__":

@@ -142,7 +142,10 @@ class SolverConfig(BaseModel):
 
 
 class NotifyConfig(BaseModel):
-    """config/notify.yaml — sender identity, throttle, template map."""
+    """config/notify.yaml — sender identity, throttle, template map, and the
+    invite content SPEC.md §10.3 requires (arrival instructions, what to
+    bring, contact, RSVP deadline) — kept in config, not templates, so none
+    of it is a magic string in `src/` (CLAUDE.md invariant 5)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -151,6 +154,11 @@ class NotifyConfig(BaseModel):
     reply_to: str = ""
     throttle_seconds: float = 1.0
     templates: dict[str, str] = {}
+    contact_name: str = ""
+    contact_channel: str = ""
+    rsvp_deadline: str = ""
+    arrival_minutes_early: int = 15
+    what_to_bring: list[str] = []
 
 
 class Settings(BaseModel):

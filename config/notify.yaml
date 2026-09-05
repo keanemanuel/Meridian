@@ -13,3 +13,11 @@ templates:
   result_accepted: "templates/email/result_accepted.html.j2"
   result_waitlist: "templates/email/result_waitlist.html.j2"
   result_rejected: "templates/email/result_rejected.html.j2"
+
+# Invite email content (FR-60, SPEC.md §10.3) — nothing about arrival,
+# contact or the RSVP deadline is hard-coded in the template.
+contact_name: ""              # e.g. "Jane (Recruitment Lead)"
+contact_channel: ""           # e.g. "WhatsApp +62 812-0000-0000"
+rsvp_deadline: ""             # e.g. "Tue 15 Sep, 18:00 WIB" — fixed unless a reply arrives by then
+arrival_minutes_early: 15     # how early to tell applicants to arrive
+what_to_bring: []              # e.g. ["Printed CV", "Student ID"]

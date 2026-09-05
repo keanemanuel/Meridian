@@ -1,0 +1,33 @@
+Dear {{ full_name }},
+
+Thank you for applying to {{ event_name }}. Your interview schedule is confirmed below.
+
+{% for interview in [interview_1, interview_2] %}
+{% if interview %}
+Interview {{ loop.index }}: {{ interview.division_display }} ({{ interview.sub_division }})
+  {{ interview.day_label }}, {{ interview.date }}
+  {{ interview.start_time.strftime('%H:%M') }}-{{ interview.end_time.strftime('%H:%M') }}
+  Room {{ interview.room }}
+
+{% endif %}
+{% endfor %}
+Please arrive at least {{ arrival_minutes_early }} minutes before your first interview and check in at the registration desk.
+{% if what_to_bring %}
+
+What to bring:
+{% for item in what_to_bring %}
+  - {{ item }}
+{% endfor %}
+{% endif %}
+
+These times are fixed. If you have an unavoidable conflict, reply to this email{% if rsvp_deadline %} by {{ rsvp_deadline }}{% endif %} to let us know - after that we cannot guarantee a change of slot.
+{% if contact_name or contact_channel %}
+
+Questions or problems on the day? Contact {{ contact_name }}{% if contact_channel %} via {{ contact_channel }}{% endif %}.
+{% endif %}
+
+We look forward to meeting you.
+
+{{ sender_name }}
+{% if reply_to %}{{ reply_to }}
+{% endif %}

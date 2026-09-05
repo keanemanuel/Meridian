@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ event_name }} — Interview Schedule</title>
+</head>
+<body style="font-family: Arial, Helvetica, sans-serif; color: #111; max-width: 600px; margin: 0 auto; padding: 16px;">
+  <p>Dear {{ full_name }},</p>
+
+  <p>Thank you for applying to {{ event_name }}. Your interview schedule is confirmed below.</p>
+
+  <table style="border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 14px;">
+    <thead>
+      <tr>
+        <th style="border:1px solid #999;padding:6px 8px;text-align:left;background:#eee;">Interview</th>
+        <th style="border:1px solid #999;padding:6px 8px;text-align:left;background:#eee;">Division</th>
+        <th style="border:1px solid #999;padding:6px 8px;text-align:left;background:#eee;">Day &amp; date</th>
+        <th style="border:1px solid #999;padding:6px 8px;text-align:left;background:#eee;">Time</th>
+        <th style="border:1px solid #999;padding:6px 8px;text-align:left;background:#eee;">Room</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for interview in [interview_1, interview_2] %}
+      {% if interview %}
+      <tr>
+        <td style="border:1px solid #999;padding:6px 8px;">{{ loop.index }}</td>
+        <td style="border:1px solid #999;padding:6px 8px;">{{ interview.division_display }} ({{ interview.sub_division }})</td>
+        <td style="border:1px solid #999;padding:6px 8px;">{{ interview.day_label }}, {{ interview.date }}</td>
+        <td style="border:1px solid #999;padding:6px 8px;">{{ interview.start_time.strftime('%H:%M') }}–{{ interview.end_time.strftime('%H:%M') }}</td>
+        <td style="border:1px solid #999;padding:6px 8px;">{{ interview.room }}</td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p>Please arrive at least <strong>{{ arrival_minutes_early }} minutes</strong> before your first interview and check in at the registration desk.</p>
+
+  {% if what_to_bring %}
+  <p>What to bring:</p>
+  <ul>
+    {% for item in what_to_bring %}
+    <li>{{ item }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <p>These times are fixed. If you have an unavoidable conflict, reply to this email
+    {% if rsvp_deadline %}by <strong>{{ rsvp_deadline }}</strong>{% endif %}
+    to let us know — after that we cannot guarantee a change of slot.</p>
+
+  {% if contact_name or contact_channel %}
+  <p>Questions or problems on the day? Contact
+    {% if contact_name %}{{ contact_name }}{% endif %}
+    {% if contact_channel %}via {{ contact_channel }}{% endif %}.</p>
+  {% endif %}
+
+  <p>We look forward to meeting you.</p>
+
+  <p>{{ sender_name }}{% if reply_to %}<br>{{ reply_to }}{% endif %}</p>
+</body>
+</html>
