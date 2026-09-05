@@ -30,3 +30,13 @@ class SendStatus(StrEnum):
     SENT = "SENT"
     FAILED = "FAILED"
     SKIPPED = "SKIPPED"
+
+
+class Decision(StrEnum):
+    """Final outcome for an applicant (SPEC.md §10.4, M7). Never inferred from
+    a score threshold by the pipeline (CLAUDE.md invariant 3) — always an
+    explicit value from the committee's scoring sheet."""
+
+    ACCEPTED = "ACCEPTED"
+    WAITLIST = "WAITLIST"
+    REJECTED = "REJECTED"

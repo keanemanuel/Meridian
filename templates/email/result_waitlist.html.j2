@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ event_name }} — Your Result</title>
+</head>
+<body style="font-family: Arial, Helvetica, sans-serif; color: #111; max-width: 600px; margin: 0 auto; padding: 16px;">
+  <p>Dear {{ full_name }},</p>
+
+  <p>Thank you for interviewing with {{ event_name }}. The committee has finished reviewing applications, and competition for places was strong this round.</p>
+
+  <p>You have been placed on our <strong>waitlist</strong>. This means you were not offered a place today, but you remain under active consideration — if a place opens up, we will contact you directly.</p>
+
+  {% if next_steps %}
+  <p>{{ next_steps }}</p>
+  {% endif %}
+
+  {% if contact_name or contact_channel %}
+  <p>Questions? Contact
+    {% if contact_name %}{{ contact_name }}{% endif %}
+    {% if contact_channel %}via {{ contact_channel }}{% endif %}.</p>
+  {% endif %}
+
+  <p>Thank you again for your interest and your patience.</p>
+
+  <p>{{ sender_name }}{% if reply_to %}<br>{{ reply_to }}{% endif %}</p>
+</body>
+</html>

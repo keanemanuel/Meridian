@@ -160,6 +160,15 @@ class NotifyConfig(BaseModel):
     arrival_minutes_early: int = 15
     what_to_bring: list[str] = []
 
+    # Result email content (FR-65, SPEC.md §10.4) — kept in config, not
+    # templates, so the committee's per-decision message isn't a magic
+    # string in `src/` (CLAUDE.md invariant 5). Each next_steps_* value must
+    # be non-blank before a send is allowed (audit_result_recipients).
+    result_deadline: str = ""
+    next_steps_accepted: str = ""
+    next_steps_waitlist: str = ""
+    next_steps_rejected: str = ""
+
 
 class Settings(BaseModel):
     """All configuration for one run, aggregated and validated."""

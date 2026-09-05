@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ event_name }} — Your Result</title>
+</head>
+<body style="font-family: Arial, Helvetica, sans-serif; color: #111; max-width: 600px; margin: 0 auto; padding: 16px;">
+  <p>Dear {{ full_name }},</p>
+
+  <p><strong>Congratulations!</strong> We're delighted to offer you a place at {{ event_name }}{% if division_placed %} in <strong>{{ division_placed }}</strong>{% endif %}.</p>
+
+  <p>Thank you for the time and effort you put into your application and interviews — the committee was impressed, and we're excited to have you on the team.</p>
+
+  {% if next_steps %}
+  <p>{{ next_steps }}</p>
+  {% endif %}
+
+  {% if deadline %}
+  <p>Please confirm your place by replying to this email no later than <strong>{{ deadline }}</strong>.</p>
+  {% endif %}
+
+  {% if contact_name or contact_channel %}
+  <p>Questions? Contact
+    {% if contact_name %}{{ contact_name }}{% endif %}
+    {% if contact_channel %}via {{ contact_channel }}{% endif %}.</p>
+  {% endif %}
+
+  <p>Welcome aboard — we look forward to working with you.</p>
+
+  <p>{{ sender_name }}{% if reply_to %}<br>{{ reply_to }}{% endif %}</p>
+</body>
+</html>

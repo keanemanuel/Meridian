@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ event_name }} — Your Result</title>
+</head>
+<body style="font-family: Arial, Helvetica, sans-serif; color: #111; max-width: 600px; margin: 0 auto; padding: 16px;">
+  <p>Dear {{ full_name }},</p>
+
+  <p>Thank you for applying and interviewing for {{ event_name }}. We know this took real time and effort, and we don't take that lightly.</p>
+
+  <p>After careful review, we're not able to offer you a place this time. This was a genuinely difficult round with more strong applicants than we had places for — it isn't a reflection of your potential.</p>
+
+  {% if next_steps %}
+  <p>{{ next_steps }}</p>
+  {% endif %}
+
+  {% if contact_name or contact_channel %}
+  <p>Questions, or want feedback on your interview? Contact
+    {% if contact_name %}{{ contact_name }}{% endif %}
+    {% if contact_channel %}via {{ contact_channel }}{% endif %} — we're happy to talk it through.</p>
+  {% endif %}
+
+  <p>We hope you'll stay in touch and consider applying again in the future.</p>
+
+  <p>{{ sender_name }}{% if reply_to %}<br>{{ reply_to }}{% endif %}</p>
+</body>
+</html>

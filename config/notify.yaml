@@ -21,3 +21,12 @@ contact_channel: ""           # e.g. "WhatsApp +62 812-0000-0000"
 rsvp_deadline: ""             # e.g. "Tue 15 Sep, 18:00 WIB" — fixed unless a reply arrives by then
 arrival_minutes_early: 15     # how early to tell applicants to arrive
 what_to_bring: []              # e.g. ["Printed CV", "Student ID"]
+
+# Result email content (FR-65, SPEC.md §10.4). Each next_steps_* value must
+# be filled in before `iffsched notify result --send` will proceed — a blank
+# value hard-fails the pre-send audit (a rejection with no real next step is
+# exactly what SPEC.md §10.4 says not to send).
+result_deadline: ""            # e.g. "Fri 19 Sep, 18:00 WIB" — accepted applicants confirm by then
+next_steps_accepted: ""        # e.g. "Reply to this email to confirm your place, and join the WhatsApp group at ..."
+next_steps_waitlist: ""        # e.g. "We will contact you within 3 days of the event if a place opens up."
+next_steps_rejected: ""        # e.g. "We'd love your feedback: [form link]. Applications for the next intake open in March."

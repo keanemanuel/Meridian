@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
-from iff_scheduler.domain.enums import DivisionCode, SendStatus, Severity
+from iff_scheduler.domain.enums import Decision, DivisionCode, SendStatus, Severity
 from iff_scheduler.domain.grid import build_slot_grid
 from iff_scheduler.domain.models import Applicant, Assignment, Conflict, SendLedgerEntry
 from iff_scheduler.export.applicant_view import build_applicant_view
@@ -30,7 +30,11 @@ from iff_scheduler.export.room_view import build_room_views
 from iff_scheduler.export.xlsx_writer import write_xlsx
 from iff_scheduler.ingest.csv_source import CsvApplicantSource
 from iff_scheduler.ingest.validate import run_ingest, write_outputs
-from iff_scheduler.notify.audit import audit_invite_recipients, partition_clash_recipients
+from iff_scheduler.notify.audit import (
+    audit_invite_recipients,
+    audit_result_recipients,
+    partition_clash_recipients,
+)
 from iff_scheduler.notify.base import EmailMessage, SendError
 from iff_scheduler.notify.gmail_mailer import GmailMailer
 from iff_scheduler.notify.ledger import (
@@ -41,9 +45,21 @@ from iff_scheduler.notify.ledger import (
     record_attempt,
 )
 from iff_scheduler.notify.renderer import (
+    RenderedEmail,
     build_invite_recipients,
     render_invites,
+    render_results,
     write_rendered_emails,
+)
+from iff_scheduler.results.decide import (
+    ResultRecipient,
+    build_result_recipients,
+    partition_by_decision,
+)
+from iff_scheduler.results.ingest_scores import (
+    read_raw_scores,
+    run_ingest_scores,
+    write_score_outputs,
 )
 from iff_scheduler.review.edit_validator import validate_edits
 from iff_scheduler.review.locks import (
@@ -793,16 +809,38 @@ def notify_invite(
         return
 
     console.print(f"{already_sent_count} already sent, {len(pending)} pending.")
-    expected = typer.prompt(
-        f"Type the number of recipients to confirm sending ({len(pending)} expected)", type=int
+    _confirm_recipient_count(len(pending))
+
+    mailer = _build_gmail_mailer(settings, service_account_file)
+
+    rendered_by_applicant = {email.applicant_id: email for email in rendered_auto}
+    ledger = _send_batch(
+        mailer=mailer,
+        pending=[(r.applicant_id, r.email, INVITE_TEMPLATE) for r in pending],
+        rendered_by_applicant=rendered_by_applicant,
+        ledger=ledger,
+        ledger_path=ledger_path,
+        run_id=resolved_run_id,
+        throttle_seconds=settings.notify.throttle_seconds,
+        retry_hint="notify invite --send",
     )
-    if expected != len(pending):
+
+
+def _confirm_recipient_count(expected_count: int) -> None:
+    """The FR-64 typed-confirmation gate, shared by every `notify ... --send`
+    command: `--send` alone is never enough."""
+    expected = typer.prompt(
+        f"Type the number of recipients to confirm sending ({expected_count} expected)", type=int
+    )
+    if expected != expected_count:
         console.print(
-            f"[red]Confirmation count {expected} does not match {len(pending)} pending "
+            f"[red]Confirmation count {expected} does not match {expected_count} pending "
             "recipient(s). Aborted — nothing was sent.[/red]"
         )
         raise typer.Exit(code=1)
 
+
+def _build_gmail_mailer(settings: Settings, service_account_file: Path | None) -> GmailMailer:
     load_dotenv()
     sa_file = (
         str(service_account_file)
@@ -823,17 +861,31 @@ def notify_invite(
         )
         raise typer.Exit(code=1)
 
-    mailer = GmailMailer(
+    return GmailMailer(
         service_account_file=sa_file,
         sender_email=sender_email,
         sender_name=settings.notify.sender_name,
     )
 
-    rendered_by_applicant = {email.applicant_id: email for email in rendered_auto}
+
+def _send_batch(
+    mailer: GmailMailer,
+    pending: list[tuple[str, str, str]],
+    rendered_by_applicant: dict[str, RenderedEmail],
+    ledger: list[SendLedgerEntry],
+    ledger_path: Path,
+    run_id: str,
+    throttle_seconds: float,
+    retry_hint: str,
+) -> list[SendLedgerEntry]:
+    """The send loop shared by `notify invite --send` and `notify result
+    --send` (SPEC.md §10.2 steps 5-6): ledger check already happened by the
+    time `pending` is built, so this just sends, records every attempt
+    immediately, and keeps going past a failure (FR-66)."""
     sent_count = 0
     failed: list[str] = []
-    for recipient in pending:
-        email = rendered_by_applicant[recipient.applicant_id]
+    for applicant_id, email_address, template in pending:
+        email = rendered_by_applicant[applicant_id]
         try:
             provider_message_id = mailer.send(
                 EmailMessage(
@@ -847,42 +899,325 @@ def notify_invite(
         except SendError as exc:
             ledger = record_attempt(
                 ledger,
-                applicant_id=recipient.applicant_id,
-                email=recipient.email,
-                template=INVITE_TEMPLATE,
-                run_id=resolved_run_id,
+                applicant_id=applicant_id,
+                email=email_address,
+                template=template,
+                run_id=run_id,
                 status=SendStatus.FAILED,
                 error=str(exc),
             )
-            failed.append(recipient.applicant_id)
-            console.print(
-                f"  [red]FAILED[/red] {recipient.applicant_id} <{recipient.email}>: {exc}"
-            )
+            failed.append(applicant_id)
+            console.print(f"  [red]FAILED[/red] {applicant_id} <{email_address}>: {exc}")
         else:
             ledger = record_attempt(
                 ledger,
-                applicant_id=recipient.applicant_id,
-                email=recipient.email,
-                template=INVITE_TEMPLATE,
-                run_id=resolved_run_id,
+                applicant_id=applicant_id,
+                email=email_address,
+                template=template,
+                run_id=run_id,
                 status=SendStatus.SENT,
                 provider_message_id=provider_message_id,
                 sent_at=datetime.now(),
             )
             sent_count += 1
-            console.print(f"  [green]SENT[/green] {recipient.applicant_id} <{recipient.email}>")
+            console.print(f"  [green]SENT[/green] {applicant_id} <{email_address}>")
         # Written immediately after every attempt (SPEC.md §10.2 step 5) — a
         # crash mid-batch leaves every prior send recorded, so a re-run skips
         # them via `already_sent` instead of double-sending.
         _write_ledger(ledger, ledger_path)
-        time.sleep(settings.notify.throttle_seconds)
+        time.sleep(throttle_seconds)
 
     console.print(f"Sent {sent_count}/{len(pending)}. Failed: {len(failed)}.")
     if failed:
         console.print(
-            f"[bold red]Failed applicant(s): {', '.join(failed)} — re-run `notify invite --send` "
-            "to retry; the ledger keeps their FAILED rows (FR-66).[/bold red]"
+            f"[bold red]Failed applicant(s): {', '.join(failed)} — re-run `{retry_hint}` to "
+            "retry; the ledger keeps their FAILED rows (FR-66).[/bold red]"
         )
+    return ledger
+
+
+# --------------------------------------------------------------- notify result
+
+RESULT_LIST_COLUMNS = ["applicant_id", "full_name", "email", "decision", "division_placed"]
+
+
+def _write_result_review_lists(
+    recipients: list[ResultRecipient], out_dir: Path
+) -> dict[Decision, Path]:
+    """One CSV per decision (SPEC.md §10.4: "Have a second person eyeball the
+    accepted list and the rejected list separately before approval") —
+    written on every dry-run so there is always a current list to check
+    before `--send --verified-by` is accepted."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    grouped = partition_by_decision(recipients)
+    paths: dict[Decision, Path] = {}
+    for decision, group in grouped.items():
+        path = out_dir / f"{decision.value.lower()}_list.csv"
+        rows = [
+            {
+                "applicant_id": r.applicant_id,
+                "full_name": r.full_name,
+                "email": r.email,
+                "decision": r.decision.value,
+                "division_placed": r.division_placed_display or "",
+            }
+            for r in sorted(group, key=lambda r: r.applicant_id)
+        ]
+        pd.DataFrame(rows, columns=RESULT_LIST_COLUMNS).to_csv(path, index=False)
+        paths[decision] = path
+    return paths
+
+
+VERIFICATION_LOG_COLUMNS = [
+    "timestamp",
+    "run_id",
+    "verified_by",
+    "total",
+    "accepted",
+    "waitlist",
+    "rejected",
+]
+
+
+def _append_verification_log(
+    log_path: Path,
+    run_id: str,
+    verified_by: str,
+    grouped: dict[Decision, list[ResultRecipient]],
+) -> None:
+    """Auditable record of who did the second-person check required by
+    SPEC.md §10.4, and when — so the sign-off survives after the terminal
+    session that ran `--send` is gone."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = (
+        pd.read_csv(log_path, dtype=str, keep_default_na=False) if log_path.exists() else None
+    )
+    row = pd.DataFrame(
+        [
+            {
+                "timestamp": datetime.now().isoformat(),
+                "run_id": run_id,
+                "verified_by": verified_by,
+                "total": str(sum(len(g) for g in grouped.values())),
+                "accepted": str(len(grouped[Decision.ACCEPTED])),
+                "waitlist": str(len(grouped[Decision.WAITLIST])),
+                "rejected": str(len(grouped[Decision.REJECTED])),
+            }
+        ],
+        columns=VERIFICATION_LOG_COLUMNS,
+    )
+    combined = pd.concat([existing, row], ignore_index=True) if existing is not None else row
+    combined.to_csv(log_path, index=False)
+
+
+@notify_app.command("result")
+def notify_result(
+    scores_path: Path = typer.Option(
+        Path("data/raw/scores.csv"),
+        "--scores",
+        help="Committee scoring sheet: columns applicant_id, decision, division_placed "
+        "(division_placed required only when decision is ACCEPTED).",
+    ),
+    run: str = typer.Option("latest", "--run", help="Run id under runs/, or 'latest'"),
+    input_path: Path = typer.Option(
+        Path("data/interim/applicants.clean.csv"),
+        "--input",
+        help="applicants.clean.csv produced by `iffsched ingest`",
+    ),
+    runs_dir: Path = typer.Option(Path("runs"), "--runs-dir"),
+    config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
+    out_dir: Path = typer.Option(
+        None,
+        "--out-dir",
+        help="Where rendered emails and review lists are written (default: <run>/results_emails)",
+    ),
+    ledger_path: Path = typer.Option(
+        Path("data/ledger/send_ledger.csv"), "--ledger", help="Send ledger (FR-62)."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Render every email and review list to disk. Sends nothing."
+    ),
+    send: bool = typer.Option(
+        False, "--send", help="Actually send. Requires --verified-by and typed confirmation."
+    ),
+    verified_by: str = typer.Option(
+        None,
+        "--verified-by",
+        help="Name of the second person who independently checked accepted_list.csv and "
+        "rejected_list.csv against the committee's records (required for --send, SPEC.md §10.4).",
+    ),
+    service_account_file: Path = typer.Option(
+        None, "--service-account", help="Overrides GOOGLE_SERVICE_ACCOUNT_FILE from .env"
+    ),
+) -> None:
+    """Send result emails for a completed round (FR-65, SPEC.md §10.4).
+
+    Every applicant in `--input` must have exactly one decision in
+    `--scores`; a blank, unrecognised or missing decision hard-fails the
+    whole batch before anything is rendered (CLAUDE.md invariant 3 — never
+    defaulted to REJECTED). Routes each applicant to the accepted/waitlist/
+    rejected template by their decision, reusing the same ledger, audit and
+    send-loop machinery as `notify invite` (M6). `--send` additionally
+    requires `--verified-by <name>`: a second person must have checked
+    `accepted_list.csv` and `rejected_list.csv` (written by `--dry-run`)
+    before a send is accepted."""
+    if dry_run == send:
+        console.print("[red]Pass exactly one of --dry-run or --send.[/red]")
+        raise typer.Exit(code=1)
+
+    run_dir = runs_dir / run
+    if not run_dir.exists():
+        console.print(f"[red]Run not found: {run_dir}. Run `iffsched solve` first.[/red]")
+        raise typer.Exit(code=1)
+    if not input_path.exists():
+        console.print(
+            f"[red]Input file not found: {input_path}. Run `iffsched ingest` first.[/red]"
+        )
+        raise typer.Exit(code=1)
+    if not scores_path.exists():
+        console.print(
+            f"[red]Scores file not found: {scores_path}. Export the committee's scoring sheet "
+            "there first (columns: applicant_id, decision, division_placed).[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    settings = load_settings(config_dir)
+    applicants = _load_clean_applicants(input_path)
+    resolved_run_id = run_dir.resolve().name
+    emails_dir = out_dir if out_dir is not None else run_dir / "results_emails"
+
+    known_division_codes = {code.value for code in DivisionCode}
+    score_result = run_ingest_scores(read_raw_scores(scores_path), known_division_codes)
+    for warning in (r for r in score_result.report if r.outcome == "WARNING"):
+        console.print(f"  [yellow]{warning.reason_code}[/yellow] {warning.message}")
+
+    rejected_scores = [r for r in score_result.report if r.outcome == "REJECTED"]
+    if rejected_scores:
+        emails_dir.mkdir(parents=True, exist_ok=True)
+        report_path = emails_dir / "scores_validation_report.csv"
+        write_score_outputs(score_result, emails_dir / "decisions.clean.csv", report_path)
+        console.print(
+            f"[bold red]{len(rejected_scores)} row(s) in {scores_path} were rejected — nothing "
+            f"rendered or sent (SPEC.md §10.4). See {report_path}:[/bold red]"
+        )
+        for row in rejected_scores:
+            console.print(f"  [red]{row.reason_code}[/red] {row.applicant_id}: {row.message}")
+        raise typer.Exit(code=1)
+
+    recipients, decision_issues = build_result_recipients(
+        applicants, score_result.records, settings.divisions
+    )
+    if decision_issues:
+        console.print(
+            f"[bold red]{len(decision_issues)} decision issue(s) — nothing rendered or sent "
+            "(SPEC.md §10.4):[/bold red]"
+        )
+        for decision_issue in decision_issues:
+            console.print(
+                f"  [red]{decision_issue.code}[/red] "
+                f"{decision_issue.applicant_id}: {decision_issue.message}"
+            )
+        raise typer.Exit(code=1)
+
+    audit_issues = audit_result_recipients(recipients, settings.notify)
+    if audit_issues:
+        console.print(
+            f"[bold red]{len(audit_issues)} audit issue(s) — nothing rendered or sent "
+            "(SPEC.md §10.4):[/bold red]"
+        )
+        for issue in audit_issues:
+            console.print(f"  [red]{issue.code}[/red] {issue.applicant_id}: {issue.message}")
+        raise typer.Exit(code=1)
+
+    rendered = render_results(recipients, settings.event, settings.notify)
+    write_rendered_emails(rendered, emails_dir)
+    list_paths = _write_result_review_lists(recipients, emails_dir)
+    grouped = partition_by_decision(recipients)
+
+    table = Table(title=f"Notify result — {resolved_run_id}")
+    table.add_column("Decision")
+    table.add_column("Count", justify="right")
+    for decision in Decision:
+        table.add_row(decision.value, str(len(grouped[decision])))
+    console.print(table)
+
+    if dry_run:
+        console.print(
+            f"Rendered {len(rendered)} email(s) to {emails_dir} (dry run — nothing sent)."
+        )
+        console.print(
+            "Before sending: have a second person independently check "
+            f"{list_paths[Decision.ACCEPTED]} and {list_paths[Decision.REJECTED]} against the "
+            "committee's records (SPEC.md §10.4), then re-run with "
+            '`--send --verified-by "Their Name"`.'
+        )
+        rendered_by_decision = {r.applicant_id: r.decision for r in recipients}
+        seen: set[Decision] = set()
+        for email in rendered:
+            decision = rendered_by_decision[email.applicant_id]
+            if decision in seen:
+                continue
+            seen.add(decision)
+            console.print(
+                f"\n[bold]Sample ({decision.value}) — {email.applicant_id} <{email.to_email}>"
+                f"[/bold]\nSubject: {email.subject}\n{email.text_body}"
+            )
+        return
+
+    # --send
+    if not verified_by or not verified_by.strip():
+        console.print(
+            "[bold red]--verified-by is required for --send (SPEC.md §10.4). Have a second "
+            f"person check {list_paths[Decision.ACCEPTED]} and {list_paths[Decision.REJECTED]} "
+            'first, then re-run with --send --verified-by "Their Name". Nothing was sent.'
+            "[/bold red]"
+        )
+        raise typer.Exit(code=1)
+
+    # Audit twice, once before the verification gate and once here, right
+    # before send — SPEC.md §10.4: "Run the audit twice. A merge-field error
+    # here means telling someone the wrong outcome."
+    audit_issues = audit_result_recipients(recipients, settings.notify)
+    if audit_issues:
+        console.print(
+            f"[bold red]{len(audit_issues)} audit issue(s) on the second pass — nothing sent."
+            "[/bold red]"
+        )
+        for issue in audit_issues:
+            console.print(f"  [red]{issue.code}[/red] {issue.applicant_id}: {issue.message}")
+        raise typer.Exit(code=1)
+
+    ledger = _load_ledger(ledger_path)
+    pending = [r for r in recipients if not already_sent(ledger, r.applicant_id, r.template_name)]
+    already_sent_count = len(recipients) - len(pending)
+
+    if not pending:
+        console.print(
+            f"All {len(recipients)} applicant(s) already have a SENT result in {ledger_path}. "
+            "Nothing to do."
+        )
+        return
+
+    console.print(f"{already_sent_count} already sent, {len(pending)} pending.")
+    _confirm_recipient_count(len(pending))
+
+    _append_verification_log(
+        emails_dir / "verification_log.csv", resolved_run_id, verified_by.strip(), grouped
+    )
+    console.print(f"Recorded verification by {verified_by.strip()!r} for this batch.")
+
+    mailer = _build_gmail_mailer(settings, service_account_file)
+    rendered_by_applicant = {email.applicant_id: email for email in rendered}
+    _send_batch(
+        mailer=mailer,
+        pending=[(r.applicant_id, r.email, r.template_name) for r in pending],
+        rendered_by_applicant=rendered_by_applicant,
+        ledger=ledger,
+        ledger_path=ledger_path,
+        run_id=resolved_run_id,
+        throttle_seconds=settings.notify.throttle_seconds,
+        retry_hint="notify result --send",
+    )
 
 
 if __name__ == "__main__":

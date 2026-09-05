@@ -12,7 +12,10 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from iff_scheduler.domain.enums import Decision
 from iff_scheduler.notify.renderer import InviteRecipient
+from iff_scheduler.results.decide import ResultRecipient
+from iff_scheduler.settings import NotifyConfig
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _BLANK_VALUES = frozenset({"", "none", "nan", "null"})
@@ -96,6 +99,73 @@ def audit_invite_recipients(recipients: Sequence[InviteRecipient]) -> list[Audit
                             f"'{field_name}' rendered blank.",
                         )
                     )
+
+    return issues
+
+
+def audit_result_recipients(
+    recipients: Sequence[ResultRecipient], notify: NotifyConfig
+) -> list[AuditIssue]:
+    """Every reason a results batch cannot be rendered/sent yet (SPEC.md
+    §10.4, FR-65). Run twice, per SPEC.md §10.4 — "a merge-field error here
+    means telling someone the wrong outcome" — by the CLI calling this
+    before *and* after the second-person verification gate. Never raises,
+    same contract as `audit_invite_recipients`."""
+    issues: list[AuditIssue] = []
+
+    for field_name, value in (
+        ("next_steps_accepted", notify.next_steps_accepted),
+        ("next_steps_waitlist", notify.next_steps_waitlist),
+        ("next_steps_rejected", notify.next_steps_rejected),
+    ):
+        if _is_blank(value):
+            issues.append(
+                AuditIssue(
+                    "",
+                    "BLANK_CONFIG_FIELD",
+                    f"config/notify.yaml: '{field_name}' is blank — every result email must "
+                    "give a real next step (SPEC.md §10.4).",
+                )
+            )
+
+    seen_emails: dict[str, str] = {}
+    for r in recipients:
+        if _is_blank(r.email) or not _EMAIL_RE.match(r.email):
+            issues.append(
+                AuditIssue(
+                    r.applicant_id,
+                    "INVALID_EMAIL",
+                    f"{r.applicant_id} has an invalid email address: {r.email!r}.",
+                )
+            )
+        else:
+            key = r.email.strip().lower()
+            duplicate_of = seen_emails.get(key)
+            if duplicate_of is not None:
+                issues.append(
+                    AuditIssue(
+                        r.applicant_id,
+                        "DUPLICATE_EMAIL",
+                        f"{r.applicant_id} shares email address {r.email!r} with applicant "
+                        f"{duplicate_of} (FR-61) — refusing to send until this is resolved.",
+                    )
+                )
+            else:
+                seen_emails[key] = r.applicant_id
+
+        if _is_blank(r.full_name):
+            issues.append(
+                AuditIssue(r.applicant_id, "BLANK_FIELD", f"{r.applicant_id} has a blank name.")
+            )
+
+        if r.decision == Decision.ACCEPTED and _is_blank(r.division_placed_display):
+            issues.append(
+                AuditIssue(
+                    r.applicant_id,
+                    "BLANK_FIELD",
+                    f"{r.applicant_id} is ACCEPTED but 'division_placed' rendered blank.",
+                )
+            )
 
     return issues
 

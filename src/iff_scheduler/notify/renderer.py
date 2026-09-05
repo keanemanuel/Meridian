@@ -19,7 +19,9 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
+from iff_scheduler.domain.enums import Decision
 from iff_scheduler.domain.models import Assignment, ChoiceIndex
+from iff_scheduler.results.decide import ResultRecipient
 from iff_scheduler.settings import DivisionsConfig, EventConfig, NotifyConfig
 
 # templates/ lives at the repo root: src/iff_scheduler/notify/renderer.py -> parents[3]
@@ -27,6 +29,18 @@ DEFAULT_TEMPLATES_DIR = Path(__file__).resolve().parents[3] / "templates"
 
 INVITE_HTML_TEMPLATE = "email/invite.html.j2"
 INVITE_TEXT_TEMPLATE = "email/invite.txt.j2"
+
+RESULT_HTML_TEMPLATES = {
+    "result_accepted": "email/result_accepted.html.j2",
+    "result_waitlist": "email/result_waitlist.html.j2",
+    "result_rejected": "email/result_rejected.html.j2",
+}
+
+RESULT_SUBJECTS = {
+    Decision.ACCEPTED: "Congratulations — you're in!",
+    Decision.WAITLIST: "You're on the waitlist",
+    Decision.REJECTED: "Your application result",
+}
 
 
 @dataclass(frozen=True)
@@ -190,6 +204,88 @@ def render_invites(
                 subject=f"{event.event_name} — Your Interview Schedule",
                 html_body=html_template.render(**context),
                 text_body=text_template.render(**context),
+            )
+        )
+    return rendered
+
+
+def _result_text_body(recipient: ResultRecipient, event: EventConfig, notify: NotifyConfig) -> str:
+    """Only HTML templates were built for results (SPEC.md §10.4 doesn't ask
+    for a plain-text variant the way invites do) — this gives every result
+    email a plain-text alternative anyway, for the same multipart
+    deliverability reason `GmailMailer` sends both parts for invites."""
+    lines = [f"Dear {recipient.full_name},", ""]
+    if recipient.decision == Decision.ACCEPTED:
+        placed = (
+            f" in {recipient.division_placed_display}" if recipient.division_placed_display else ""
+        )
+        lines += [f"Congratulations! You have been accepted to {event.event_name}{placed}."]
+        if notify.next_steps_accepted:
+            lines += ["", notify.next_steps_accepted]
+        if notify.result_deadline:
+            lines += ["", f"Please confirm by {notify.result_deadline}."]
+    elif recipient.decision == Decision.WAITLIST:
+        lines += [
+            f"Thank you for applying to {event.event_name}. You have been placed on the waitlist."
+        ]
+        if notify.next_steps_waitlist:
+            lines += ["", notify.next_steps_waitlist]
+    else:
+        lines += [
+            f"Thank you for applying to {event.event_name}. We are unable to offer you a "
+            "place this time."
+        ]
+        if notify.next_steps_rejected:
+            lines += ["", notify.next_steps_rejected]
+    if notify.contact_name or notify.contact_channel:
+        contact = " via ".join(v for v in (notify.contact_name, notify.contact_channel) if v)
+        lines += ["", f"Questions? Contact {contact}."]
+    lines += ["", notify.sender_name]
+    return "\n".join(lines)
+
+
+def render_results(
+    recipients: Sequence[ResultRecipient],
+    event: EventConfig,
+    notify: NotifyConfig,
+    templates_dir: Path = DEFAULT_TEMPLATES_DIR,
+) -> list[RenderedEmail]:
+    """Render every recipient's result to HTML + plain text, routed to the
+    template for their decision (SPEC.md §10.4, FR-65)."""
+    env = _environment(templates_dir)
+    templates = {name: env.get_template(path) for name, path in RESULT_HTML_TEMPLATES.items()}
+
+    context_base = {
+        "event_name": event.event_name,
+        "sender_name": notify.sender_name,
+        "reply_to": notify.reply_to,
+        "contact_name": notify.contact_name,
+        "contact_channel": notify.contact_channel,
+        "deadline": notify.result_deadline,
+    }
+    next_steps_by_decision = {
+        Decision.ACCEPTED: notify.next_steps_accepted,
+        Decision.WAITLIST: notify.next_steps_waitlist,
+        Decision.REJECTED: notify.next_steps_rejected,
+    }
+
+    rendered: list[RenderedEmail] = []
+    for recipient in recipients:
+        context = {
+            **context_base,
+            "full_name": recipient.full_name,
+            "decision": recipient.decision.value,
+            "division_placed": recipient.division_placed_display,
+            "next_steps": next_steps_by_decision[recipient.decision],
+        }
+        rendered.append(
+            RenderedEmail(
+                applicant_id=recipient.applicant_id,
+                to_email=recipient.email,
+                to_name=recipient.full_name,
+                subject=f"{event.event_name} — {RESULT_SUBJECTS[recipient.decision]}",
+                html_body=templates[recipient.template_name].render(**context),
+                text_body=_result_text_body(recipient, event, notify),
             )
         )
     return rendered

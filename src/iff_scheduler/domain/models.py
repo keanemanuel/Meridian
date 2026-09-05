@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from iff_scheduler.domain.enums import DivisionCode, SendStatus, Severity
+from iff_scheduler.domain.enums import Decision, DivisionCode, SendStatus, Severity
 
 ChoiceIndex = Literal[1, 2]
 
@@ -136,6 +136,19 @@ class SendLedgerEntry(BaseModel):
     attempt_count: int = 0
     sent_at: datetime | None = None
     error: str | None = None
+
+
+class DecisionRecord(BaseModel):
+    """One applicant's final outcome, joined from the committee's scoring
+    sheet (SPEC.md §10.4, M7). `division_placed` is set only for ACCEPTED —
+    ingest_scores.py rejects any row that sets it otherwise or omits it when
+    required (CLAUDE.md invariant 3)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    applicant_id: str
+    decision: Decision
+    division_placed: DivisionCode | None = None
 
 
 class Schedule(BaseModel):
