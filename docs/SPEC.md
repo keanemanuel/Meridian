@@ -23,10 +23,11 @@
 | 8 | Configuration files (the "changeable" parts) |
 | 9 | Google Form design — this determines whether the whole thing works |
 | 10 | Automated email: interview invites and results |
-| 11 | Manual adjustment model |
-| 12 | Edge cases and failure modes |
-| 13 | Phasing, milestones, definition of done |
-| 14 | Open questions I need answers to |
+| 11 | Workspace model |
+| 12 | Manual adjustment model |
+| 13 | Edge cases and failure modes |
+| 14 | Phasing, milestones, definition of done |
+| 15 | Open questions I need answers to |
 
 ---
 
@@ -125,7 +126,7 @@ Two follow-on rules fall out of this:
 - **Distinct sub-divisions required.** The two choices must be different *sub-divisions*. Picking Media Marketing twice is a data error; picking Media Marketing + Media Documentation is fine.
 - **Prefer different panels.** When both interviews land on the same parent division, the applicant should ideally not face the same interviewer panel twice — the two conversations are about different roles. Enforced as a soft constraint that degrades gracefully when a division has only one panel (see C8 in §5.2).
 
-Handled in §3.1 (FR-04), §5.2 (variable definition and C8), §9.3 (form design) and §12 (E-01).
+Handled in §3.1 (FR-04), §5.2 (variable definition and C8), §9.3 (form design) and §13 (E-01).
 
 ### 1.3 Alpha scope
 
@@ -274,7 +275,7 @@ Priority: **M** = must have for alpha, **S** = should have, **C** = could have.
 | NFR-01 | M | All tuneable values (dates, times, duration, rooms, divisions, mapping, panels, penalties) live in config files. No magic numbers in code. |
 | NFR-02 | M | Applicant PII shall not be committed to version control. `data/` is gitignored; only anonymised fixtures are committed. |
 | NFR-03 | M | Every solve run writes a timestamped, immutable artefact directory so any published schedule can be reproduced. |
-| NFR-04 | S | Core scheduling logic shall have unit tests including the constraint-violation cases in §12. |
+| NFR-04 | S | Core scheduling logic shall have unit tests including the constraint-violation cases in §13. |
 | NFR-05 | S | A non-technical committee member shall be able to run the whole pipeline from documented commands. |
 | NFR-06 | S | Secrets (service account keys, API keys) shall be loaded from environment variables, never from code. |
 
@@ -926,7 +927,51 @@ Use **separate templates per outcome** — accepted, waitlisted, rejected — an
 
 ---
 
-## 11. Manual adjustment model
+## 11. Workspace model
+
+### 11.1 What a workspace is
+
+A workspace is an isolated pipeline instance. It has:
+
+- A unique name (e.g. "IFF 2026 Intake")
+- A group (e.g. "IFF Submissions" or "Test Environment")
+- An optional Google Sheet ID (source of applicant data)
+- Its own namespaced data directory
+- Its own solve history
+
+### 11.2 Workspace metadata (alpha)
+
+Stored in `data/workspaces/workspaces.json`:
+
+```json
+{
+  "name": "IFF 2026 Intake",
+  "group": "IFF Submissions",
+  "sheet_id": "1BxiM...",
+  "created_at": "2026-09-05T10:00:00"
+}
+```
+
+### 11.3 CLI commands
+
+```
+iffsched workspace create --name <name> --group <group>
+iffsched workspace list
+iffsched workspace set-sheet --workspace <name> --url <url>
+```
+
+All other commands accept `--workspace <name>` (default: `"default"`).
+
+### 11.4 Beta upgrade path
+
+`workspaces.json` → Postgres table.
+`data/workspaces/<name>/` → Supabase Storage namespaced by `workspace_id`.
+
+The tab UI in Next.js reads workspace metadata from Postgres and renders each workspace as a tab inside its group.
+
+---
+
+## 12. Manual adjustment model
 
 The rule that makes the tool trustworthy: **the solver may never overwrite a human decision.**
 
@@ -954,7 +999,7 @@ Locks are cumulative and explicit. `iffsched lock --clear` exists but requires c
 
 ---
 
-## 12. Edge cases and failure modes
+## 13. Edge cases and failure modes
 
 Every one of these should have a test.
 
@@ -983,7 +1028,7 @@ Every one of these should have a test.
 
 ---
 
-## 13. Phasing and milestones
+## 14. Phasing and milestones
 
 ### Alpha (this document)
 
@@ -1008,7 +1053,7 @@ Additional beta features: drag-and-drop timetable editor · live event-day dashb
 
 ---
 
-## 14. Open questions
+## 15. Open questions
 
 Please answer these before implementation starts; they change the design.
 
@@ -1049,4 +1094,4 @@ Please answer these before implementation starts; they change the design.
 
 ---
 
-*End of document. Sections 3 through 9 are the authoritative spec — they supersede the original brief. Answers to §14 should be folded back in as version 1.2 before implementation begins.*
+*End of document. Sections 3 through 9 are the authoritative spec — they supersede the original brief. Answers to §15 should be folded back in as version 1.2 before implementation begins.*

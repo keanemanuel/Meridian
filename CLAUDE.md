@@ -28,6 +28,8 @@ The core (`domain/`, `scheduling/`, `review/`) is pure — it imports no adapter
 
 This is what makes the solver testable without Google credentials. Do not import `gspread` or `googleapiclient` from anywhere in the core.
 
+**Workspace support.** Every command accepts a `--workspace` flag. All data paths are namespaced under `data/workspaces/<workspace-name>/` — there is no shared, un-namespaced data directory. This isolates concurrent recruitment cycles (e.g. different divisions or intake rounds) from each other.
+
 ## Tech stack
 
 ```
@@ -55,6 +57,19 @@ mypy             type checking (strict on src/iff_scheduler/domain and schedulin
 **Beta will add a database for Vercel deployment.** When the web UI lands, the CSV/YAML store is replaced with **PostgreSQL via Supabase** (Vercel-native, free tier covers this scale). All adapter I/O already sits behind protocols — the swap is `CsvSource` → `PostgresSource`, not a rewrite. Design domain models and data contracts now with this in mind: no path strings, no file handles, no `pd.read_csv` leaking into the core.
 
 **No web framework in alpha.** CLI only. Beta target is **Next.js on Vercel** (frontend) + **FastAPI** (scheduler API). The core is pure Python with no I/O, so FastAPI wraps it as thin route handlers with no refactoring needed.
+
+**Beta will add a multi-workspace tab UI.** Each tab is an isolated workspace with its own Sheet, data dir, and solve history. Tab creation flow: name + Google Sheet URL + group assignment. Workspace metadata moves from `workspaces.json` to Postgres in beta. File storage moves to Supabase Storage, namespaced by `workspace_id`.
+
+## Repo structure
+
+```
+data/workspaces/
+├── workspaces.json        ← workspace metadata (alpha)
+└── <workspace-name>/
+    ├── interim/
+    ├── runs/
+    └── last_ingested_row.txt
+```
 
 ## Commands
 
@@ -94,6 +109,8 @@ Implement in this sequence. Each milestone should be independently testable befo
 | M6 | `notify/` — invites | Dry-run renders 120 correct emails; ledger prevents duplicates |
 | M7 | `results/` + result emails | Score ingestion → decision column → three templates → audited send |
 | M8 | `docs/RUNBOOK.md` | Someone who didn't build it can run the whole thing |
+| M9 | Workspace support (`--workspace` flag, `workspace create`/`list`/`set-sheet` commands, namespaced data paths) | |
+| M10 | Incremental Google Sheets ingest (`sheets_source.py`, watermark, `--force` flag) | |
 
 `scheduling/solver_greedy.py` (MRV + backtracking + local search) is a lower-priority fallback for environments without OR-Tools. Same `Solver` protocol as CP-SAT.
 
@@ -111,3 +128,4 @@ Implement in this sequence. Each milestone should be independently testable befo
 - **An applicant with both interviews in the same division.** Valid — they picked two roles under one parent (e.g. Creative + WebMaster). C8 tries to give them different panels.
 - **The Capacity Advisor refusing to proceed.** Working as designed. 240 interviews ÷ 24 slots means ~12 panels are needed; if fewer are configured, stopping early is better than producing a schedule full of red clashes.
 - **Red clashes in the output.** Sometimes unavoidable when an applicant ticks very few availability blocks. The solver minimises them; it cannot eliminate them.
+- **`data/workspaces/` has no content on a fresh clone.** Correct — it's created on first `iffsched workspace create`.
