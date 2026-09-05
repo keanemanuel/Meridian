@@ -893,8 +893,8 @@ def notify_invite(
     send: bool = typer.Option(
         False, "--send", help="Actually send. Requires typed confirmation (FR-64)."
     ),
-    service_account_file: Path = typer.Option(
-        None, "--service-account", help="Overrides GOOGLE_SERVICE_ACCOUNT_FILE from .env"
+    oauth_credentials_file: Path = typer.Option(
+        None, "--oauth-credentials", help="Overrides GMAIL_OAUTH_CREDENTIALS from .env"
     ),
     workspace: str = WORKSPACE_OPTION,
 ) -> None:
@@ -998,7 +998,7 @@ def notify_invite(
     console.print(f"{already_sent_count} already sent, {len(pending)} pending.")
     _confirm_recipient_count(len(pending))
 
-    mailer = _build_gmail_mailer(settings, service_account_file)
+    mailer = _build_gmail_mailer(settings, oauth_credentials_file)
 
     rendered_by_applicant = {email.applicant_id: email for email in rendered_auto}
     ledger = _send_batch(
@@ -1027,19 +1027,23 @@ def _confirm_recipient_count(expected_count: int) -> None:
         raise typer.Exit(code=1)
 
 
-def _build_gmail_mailer(settings: Settings, service_account_file: Path | None) -> GmailMailer:
+def _build_gmail_mailer(settings: Settings, oauth_credentials_file: Path | None) -> GmailMailer:
     load_dotenv()
-    sa_file = (
-        str(service_account_file)
-        if service_account_file is not None
-        else os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    oauth_file = (
+        str(oauth_credentials_file)
+        if oauth_credentials_file is not None
+        else os.environ.get("GMAIL_OAUTH_CREDENTIALS")
     )
+    token_cache_file = os.environ.get("GMAIL_TOKEN_CACHE")
     sender_email = settings.notify.sender_email or os.environ.get("GMAIL_SENDER_EMAIL", "")
-    if not sa_file:
+    if not oauth_file:
         console.print(
-            "[red]No service account file: pass --service-account or set "
-            "GOOGLE_SERVICE_ACCOUNT_FILE in .env.[/red]"
+            "[red]No OAuth2 client credentials: pass --oauth-credentials or set "
+            "GMAIL_OAUTH_CREDENTIALS in .env.[/red]"
         )
+        raise typer.Exit(code=1)
+    if not token_cache_file:
+        console.print("[red]No token cache path: set GMAIL_TOKEN_CACHE in .env.[/red]")
         raise typer.Exit(code=1)
     if not sender_email:
         console.print(
@@ -1049,7 +1053,8 @@ def _build_gmail_mailer(settings: Settings, service_account_file: Path | None) -
         raise typer.Exit(code=1)
 
     return GmailMailer(
-        service_account_file=sa_file,
+        oauth_credentials_file=oauth_file,
+        token_cache_file=token_cache_file,
         sender_email=sender_email,
         sender_name=settings.notify.sender_name,
     )
@@ -1239,8 +1244,8 @@ def notify_result(
         help="Name of the second person who independently checked accepted_list.csv and "
         "rejected_list.csv against the committee's records (required for --send, SPEC.md §10.4).",
     ),
-    service_account_file: Path = typer.Option(
-        None, "--service-account", help="Overrides GOOGLE_SERVICE_ACCOUNT_FILE from .env"
+    oauth_credentials_file: Path = typer.Option(
+        None, "--oauth-credentials", help="Overrides GMAIL_OAUTH_CREDENTIALS from .env"
     ),
     workspace: str = WORKSPACE_OPTION,
 ) -> None:
@@ -1405,7 +1410,7 @@ def notify_result(
     )
     console.print(f"Recorded verification by {verified_by.strip()!r} for this batch.")
 
-    mailer = _build_gmail_mailer(settings, service_account_file)
+    mailer = _build_gmail_mailer(settings, oauth_credentials_file)
     rendered_by_applicant = {email.applicant_id: email for email in rendered}
     _send_batch(
         mailer=mailer,

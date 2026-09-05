@@ -1,11 +1,12 @@
 """Gmail API mailer (SPEC.md §10.1, "our chosen architecture").
 
-Sends one message per call via a domain-wide-delegated service account
-(`credentials/service_account.json`, `GOOGLE_SERVICE_ACCOUNT_FILE`). This is
-the only place in `notify/` that touches Google credentials or the network —
-the rest of the pipeline (renderer, ledger, audit) never imports this module
-directly, only the `Mailer` protocol it implements (CLAUDE.md, "Architecture
-rule").
+Sends one message per call under OAuth2 (installed-app flow), authorised
+against the operator's own Gmail account rather than a service account —
+so invite and result emails come from a real, recognisable Gmail address.
+This is the only place in `notify/` that touches Google credentials or the
+network — the rest of the pipeline (renderer, ledger, audit) never imports
+this module directly, only the `Mailer` protocol it implements (CLAUDE.md,
+"Architecture rule").
 """
 
 from __future__ import annotations
@@ -13,8 +14,11 @@ from __future__ import annotations
 import base64
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from pathlib import Path
 
-from google.oauth2 import service_account
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -24,21 +28,24 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 
 
 class GmailMailer:
-    """Sends via the Gmail API, one recipient per call (FR-61)."""
+    """Sends via the Gmail API under OAuth2, one recipient per call (FR-61).
+
+    On first use, `authorise()` opens a browser for a one-time Gmail
+    consent screen and caches the resulting token at `token_cache_file`.
+    Every subsequent run reuses that cached token silently; an expired
+    token is refreshed automatically without reopening the browser.
+    """
 
     def __init__(
         self,
-        service_account_file: str,
+        oauth_credentials_file: str,
+        token_cache_file: str,
         sender_email: str,
         sender_name: str = "",
     ) -> None:
         self._sender_email = sender_email
         self._sender_name = sender_name
-        # google-auth ships no type annotations on this constructor (no py.typed
-        # marker) — the only untyped call in this adapter boundary.
-        credentials = service_account.Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
-            service_account_file, scopes=SCOPES
-        ).with_subject(sender_email)
+        credentials = authorise(oauth_credentials_file, token_cache_file)
         self._service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
 
     def send(self, message: EmailMessage) -> str:
@@ -61,3 +68,30 @@ class GmailMailer:
         except HttpError as exc:
             raise SendError(f"Gmail API send to {message.to_email} failed: {exc}") from exc
         return str(sent["id"])
+
+
+def authorise(oauth_credentials_file: str, token_cache_file: str) -> Credentials:
+    """Return a valid OAuth2 credential, reusing or refreshing the cached
+    token at `token_cache_file` where possible and only falling back to the
+    interactive browser consent flow when there is no usable token.
+
+    Split out from `GmailMailer.__init__` so tests can exercise the
+    cache/refresh/first-run branches without a real browser or network call.
+    """
+    token_path = Path(token_cache_file)
+    credentials: Credentials | None = None
+    if token_path.exists():
+        credentials = Credentials.from_authorized_user_file(str(token_path), SCOPES)  # type: ignore[no-untyped-call]
+
+    if credentials and credentials.valid:
+        return credentials
+
+    if credentials and credentials.expired and credentials.refresh_token:
+        credentials.refresh(Request())  # type: ignore[no-untyped-call]
+    else:
+        flow = InstalledAppFlow.from_client_secrets_file(oauth_credentials_file, SCOPES)
+        credentials = flow.run_local_server(port=0)
+
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    token_path.write_text(credentials.to_json())
+    return credentials

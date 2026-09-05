@@ -1,6 +1,7 @@
 # Secrets and PII — never committed
 .env
 credentials/
+credentials/gmail_token.json
 data/
 runs/
 

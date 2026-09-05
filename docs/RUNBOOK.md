@@ -27,9 +27,10 @@ You only do this once, when the tool is first installed on a machine.
    pip install -e .
    ```
 3. Copy `.env.example` to `.env` and fill in the values someone on the
-   tech team gives you (a Google service account file path, and either a
-   Gmail sender address or a transactional email provider key). **Never**
-   share this file or commit it to git — it stays on your machine.
+   tech team gives you (a Google service account file path for reading the
+   applicant Sheet, and either the Gmail OAuth2 setup below or a
+   transactional email provider key). **Never** share this file or commit
+   it to git — it stays on your machine.
 4. Open every file in `config/` and check the placeholder values (empty
    strings `""`) have been filled in for your event: dates, rooms, panels,
    sender name, contact person, RSVP deadline, and — new for results —
@@ -38,9 +39,48 @@ You only do this once, when the tool is first installed on a machine.
    refuses to run at all if any of the three `next_steps_*` fields are
    blank** — this is deliberate, so nobody accidentally sends a rejection
    with no real next step.
+5. If you're sending via Gmail, do the **one-time OAuth2 setup** below.
+   Skip it if you're using a transactional provider instead.
 
 You're set up. Steps 1 onward are what you run for every event, and step 7
 (results) again after interviews are scored.
+
+### One-time OAuth2 setup for Gmail sending
+
+Invite and result emails send from *your own* Gmail account via OAuth2 —
+there is no shared service account for sending, so each sender authorises
+themselves once.
+
+1. Ask the tech team for the project's OAuth2 **client credentials** file
+   (created in Google Cloud Console as an "OAuth client ID" of type
+   "Desktop app", with the Gmail API enabled and the
+   `gmail.send` scope requested). Save it locally, e.g. at
+   `credentials/gmail_oauth.json`.
+2. In `.env`, set:
+   ```
+   GMAIL_OAUTH_CREDENTIALS=credentials/gmail_oauth.json
+   GMAIL_TOKEN_CACHE=credentials/gmail_token.json
+   GMAIL_SENDER_EMAIL=you@yourorganisation.org
+   ```
+   `GMAIL_SENDER_EMAIL` must be the Gmail address you're about to
+   authorise in the next step — it's what recipients see in the "From"
+   line.
+3. The **first** time you run `notify invite --send` or
+   `notify result --send`, a browser tab opens automatically asking you to
+   sign in to that Gmail account and grant "Send email on your behalf".
+   Approve it. The tool caches the resulting token at
+   `GMAIL_TOKEN_CACHE` (`credentials/gmail_token.json` by default) and
+   never shows the browser prompt again on that machine, unless that file
+   is deleted or Google revokes the grant.
+4. **Never** commit `credentials/gmail_oauth.json` or
+   `credentials/gmail_token.json` — both are already covered by
+   `.gitignore`. Anyone with the token file can send email as you until
+   you revoke it at
+   [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
+
+If you ever need to re-authorise as a different Gmail account (e.g. handing
+the role to someone else), delete `credentials/gmail_token.json` and the
+next send will prompt for consent again.
 
 ---
 
