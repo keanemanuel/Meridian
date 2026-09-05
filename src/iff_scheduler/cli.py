@@ -6,6 +6,7 @@ import json
 import shutil
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import typer
@@ -26,6 +27,14 @@ from iff_scheduler.export.room_view import build_room_views
 from iff_scheduler.export.xlsx_writer import write_xlsx
 from iff_scheduler.ingest.csv_source import CsvApplicantSource
 from iff_scheduler.ingest.validate import run_ingest, write_outputs
+from iff_scheduler.review.edit_validator import validate_edits
+from iff_scheduler.review.locks import (
+    LOCK_COLUMNS,
+    lock_from_assignment,
+    lock_to_row,
+    merge_locks,
+    parse_lock_rows,
+)
 from iff_scheduler.scheduling.base import (
     USABLE_STATUSES,
     Lock,
@@ -216,27 +225,17 @@ def _load_locks(path: Path) -> list[Lock]:
     columns that identify a pin, so `runs/<ts>/assignments.csv` can be fed
     straight back in via `iffsched lock`."""
     df = pd.read_csv(path, dtype=str, keep_default_na=False, na_filter=False)
-    required = {"applicant_id", "choice_index", "panel_id", "slot_id"}
-    missing = required - set(df.columns)
-    if missing:
-        raise ValueError(f"{path}: locks file is missing column(s) {sorted(missing)}")
-    locks: list[Lock] = []
-    for row in df.to_dict(orient="records"):
-        choice_index = int(row["choice_index"])
-        if choice_index not in (1, 2):
-            raise ValueError(
-                f"{path}: choice_index must be 1 or 2, got {row['choice_index']!r} "
-                f"for applicant {row['applicant_id']!r}"
-            )
-        locks.append(
-            Lock(
-                applicant_id=row["applicant_id"],
-                choice_index=1 if choice_index == 1 else 2,
-                panel_id=row["panel_id"],
-                slot_id=row["slot_id"],
-            )
-        )
-    return locks
+    rows = cast("list[dict[str, str]]", df.to_dict(orient="records"))
+    try:
+        return parse_lock_rows(rows)
+    except ValueError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+
+
+def _write_locks(locks: list[Lock], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [lock_to_row(lock) for lock in locks]
+    pd.DataFrame(rows, columns=LOCK_COLUMNS).to_csv(path, index=False)
 
 
 def _assignments_frame(assignments: list[Assignment]) -> pd.DataFrame:
@@ -541,6 +540,93 @@ def publish(
             f"[bold red]{red} clash(es) are marked red in schedule.xlsx (FR-54).[/bold red]"
         )
     console.print(f"Wrote {publish_dir}")
+
+
+# ---------------------------------------------------------------------- lock
+
+
+@app.command()
+def lock(
+    from_path: Path = typer.Option(
+        None,
+        "--from",
+        help="Assignments CSV to pin (e.g. a recruiter-edited runs/latest/assignments.csv). "
+        "Validated as a whole before anything is locked (FR-42).",
+    ),
+    applicant_id: str = typer.Option(
+        None, "--applicant", help="Only lock this applicant's rows from --from."
+    ),
+    locks_path: Path = typer.Option(
+        Path("data/locks/pinned_assignments.csv"),
+        "--locks",
+        help="Where pinned assignments are stored.",
+    ),
+    config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
+    clear: bool = typer.Option(False, "--clear", help="Delete every lock. Requires confirmation."),
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt for --clear."),
+) -> None:
+    """Pin manual edits as hard constraints for the next solve (FR-40..FR-42, SPEC.md §11).
+
+    `edit_validator` checks the *entire* incoming file first — a double-booked
+    applicant, a busy panel, a room over capacity or a slot outside the grid
+    (E-12) — and rejects it with specific messages rather than locking a
+    schedule that was never legal. Locks are cumulative: re-locking a choice
+    that was already pinned replaces its old pin (SPEC.md §11)."""
+    if clear:
+        if from_path is not None:
+            console.print("[red]--clear cannot be combined with --from.[/red]")
+            raise typer.Exit(code=1)
+        if not locks_path.exists():
+            console.print(f"No locks file at {locks_path}; nothing to clear.")
+            return
+        existing = _load_locks(locks_path)
+        if not yes and not typer.confirm(
+            f"Clear all {len(existing)} lock(s) in {locks_path}? This cannot be undone."
+        ):
+            console.print("Aborted.")
+            raise typer.Exit(code=1)
+        locks_path.unlink()
+        console.print(f"Cleared {len(existing)} lock(s) from {locks_path}.")
+        return
+
+    if from_path is None:
+        console.print("[red]--from is required (or pass --clear).[/red]")
+        raise typer.Exit(code=1)
+    if not from_path.exists():
+        console.print(f"[red]Assignments file not found: {from_path}[/red]")
+        raise typer.Exit(code=1)
+
+    settings = load_settings(config_dir)
+    grid = build_slot_grid(settings.event)
+    panels = resolve_panels(settings.panels, grid)
+    rooms = resolve_rooms(settings.rooms)
+    assignments = _load_assignments(from_path)
+
+    violations = validate_edits(assignments, panels, rooms, grid.slots)
+    if violations:
+        console.print(
+            f"[bold red]{len(violations)} illegal edit(s) in {from_path} — nothing was "
+            "locked (FR-42, E-12):[/bold red]"
+        )
+        for violation in violations:
+            who = f"{violation.applicant_id}: " if violation.applicant_id else ""
+            console.print(f"  [red]{violation.code}[/red] {who}{violation.message}")
+        raise typer.Exit(code=1)
+
+    to_lock = assignments
+    if applicant_id is not None:
+        to_lock = [a for a in assignments if a.applicant_id == applicant_id]
+        if not to_lock:
+            console.print(f"[red]No rows for applicant '{applicant_id}' in {from_path}.[/red]")
+            raise typer.Exit(code=1)
+
+    incoming = [lock_from_assignment(a) for a in to_lock]
+    existing = _load_locks(locks_path) if locks_path.exists() else []
+    merged = merge_locks(existing, incoming)
+    _write_locks(merged, locks_path)
+
+    console.print(f"Locked {len(incoming)} assignment(s) from {from_path}.")
+    console.print(f"{locks_path} now holds {len(merged)} pinned assignment(s) in total.")
 
 
 if __name__ == "__main__":
