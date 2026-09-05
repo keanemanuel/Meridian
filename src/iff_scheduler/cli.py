@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
+from iff_scheduler import workspace as ws
 from iff_scheduler.domain.enums import Decision, DivisionCode, SendStatus, Severity
 from iff_scheduler.domain.grid import build_slot_grid
 from iff_scheduler.domain.models import Applicant, Assignment, Conflict, SendLedgerEntry
@@ -29,7 +30,13 @@ from iff_scheduler.export.panel_view import build_panel_views
 from iff_scheduler.export.room_view import build_room_views
 from iff_scheduler.export.xlsx_writer import write_xlsx
 from iff_scheduler.ingest.csv_source import CsvApplicantSource
-from iff_scheduler.ingest.validate import run_ingest, write_outputs
+from iff_scheduler.ingest.sheets_source import (
+    SheetsApplicantSource,
+    open_worksheet,
+    run_incremental_sheets_ingest,
+    write_watermark,
+)
+from iff_scheduler.ingest.validate import IngestResult, append_outputs, run_ingest, write_outputs
 from iff_scheduler.notify.audit import (
     audit_invite_recipients,
     audit_result_recipients,
@@ -85,11 +92,18 @@ from iff_scheduler.scheduling.postprocess import (
 )
 from iff_scheduler.scheduling.solver_cpsat import CpSatSolver
 from iff_scheduler.settings import DEFAULT_CONFIG_DIR, Settings, load_settings
+from iff_scheduler.workspace import DEFAULT_WORKSPACE, find_workspace, load_workspaces
+from iff_scheduler.workspace import create_workspace as _create_workspace
+from iff_scheduler.workspace import set_workspace_sheet as _set_workspace_sheet
 
 app = typer.Typer(add_completion=False, help="IFF recruitment interview scheduler.")
 notify_app = typer.Typer(add_completion=False, help="Email notifications (SPEC.md §10).")
+workspace_app = typer.Typer(add_completion=False, help="Workspace management (SPEC.md §11).")
 app.add_typer(notify_app, name="notify")
+app.add_typer(workspace_app, name="workspace")
 console = Console()
+
+WORKSPACE_OPTION = typer.Option(DEFAULT_WORKSPACE, "--workspace", help="Isolated data namespace.")
 
 INVITE_TEMPLATE = "invite"
 
@@ -99,39 +113,54 @@ def _main() -> None:
     """IFF recruitment interview scheduler (SPEC.md §7.1)."""
 
 
-@app.command()
-def ingest(
-    source: str = typer.Option("csv", "--source", help="Applicant data source: csv|sheets"),
-    input_path: Path = typer.Option(
-        None, "--input", help="Raw CSV export (required for --source csv)"
-    ),
-    config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
-    out_dir: Path = typer.Option(Path("data/interim"), "--out-dir"),
+@workspace_app.command("create")
+def workspace_create(
+    name: str = typer.Option(..., "--name", help="Unique workspace name, e.g. 'IFF 2026'."),
+    group: str = typer.Option(..., "--group", help="Group the workspace belongs to."),
 ) -> None:
-    """Ingest applicant data, normalise it, and write a validation report (FR-01..FR-07)."""
-    if source != "csv":
-        console.print(f"[red]Source '{source}' is not implemented yet. Use --source csv.[/red]")
-        raise typer.Exit(code=1)
-    if input_path is None:
-        console.print("[red]--input is required when --source csv[/red]")
-        raise typer.Exit(code=1)
-    if not input_path.exists():
-        console.print(f"[red]Input file not found: {input_path}[/red]")
-        raise typer.Exit(code=1)
+    """Register a new workspace and lay down its data directory (SPEC.md §11.3)."""
+    try:
+        meta = _create_workspace(name, group)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"Created workspace '{meta.name}' in group '{meta.group}'.")
+    console.print(f"Wrote {ws.workspace_root(meta.name)}")
 
-    settings = load_settings(config_dir)
-    grid = build_slot_grid(settings.event)
-    result = run_ingest(
-        source=CsvApplicantSource(path=input_path),
-        event=settings.event,
-        divisions=settings.divisions,
-        grid=grid,
-    )
 
-    clean_path = out_dir / "applicants.clean.csv"
-    report_path = out_dir / "validation_report.csv"
-    write_outputs(result, clean_path=clean_path, report_path=report_path)
+@workspace_app.command("list")
+def workspace_list() -> None:
+    """Show every registered workspace and its group (SPEC.md §11.3)."""
+    workspaces = load_workspaces()
+    if not workspaces:
+        console.print("No workspaces yet. Run `iffsched workspace create` first.")
+        return
 
+    table = Table(title="Workspaces")
+    table.add_column("Name")
+    table.add_column("Group")
+    table.add_column("Sheet ID")
+    table.add_column("Created")
+    for meta in sorted(workspaces, key=lambda w: (w.group, w.name)):
+        table.add_row(meta.name, meta.group, meta.sheet_id or "—", meta.created_at.isoformat())
+    console.print(table)
+
+
+@workspace_app.command("set-sheet")
+def workspace_set_sheet(
+    workspace: str = typer.Option(..., "--workspace", help="Workspace to update."),
+    url: str = typer.Option(..., "--url", help="Google Sheet URL or bare Sheet ID."),
+) -> None:
+    """Attach a Google Sheet to a workspace as its applicant data source (SPEC.md §11.3)."""
+    try:
+        meta = _set_workspace_sheet(workspace, url)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"Sheet for '{meta.name}' set to {meta.sheet_id}.")
+
+
+def _print_ingest_summary(result: IngestResult, clean_path: Path, report_path: Path) -> None:
     rejected = sum(1 for row in result.report if row.outcome == "REJECTED")
     collapsed = sum(1 for row in result.report if row.outcome == "COLLAPSED")
     warnings = sum(1 for row in result.report if row.outcome == "WARNING")
@@ -146,6 +175,121 @@ def ingest(
     console.print(table)
     console.print(f"Wrote {clean_path}")
     console.print(f"Wrote {report_path}")
+
+
+@app.command()
+def ingest(
+    source: str = typer.Option("csv", "--source", help="Applicant data source: csv|sheets"),
+    input_path: Path = typer.Option(
+        None, "--input", help="Raw CSV export (required for --source csv)"
+    ),
+    config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
+    out_dir: Path = typer.Option(
+        None, "--out-dir", help="Default: data/workspaces/<workspace>/interim"
+    ),
+    workspace: str = WORKSPACE_OPTION,
+    service_account_file: Path = typer.Option(
+        None,
+        "--service-account",
+        help="Overrides GOOGLE_SERVICE_ACCOUNT_FILE from .env (--source sheets)",
+    ),
+    worksheet: str = typer.Option(
+        None, "--worksheet", help="Worksheet/tab name (--source sheets; default: first sheet)"
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Re-process the whole Sheet from scratch, ignoring the watermark (--source sheets)",
+    ),
+) -> None:
+    """Ingest applicant data, normalise it, and write a validation report (FR-01..FR-07).
+
+    `--source csv` is a one-shot full read of a manual export. `--source
+    sheets` reads the workspace's linked Google Sheet incrementally: only
+    rows after the watermark in `last_ingested_row.txt` are processed and the
+    result is appended to the existing applicants.clean.csv (FR-07, M10).
+    `--force` discards the watermark and re-ingests the entire Sheet,
+    overwriting the outputs instead of appending.
+    """
+    resolved_out_dir = out_dir if out_dir is not None else ws.interim_dir(workspace)
+    clean_path = resolved_out_dir / "applicants.clean.csv"
+    report_path = resolved_out_dir / "validation_report.csv"
+
+    settings = load_settings(config_dir)
+    grid = build_slot_grid(settings.event)
+
+    if source == "csv":
+        if input_path is None:
+            console.print("[red]--input is required when --source csv[/red]")
+            raise typer.Exit(code=1)
+        if not input_path.exists():
+            console.print(f"[red]Input file not found: {input_path}[/red]")
+            raise typer.Exit(code=1)
+
+        result = run_ingest(
+            source=CsvApplicantSource(path=input_path),
+            event=settings.event,
+            divisions=settings.divisions,
+            grid=grid,
+        )
+        write_outputs(result, clean_path=clean_path, report_path=report_path)
+        _print_ingest_summary(result, clean_path, report_path)
+        return
+
+    if source != "sheets":
+        console.print(f"[red]Source '{source}' is not implemented. Use --source csv|sheets.[/red]")
+        raise typer.Exit(code=1)
+
+    meta = find_workspace(workspace, load_workspaces())
+    if meta is None or meta.sheet_id is None:
+        console.print(
+            f"[red]Workspace '{workspace}' has no Sheet attached. Run "
+            "`iffsched workspace set-sheet --workspace ... --url ...` first.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    load_dotenv()
+    sa_file = (
+        str(service_account_file)
+        if service_account_file is not None
+        else os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    )
+    if not sa_file:
+        console.print(
+            "[red]No service account file. Pass --service-account or set "
+            "GOOGLE_SERVICE_ACCOUNT_FILE in .env.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    worksheet_handle = open_worksheet(sa_file, meta.sheet_id, worksheet)
+    sheets_source = SheetsApplicantSource(worksheet=worksheet_handle)
+    watermark_path = ws.last_ingested_row_path(workspace)
+
+    incremental = run_incremental_sheets_ingest(
+        source=sheets_source,
+        event=settings.event,
+        divisions=settings.divisions,
+        grid=grid,
+        clean_path=clean_path,
+        watermark_path=watermark_path,
+        force=force,
+    )
+
+    if incremental.new_row_count == 0:
+        console.print("No new rows since the last ingest. Nothing to do.")
+        return
+
+    if force:
+        write_outputs(incremental.result, clean_path=clean_path, report_path=report_path)
+    else:
+        append_outputs(incremental.result, clean_path=clean_path, report_path=report_path)
+    write_watermark(watermark_path, incremental.watermark_after)
+
+    _print_ingest_summary(incremental.result, clean_path, report_path)
+    console.print(
+        f"Watermark {incremental.watermark_before} -> {incremental.watermark_after} "
+        f"({incremental.new_row_count} new row(s) read)."
+    )
 
 
 def _load_clean_applicants(path: Path) -> list[Applicant]:
@@ -178,25 +322,30 @@ VERDICT_STYLE = {"OK": "green", "TIGHT": "yellow", "INFEASIBLE": "bold red"}
 @app.command()
 def check(
     input_path: Path = typer.Option(
-        Path("data/interim/applicants.clean.csv"),
+        None,
         "--input",
-        help="applicants.clean.csv produced by `iffsched ingest`",
+        help="applicants.clean.csv produced by `iffsched ingest` "
+        "(default: data/workspaces/<workspace>/interim/applicants.clean.csv)",
     ),
     config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
+    workspace: str = WORKSPACE_OPTION,
 ) -> None:
     """Capacity Advisor — demand vs. panel-slot supply per division (SPEC.md §5.5).
 
     Hard-stops with exit code 1 if any division is INFEASIBLE, so a bad
     panel/room configuration is caught before the solver runs (E-06)."""
-    if not input_path.exists():
+    resolved_input_path = (
+        input_path if input_path is not None else ws.applicants_clean_path(workspace)
+    )
+    if not resolved_input_path.exists():
         console.print(
-            f"[red]Input file not found: {input_path}. Run `iffsched ingest` first.[/red]"
+            f"[red]Input file not found: {resolved_input_path}. Run `iffsched ingest` first.[/red]"
         )
         raise typer.Exit(code=1)
 
     settings = load_settings(config_dir)
     grid = build_slot_grid(settings.event)
-    applicants = _load_clean_applicants(input_path)
+    applicants = _load_clean_applicants(resolved_input_path)
 
     rows = compute_capacity_advisor(
         applicants=applicants,
@@ -340,21 +489,26 @@ def _build_problem(
 @app.command()
 def solve(
     input_path: Path = typer.Option(
-        Path("data/interim/applicants.clean.csv"),
+        None,
         "--input",
-        help="applicants.clean.csv produced by `iffsched ingest`",
+        help="applicants.clean.csv produced by `iffsched ingest` "
+        "(default: data/workspaces/<workspace>/interim/applicants.clean.csv)",
     ),
     solver: str = typer.Option("cpsat", "--solver", help="Solver to use: cpsat|greedy"),
     locks_path: Path = typer.Option(
-        Path("data/locks/pinned_assignments.csv"),
+        None,
         "--locks",
-        help="Pinned assignments the solver must honour (C6). Ignored if absent.",
+        help="Pinned assignments the solver must honour (C6). Ignored if absent. "
+        "(default: data/workspaces/<workspace>/locks/pinned_assignments.csv)",
     ),
-    runs_dir: Path = typer.Option(Path("runs"), "--runs-dir"),
+    runs_dir: Path = typer.Option(
+        None, "--runs-dir", help="Default: data/workspaces/<workspace>/runs"
+    ),
     config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
     skip_check: bool = typer.Option(
         False, "--skip-check", help="Solve even if the Capacity Advisor says INFEASIBLE (E-06)."
     ),
+    workspace: str = WORKSPACE_OPTION,
 ) -> None:
     """Solve the timetable and write an immutable run directory (FR-30..FR-39)."""
     if solver == "greedy":
@@ -366,15 +520,22 @@ def solve(
     if solver != "cpsat":
         console.print(f"[red]Unknown solver '{solver}'. Use cpsat.[/red]")
         raise typer.Exit(code=1)
-    if not input_path.exists():
+
+    resolved_input_path = (
+        input_path if input_path is not None else ws.applicants_clean_path(workspace)
+    )
+    resolved_locks_path = locks_path if locks_path is not None else ws.locks_path(workspace)
+    resolved_runs_dir = runs_dir if runs_dir is not None else ws.runs_dir(workspace)
+
+    if not resolved_input_path.exists():
         console.print(
-            f"[red]Input file not found: {input_path}. Run `iffsched ingest` first.[/red]"
+            f"[red]Input file not found: {resolved_input_path}. Run `iffsched ingest` first.[/red]"
         )
         raise typer.Exit(code=1)
 
     settings = load_settings(config_dir)
     grid = build_slot_grid(settings.event)
-    applicants = _load_clean_applicants(input_path)
+    applicants = _load_clean_applicants(resolved_input_path)
 
     if not skip_check:
         rows = compute_capacity_advisor(
@@ -393,9 +554,11 @@ def solve(
             raise typer.Exit(code=1)
 
     locks: list[Lock] = []
-    if locks_path.exists():
-        locks = _load_locks(locks_path)
-        console.print(f"Honouring {len(locks)} locked assignment(s) from {locks_path} (C6).")
+    if resolved_locks_path.exists():
+        locks = _load_locks(resolved_locks_path)
+        console.print(
+            f"Honouring {len(locks)} locked assignment(s) from {resolved_locks_path} (C6)."
+        )
 
     problem = _build_problem(settings, applicants, locks)
 
@@ -416,9 +579,9 @@ def solve(
         )
         raise typer.Exit(code=1)
 
-    run_dir = runs_dir / run_id
+    run_dir = resolved_runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    previous_dir = _previous_run(runs_dir, run_dir)
+    previous_dir = _previous_run(resolved_runs_dir, run_dir)
 
     conflicts = build_conflicts(result.assignments, problem.applicants, problem.panels)
     metrics = compute_metrics(result, problem) | {"run_id": run_id}
@@ -436,7 +599,7 @@ def solve(
         pd.DataFrame([c.__dict__ for c in changes]).to_csv(run_dir / "diff.csv", index=False)
         console.print(f"{len(changes)} assignment(s) changed vs {previous_dir.name} (diff.csv).")
 
-    _point_latest_at(runs_dir, run_dir)
+    _point_latest_at(resolved_runs_dir, run_dir)
 
     table = Table(title=f"Solve {run_id}")
     table.add_column("Metric")
@@ -492,25 +655,36 @@ def _load_assignments(path: Path) -> list[Assignment]:
 def publish(
     run: str = typer.Option("latest", "--run", help="Run id under runs/, or 'latest'"),
     input_path: Path = typer.Option(
-        Path("data/interim/applicants.clean.csv"),
+        None,
         "--input",
-        help="applicants.clean.csv produced by `iffsched ingest`",
+        help="applicants.clean.csv produced by `iffsched ingest` "
+        "(default: data/workspaces/<workspace>/interim/applicants.clean.csv)",
     ),
-    runs_dir: Path = typer.Option(Path("runs"), "--runs-dir"),
+    runs_dir: Path = typer.Option(
+        None, "--runs-dir", help="Default: data/workspaces/<workspace>/runs"
+    ),
     config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
     out_dir: Path = typer.Option(
-        None, "--out-dir", help="Output directory (default: data/output/<run_id>)"
+        None,
+        "--out-dir",
+        help="Output directory (default: data/workspaces/<workspace>/output/<run_id>)",
     ),
     formats: str = typer.Option(
         "xlsx,html", "--formats", help="Comma-separated output formats: xlsx, html"
     ),
+    workspace: str = WORKSPACE_OPTION,
 ) -> None:
     """Publish room, applicant and panel views from a solved run (FR-50..FR-54).
 
     Conflicts (clashes + capacity warnings) are recomputed from the current
     assignments and applicants and written to `conflicts.csv` alongside the
     views, so publish always reflects what is actually on the grid."""
-    run_dir = runs_dir / run
+    resolved_input_path = (
+        input_path if input_path is not None else ws.applicants_clean_path(workspace)
+    )
+    resolved_runs_dir = runs_dir if runs_dir is not None else ws.runs_dir(workspace)
+
+    run_dir = resolved_runs_dir / run
     if not run_dir.exists():
         console.print(f"[red]Run not found: {run_dir}. Run `iffsched solve` first.[/red]")
         raise typer.Exit(code=1)
@@ -518,9 +692,9 @@ def publish(
     if not assignments_path.exists():
         console.print(f"[red]{assignments_path} not found — is this a completed run?[/red]")
         raise typer.Exit(code=1)
-    if not input_path.exists():
+    if not resolved_input_path.exists():
         console.print(
-            f"[red]Input file not found: {input_path}. Run `iffsched ingest` first.[/red]"
+            f"[red]Input file not found: {resolved_input_path}. Run `iffsched ingest` first.[/red]"
         )
         raise typer.Exit(code=1)
 
@@ -534,13 +708,13 @@ def publish(
 
     settings = load_settings(config_dir)
     grid = build_slot_grid(settings.event)
-    applicants = _load_clean_applicants(input_path)
+    applicants = _load_clean_applicants(resolved_input_path)
     panels = resolve_panels(settings.panels, grid)
     rooms = resolve_rooms(settings.rooms)
     assignments = _load_assignments(assignments_path)
 
     resolved_run_id = run_dir.resolve().name
-    publish_dir = out_dir if out_dir is not None else Path("data/output") / resolved_run_id
+    publish_dir = out_dir if out_dir is not None else ws.output_dir(workspace) / resolved_run_id
     publish_dir.mkdir(parents=True, exist_ok=True)
 
     conflicts = build_conflicts(assignments, applicants, panels)
@@ -595,13 +769,15 @@ def lock(
         None, "--applicant", help="Only lock this applicant's rows from --from."
     ),
     locks_path: Path = typer.Option(
-        Path("data/locks/pinned_assignments.csv"),
+        None,
         "--locks",
-        help="Where pinned assignments are stored.",
+        help="Where pinned assignments are stored "
+        "(default: data/workspaces/<workspace>/locks/pinned_assignments.csv)",
     ),
     config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
     clear: bool = typer.Option(False, "--clear", help="Delete every lock. Requires confirmation."),
     yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt for --clear."),
+    workspace: str = WORKSPACE_OPTION,
 ) -> None:
     """Pin manual edits as hard constraints for the next solve (FR-40..FR-42, SPEC.md §11).
 
@@ -610,6 +786,7 @@ def lock(
     (E-12) — and rejects it with specific messages rather than locking a
     schedule that was never legal. Locks are cumulative: re-locking a choice
     that was already pinned replaces its old pin (SPEC.md §11)."""
+    locks_path = locks_path if locks_path is not None else ws.locks_path(workspace)
     if clear:
         if from_path is not None:
             console.print("[red]--clear cannot be combined with --from.[/red]")
@@ -693,17 +870,22 @@ def _write_ledger(entries: list[SendLedgerEntry], path: Path) -> None:
 def notify_invite(
     run: str = typer.Option("latest", "--run", help="Run id under runs/, or 'latest'"),
     input_path: Path = typer.Option(
-        Path("data/interim/applicants.clean.csv"),
+        None,
         "--input",
-        help="applicants.clean.csv produced by `iffsched ingest`",
+        help="applicants.clean.csv produced by `iffsched ingest` "
+        "(default: data/workspaces/<workspace>/interim/applicants.clean.csv)",
     ),
-    runs_dir: Path = typer.Option(Path("runs"), "--runs-dir"),
+    runs_dir: Path = typer.Option(
+        None, "--runs-dir", help="Default: data/workspaces/<workspace>/runs"
+    ),
     config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
     out_dir: Path = typer.Option(
         None, "--out-dir", help="Where rendered emails are written (default: <run>/emails)"
     ),
     ledger_path: Path = typer.Option(
-        Path("data/ledger/send_ledger.csv"), "--ledger", help="Send ledger (FR-62)."
+        None,
+        "--ledger",
+        help="Send ledger (FR-62). Default: data/workspaces/<workspace>/ledger/send_ledger.csv",
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Render every email to disk. Sends nothing (FR-63)."
@@ -714,6 +896,7 @@ def notify_invite(
     service_account_file: Path = typer.Option(
         None, "--service-account", help="Overrides GOOGLE_SERVICE_ACCOUNT_FILE from .env"
     ),
+    workspace: str = WORKSPACE_OPTION,
 ) -> None:
     """Send invite emails for a solved run (FR-60..FR-64, SPEC.md §10.2, §10.3).
 
@@ -727,6 +910,10 @@ def notify_invite(
     if dry_run == send:
         console.print("[red]Pass exactly one of --dry-run or --send.[/red]")
         raise typer.Exit(code=1)
+
+    input_path = input_path if input_path is not None else ws.applicants_clean_path(workspace)
+    runs_dir = runs_dir if runs_dir is not None else ws.runs_dir(workspace)
+    ledger_path = ledger_path if ledger_path is not None else ws.send_ledger_path(workspace)
 
     run_dir = runs_dir / run
     assignments_path = run_dir / "assignments.csv"
@@ -1013,18 +1200,22 @@ def _append_verification_log(
 @notify_app.command("result")
 def notify_result(
     scores_path: Path = typer.Option(
-        Path("data/raw/scores.csv"),
+        None,
         "--scores",
         help="Committee scoring sheet: columns applicant_id, decision, division_placed "
-        "(division_placed required only when decision is ACCEPTED).",
+        "(division_placed required only when decision is ACCEPTED). "
+        "Default: data/workspaces/<workspace>/raw/scores.csv",
     ),
     run: str = typer.Option("latest", "--run", help="Run id under runs/, or 'latest'"),
     input_path: Path = typer.Option(
-        Path("data/interim/applicants.clean.csv"),
+        None,
         "--input",
-        help="applicants.clean.csv produced by `iffsched ingest`",
+        help="applicants.clean.csv produced by `iffsched ingest` "
+        "(default: data/workspaces/<workspace>/interim/applicants.clean.csv)",
     ),
-    runs_dir: Path = typer.Option(Path("runs"), "--runs-dir"),
+    runs_dir: Path = typer.Option(
+        None, "--runs-dir", help="Default: data/workspaces/<workspace>/runs"
+    ),
     config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
     out_dir: Path = typer.Option(
         None,
@@ -1032,7 +1223,9 @@ def notify_result(
         help="Where rendered emails and review lists are written (default: <run>/results_emails)",
     ),
     ledger_path: Path = typer.Option(
-        Path("data/ledger/send_ledger.csv"), "--ledger", help="Send ledger (FR-62)."
+        None,
+        "--ledger",
+        help="Send ledger (FR-62). Default: data/workspaces/<workspace>/ledger/send_ledger.csv",
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Render every email and review list to disk. Sends nothing."
@@ -1049,6 +1242,7 @@ def notify_result(
     service_account_file: Path = typer.Option(
         None, "--service-account", help="Overrides GOOGLE_SERVICE_ACCOUNT_FILE from .env"
     ),
+    workspace: str = WORKSPACE_OPTION,
 ) -> None:
     """Send result emails for a completed round (FR-65, SPEC.md §10.4).
 
@@ -1064,6 +1258,11 @@ def notify_result(
     if dry_run == send:
         console.print("[red]Pass exactly one of --dry-run or --send.[/red]")
         raise typer.Exit(code=1)
+
+    scores_path = scores_path if scores_path is not None else ws.scores_path(workspace)
+    input_path = input_path if input_path is not None else ws.applicants_clean_path(workspace)
+    runs_dir = runs_dir if runs_dir is not None else ws.runs_dir(workspace)
+    ledger_path = ledger_path if ledger_path is not None else ws.send_ledger_path(workspace)
 
     run_dir = runs_dir / run
     if not run_dir.exists():

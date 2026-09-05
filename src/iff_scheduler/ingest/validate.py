@@ -123,6 +123,23 @@ def _collapsed_report_row(row: ParsedRow, kept_row: ParsedRow) -> ValidationRepo
     )
 
 
+def _duplicate_of_existing_row(row: ParsedRow) -> ValidationReportRow:
+    """M10: an incremental batch only sees rows after the watermark, so it
+    cannot re-run FR-05's "most recent wins" dedupe against an email that was
+    already committed to applicants.clean.csv in a prior run. Rejecting it
+    loudly is the invariant-3-safe choice — silently appending a second clean
+    row for the same applicant would be a guess about which one is current."""
+    return ValidationReportRow(
+        row_number=row.row_number,
+        email=row.email,
+        full_name=row.full_name,
+        outcome="REJECTED",
+        reason_code="DUPLICATE_OF_EXISTING_APPLICANT",
+        message=f"'{row.email}' already has a clean applicant record from a prior ingest run. "
+        "Re-run with --force to reprocess the whole sheet.",
+    )
+
+
 def _build_applicant(row: ParsedRow, applicant_id: str) -> Applicant:
     assert row.division_1 is not None
     assert row.division_2 is not None
@@ -147,11 +164,21 @@ def run_ingest(
     event: EventConfig,
     divisions: DivisionsConfig,
     grid: SlotGrid,
+    *,
+    row_number_offset: int = 0,
+    applicant_id_offset: int = 0,
+    known_emails: frozenset[str] = frozenset(),
 ) -> IngestResult:
+    """`row_number_offset` and `applicant_id_offset` let an incremental sheets
+    batch (M10) continue the row-number and applicant-ID sequence of an
+    existing applicants.clean.csv rather than restarting at 1 each run.
+    `known_emails` are emails already committed from a prior run — see
+    `_duplicate_of_existing_row`. All three default to a no-op for the plain
+    single-shot CSV path."""
     raw_df = source.read_raw()
     raw_rows = cast("list[dict[str, str]]", raw_df.to_dict(orient="records"))
     parsed = [
-        parse_row(raw, row_number, event, divisions, grid)
+        parse_row(raw, row_number_offset + row_number, event, divisions, grid)
         for row_number, raw in enumerate(raw_rows, start=1)
     ]
 
@@ -168,10 +195,14 @@ def run_ingest(
     applicants: list[Applicant] = []
     for row in kept:
         issues = validate_row(row)
+        if row.email and row.email in known_emails:
+            issues.append(_duplicate_of_existing_row(row))
         report.extend(issues)
         if any(issue.outcome == "REJECTED" for issue in issues):
             continue
-        applicants.append(_build_applicant(row, applicant_id=f"A{len(applicants) + 1:03d}"))
+        applicants.append(
+            _build_applicant(row, applicant_id=f"A{applicant_id_offset + len(applicants) + 1:03d}")
+        )
 
     report.sort(key=lambda r: r.row_number)
     return IngestResult(applicants=applicants, report=report)
@@ -194,9 +225,8 @@ CLEAN_COLUMNS = [
 REPORT_COLUMNS = ["row_number", "email", "full_name", "outcome", "reason_code", "message"]
 
 
-def write_outputs(result: IngestResult, clean_path: Path, report_path: Path) -> None:
-    """Write applicants.clean.csv and validation_report.csv (FR-06)."""
-    clean_rows = [
+def _clean_rows(applicants: list[Applicant]) -> list[dict[str, str]]:
+    return [
         {
             "applicant_id": a.applicant_id,
             "full_name": a.full_name,
@@ -210,11 +240,35 @@ def write_outputs(result: IngestResult, clean_path: Path, report_path: Path) -> 
             "submitted_at": a.submitted_at.isoformat(),
             "notes": a.notes or "",
         }
-        for a in result.applicants
+        for a in applicants
     ]
+
+
+def write_outputs(result: IngestResult, clean_path: Path, report_path: Path) -> None:
+    """Write applicants.clean.csv and validation_report.csv (FR-06)."""
     clean_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(clean_rows, columns=CLEAN_COLUMNS).to_csv(clean_path, index=False)
+    pd.DataFrame(_clean_rows(result.applicants), columns=CLEAN_COLUMNS).to_csv(
+        clean_path, index=False
+    )
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_rows = [row.model_dump() for row in result.report]
     pd.DataFrame(report_rows, columns=REPORT_COLUMNS).to_csv(report_path, index=False)
+
+
+def append_outputs(result: IngestResult, clean_path: Path, report_path: Path) -> None:
+    """Append one incremental batch's clean applicants and report rows onto
+    existing outputs (M10) — the header is written only the first time either
+    file is created."""
+    clean_path.parent.mkdir(parents=True, exist_ok=True)
+    clean_existed = clean_path.exists()
+    pd.DataFrame(_clean_rows(result.applicants), columns=CLEAN_COLUMNS).to_csv(
+        clean_path, index=False, mode="a", header=not clean_existed
+    )
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_existed = report_path.exists()
+    report_rows = [row.model_dump() for row in result.report]
+    pd.DataFrame(report_rows, columns=REPORT_COLUMNS).to_csv(
+        report_path, index=False, mode="a", header=not report_existed
+    )
