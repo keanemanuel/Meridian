@@ -14,6 +14,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from iff_scheduler import workspace as ws
+from iff_scheduler.db import supabase_enabled
 from iff_scheduler.settings import DEFAULT_CONFIG_DIR, Settings, load_settings
 from iff_scheduler.workspace import WorkspaceMeta, find_workspace, load_workspaces
 
@@ -40,12 +41,46 @@ def get_settings() -> Settings:
 def resolve_workspace(workspace_id: str) -> WorkspaceMeta:
     """Look a workspace up by name (its id in alpha; SPEC.md §11.2).
 
-    404s rather than guessing a default — CLAUDE.md invariant 3.
+    Reads from Postgres when the Supabase backend is configured, otherwise
+    from `workspaces.json`. 404s rather than guessing a default — CLAUDE.md
+    invariant 3.
     """
-    meta = find_workspace(workspace_id, load_workspaces())
+    if supabase_enabled():
+        from iff_scheduler.db import workspace_repo
+
+        meta = workspace_repo.get_workspace(workspace_id)
+    else:
+        meta = find_workspace(workspace_id, load_workspaces())
     if meta is None:
         raise HTTPException(status_code=404, detail=f"Workspace '{workspace_id}' not found.")
     return meta
+
+
+def workspace_pk(workspace_id: str) -> str:
+    """The workspace's Postgres UUID. Supabase-mode only — raises otherwise."""
+    from iff_scheduler.db import workspace_repo
+
+    pk = workspace_repo.get_workspace_id(workspace_id)
+    if pk is None:
+        raise HTTPException(status_code=404, detail=f"Workspace '{workspace_id}' not found.")
+    return pk
+
+
+def resolve_run_pk(workspace_id: str, run_id: str) -> str:
+    """Resolve a run's Postgres UUID from its label (accepts 'latest').
+
+    Supabase-mode only; callers guard with `supabase_enabled()` and fall
+    back to `resolve_run_dir` for the file store.
+    """
+    from iff_scheduler.db import run_repo
+
+    row = run_repo.get_run(workspace_pk(workspace_id), run_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Run '{run_id}' not found for workspace '{workspace_id}'.",
+        )
+    return str(row["id"])
 
 
 def resolve_run_dir(workspace_id: str, run_id: str) -> Path:

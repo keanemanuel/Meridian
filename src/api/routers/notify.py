@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated, Any
 
 from dotenv import load_dotenv
@@ -24,9 +25,11 @@ from api.cli_helpers import (
     load_ledger,
     send_batch,
 )
-from api.dependencies import get_settings, resolve_run_dir
+from api.dependencies import get_settings, resolve_run_dir, resolve_run_pk
 from iff_scheduler import workspace as ws
+from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.enums import Decision, DivisionCode
+from iff_scheduler.domain.models import SendLedgerEntry
 from iff_scheduler.notify.audit import (
     audit_invite_recipients,
     audit_result_recipients,
@@ -82,6 +85,27 @@ def _load_invite_inputs(workspace_id: str, run_id: str, settings: Settings):
             },
         )
     return run_dir, recipients
+
+
+def _load_ledger_entries(workspace_id: str, ledger_path: Path) -> list[SendLedgerEntry]:
+    """Idempotency ledger for `already_sent` (FR-62). From Postgres when the
+    Supabase backend is live, otherwise the workspace's send_ledger.csv."""
+    if supabase_enabled():
+        from iff_scheduler.db import ledger_repo
+
+        return ledger_repo.load_ledger_for_workspace(workspace_id)
+    return load_ledger(ledger_path)
+
+
+def _sync_ledger_to_db(workspace_id: str, run_id: str, ledger_path: Path) -> None:
+    """Mirror the CSV send loop's result (SPEC.md §10.2 step 5 writes it after
+    every attempt) into `send_ledger`."""
+    if not supabase_enabled():
+        return
+    from iff_scheduler.db import ledger_repo
+
+    run_pk = resolve_run_pk(workspace_id, run_id)
+    ledger_repo.sync_entries(run_pk, run_id, load_ledger(ledger_path))
 
 
 def _gmail_mailer(settings: Settings) -> GmailMailer:
@@ -160,7 +184,7 @@ def invite_send(
     rendered_auto = render_invites(auto, settings.event, settings.notify)
 
     ledger_path = ws.send_ledger_path(workspace_id)
-    ledger = load_ledger(ledger_path)
+    ledger = _load_ledger_entries(workspace_id, ledger_path)
     pending = [r for r in auto if not already_sent(ledger, r.applicant_id, INVITE_TEMPLATE)]
     if not pending:
         return {"sent": 0, "pending": 0, "message": "All auto-sendable invites already SENT."}
@@ -180,6 +204,7 @@ def invite_send(
         ledger_path,
         run_dir.resolve().name,
     )
+    _sync_ledger_to_db(workspace_id, run_dir.resolve().name, ledger_path)
     final = load_ledger(ledger_path)
     sent = sum(1 for e in final if e.template == INVITE_TEMPLATE and e.status.value == "SENT")
     failed = sum(1 for e in final if e.template == INVITE_TEMPLATE and e.status.value == "FAILED")
@@ -276,7 +301,7 @@ def result_send(
     rendered = render_results(recipients, settings.event, settings.notify)
 
     ledger_path = ws.send_ledger_path(workspace_id)
-    ledger = load_ledger(ledger_path)
+    ledger = _load_ledger_entries(workspace_id, ledger_path)
     pending = [r for r in recipients if not already_sent(ledger, r.applicant_id, r.template_name)]
     if not pending:
         return {"sent": 0, "pending": 0, "message": "All result emails already SENT."}
@@ -301,6 +326,7 @@ def result_send(
         ledger_path,
         run_dir.resolve().name,
     )
+    _sync_ledger_to_db(workspace_id, run_dir.resolve().name, ledger_path)
     final = load_ledger(ledger_path)
     sent = sum(1 for e in final if e.status.value == "SENT")
     return {"sent_total": sent, "attempted": len(pending), "verified_by": body.verified_by.strip()}

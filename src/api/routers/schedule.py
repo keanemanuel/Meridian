@@ -21,9 +21,10 @@ from api.cli_helpers import (
     load_locks,
     write_locks,
 )
-from api.dependencies import get_settings, resolve_run_dir
+from api.dependencies import get_settings, resolve_run_dir, resolve_run_pk
 from api.services import execute_solve
 from iff_scheduler import workspace as ws
+from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.grid import build_slot_grid
 from iff_scheduler.domain.models import Assignment
 from iff_scheduler.review.edit_validator import validate_edits
@@ -46,6 +47,11 @@ def _serialise(a: Assignment) -> dict[str, Any]:
 
 @router.get("/assignments")
 def get_assignments(workspace_id: str, run_id: str) -> list[dict[str, Any]]:
+    if supabase_enabled():
+        from iff_scheduler.db import assignment_repo
+
+        run_pk = resolve_run_pk(workspace_id, run_id)
+        return [_serialise(a) for a in assignment_repo.list_assignments(run_pk)]
     run_dir = resolve_run_dir(workspace_id, run_id)
     path = run_dir / "assignments.csv"
     if not path.exists():
@@ -82,7 +88,14 @@ def patch_assignment(
     if body.slot_id not in slots_by_id:
         raise HTTPException(status_code=422, detail=f"Slot '{body.slot_id}' is not on the grid.")
 
-    assignments = load_assignments(path)
+    db_mode = supabase_enabled()
+    if db_mode:
+        from iff_scheduler.db import assignment_repo
+
+        run_pk = resolve_run_pk(workspace_id, run_id)
+        assignments = assignment_repo.list_assignments(run_pk)
+    else:
+        assignments = load_assignments(path)
     target = next((a for a in assignments if _assignment_id(a) == assignment_id), None)
     if target is None:
         raise HTTPException(status_code=404, detail=f"No assignment '{assignment_id}' in this run.")
@@ -133,8 +146,29 @@ def patch_assignment(
             },
         )
 
-    assignments_frame(edited_list).to_csv(path, index=False)
+    if path.exists():
+        assignments_frame(edited_list).to_csv(path, index=False)
+    if db_mode:
+        from iff_scheduler.db import assignment_repo
 
+        assignment_repo.update_assignment(
+            run_pk,
+            edited.applicant_id,
+            int(edited.choice_index),
+            {
+                "panel_id": edited.panel_id,
+                "room": edited.room,
+                "slot_id": edited.slot_id,
+                "date": edited.date.isoformat(),
+                "start_time": edited.start_time.isoformat(),
+                "end_time": edited.end_time.isoformat(),
+                "is_clash": edited.is_clash,
+                "is_locked": True,
+            },
+        )
+
+    # Locks stay in a CSV in both backends: the schema has no locks table and
+    # `_build_problem` reads pins from `ws.locks_path` on every re-solve (C6).
     locks_path = ws.locks_path(workspace_id)
     existing = load_locks(locks_path) if locks_path.exists() else []
     merged = merge_locks(existing, [lock_from_assignment(edited)])

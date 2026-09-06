@@ -28,6 +28,7 @@ from iff_scheduler.cli import (
     _previous_run,
     _snapshot_config,
 )
+from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.grid import build_slot_grid
 from iff_scheduler.scheduling.base import USABLE_STATUSES, Lock, SolveResult
 from iff_scheduler.scheduling.feasibility import compute_capacity_advisor, is_feasible
@@ -146,6 +147,9 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
 
     _point_latest_at(runs_dir, run_dir)
 
+    if supabase_enabled():
+        _persist_run_to_db(workspace_id, run_id, metrics, result.assignments)
+
     return {
         "run_id": run_id,
         "status": result.status,
@@ -159,6 +163,21 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
         "changed_vs_previous": diff_count,
         "conflicts": len(conflicts),
     }
+
+
+def _persist_run_to_db(
+    workspace_id: str, run_label: str, metrics: dict[str, Any], assignments: list[Any]
+) -> None:
+    """Mirror a finished solve into Postgres (SPEC.md §14). The run directory
+    on disk stays the reproducible artefact (config snapshot, solve log); the
+    DB is the queryable system of record the beta web UI reads."""
+    from iff_scheduler.db import assignment_repo, run_repo, workspace_repo
+
+    pk = workspace_repo.get_workspace_id(workspace_id)
+    if pk is None:
+        raise HTTPException(status_code=404, detail=f"Workspace '{workspace_id}' not found.")
+    run_row = run_repo.create_run(pk, run_label, status="complete", metrics=metrics)
+    assignment_repo.replace_assignments(run_row["id"], assignments)
 
 
 def read_run_metrics(run_dir: Path) -> dict[str, Any]:

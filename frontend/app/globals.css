@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Internal tool, committed to a single light look — no dark variant. */
+html,
+body {
+  background: #fafafa;
+  color: #171717;
+}
+
+body {
+  font-family: var(--font-sans);
+}

@@ -13,9 +13,15 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from api.cli_helpers import conflicts_frame, load_assignments, load_clean_applicants
-from api.dependencies import get_settings, resolve_run_dir, resolve_workspace
+from api.dependencies import (
+    get_settings,
+    resolve_run_dir,
+    resolve_workspace,
+    workspace_pk,
+)
 from api.services import execute_solve, read_run_metrics, run_capacity_check
 from iff_scheduler import workspace as ws
+from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.enums import Severity
 from iff_scheduler.domain.grid import build_slot_grid
 from iff_scheduler.export.applicant_view import build_applicant_view
@@ -225,6 +231,17 @@ def publish(
 @router.get("/runs")
 def list_runs(workspace_id: str) -> list[dict[str, Any]]:
     resolve_workspace(workspace_id)
+    if supabase_enabled():
+        from iff_scheduler.db import run_repo
+
+        return [
+            {
+                "run_id": row["run_label"],
+                "has_assignments": True,
+                "created_at": row.get("created_at") or row["run_label"],
+            }
+            for row in run_repo.list_runs(workspace_pk(workspace_id))
+        ]
     runs_dir = ws.runs_dir(workspace_id)
     if not runs_dir.exists():
         return []
@@ -244,5 +261,20 @@ def list_runs(workspace_id: str) -> list[dict[str, Any]]:
 
 @router.get("/runs/{run_id}")
 def get_run(workspace_id: str, run_id: str) -> dict[str, Any]:
+    if supabase_enabled():
+        from iff_scheduler.db import assignment_repo, run_repo
+
+        row = run_repo.get_run(workspace_pk(workspace_id), run_id)
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Run '{run_id}' not found for workspace '{workspace_id}'.",
+            )
+        return {
+            "run_id": row["run_label"],
+            "status": row.get("status"),
+            "metrics": row.get("metrics") or {},
+            "interviews_placed": len(assignment_repo.list_assignments(row["id"])),
+        }
     run_dir = resolve_run_dir(workspace_id, run_id)
     return read_run_metrics(run_dir)

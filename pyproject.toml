@@ -26,6 +26,8 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "python-multipart>=0.0.9",
+    "supabase>=2.4",
+    "asyncpg>=0.29",
 ]
 
 [project.scripts]
@@ -80,6 +82,13 @@ strict = true
 # adapter boundary.
 module = ["googleapiclient.*", "google.oauth2.*", "google.auth.*", "google_auth_oauthlib.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# `supabase` publishes no type information and is an optional dependency
+# (beta-only, db/ package). Treat it as untyped at the adapter boundary.
+module = ["supabase", "supabase.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
