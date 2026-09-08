@@ -293,7 +293,7 @@ Result emails use separate templates per outcome (accepted / waitlisted / reject
 - [ ] Runbook
 
 **Beta**
-- **Vercel deployment** — Next.js frontend + FastAPI scheduler API
+- **Split deployment** — Next.js frontend on Vercel, FastAPI scheduler API on Railway (CP-SAT/`ortools` is too large for Vercel's 250 MB function limit)
 - **PostgreSQL via Supabase** — replaces the CSV/YAML store so data persists across deploys. All I/O sits behind adapter protocols in alpha, so this is a layer swap, not a rewrite.
 - Drag-and-drop timetable editor
 - Live event-day dashboard with attendance tracking
@@ -305,11 +305,12 @@ Result emails use separate templates per outcome (accepted / waitlisted / reject
 
 ## Deploy
 
-Beta ships as one Vercel project — Next.js frontend and FastAPI scheduler
-API from a single domain, Postgres via Supabase in place of the CSV/YAML
-store. Full step-by-step instructions, the exact environment variables, and
-the known limitations of the current deploy are in
-[`docs/DEPLOY.md`](docs/DEPLOY.md).
+Beta ships across two hosts: the Next.js frontend on **Vercel** and the
+FastAPI scheduler API (with the CP-SAT solver) on **Railway**, with Postgres
+via Supabase in place of the CSV/YAML store. The `ortools` dependency is too
+large for Vercel's Python function limit, so the API needs a host without
+one. Full step-by-step instructions, the exact environment variables, and
+the deploy's known limitations are in [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 ---
 

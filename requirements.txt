@@ -1,4 +1,6 @@
-# Runtime dependencies for the Vercel Python function (src/api/main.py).
+# Runtime dependencies for the Railway deployment of the FastAPI backend
+# (src/api/main.py). Nixpacks installs from this file; the service then
+# starts with `uvicorn api.main:app --app-dir src` (see railway.json).
 #
 # Kept in lockstep with [project.dependencies] in pyproject.toml — the API
 # imports the whole iff_scheduler package tree, and api/services.py pulls
