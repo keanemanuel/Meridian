@@ -17,8 +17,11 @@ import type {
   WorkspaceMeta,
 } from "./types";
 
-export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// "/api" everywhere: on Vercel, vercel.json routes /api/* straight to the
+// Python function (same origin); locally, next.config.ts rewrites the same
+// path to the FastAPI dev server. Every path below already omits the /api
+// prefix — it lives here instead — so the two never double up.
+export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
 /** One violation/issue row from a 400 whose `detail` is an object. */
 export type ApiIssue = { applicant_id?: string; code?: string; message: string };
@@ -110,18 +113,18 @@ const json = (body: unknown): RequestInit => ({
 const seg = (s: string) => encodeURIComponent(s);
 
 export const api = {
-  health: () => request<{ status: string }>("/api/health"),
+  health: () => request<{ status: string }>("/health"),
 
-  listWorkspaces: () => request<WorkspaceMeta[]>("/api/workspaces"),
+  listWorkspaces: () => request<WorkspaceMeta[]>("/workspaces"),
 
   createWorkspace: (name: string, group: string) =>
-    request<WorkspaceMeta>("/api/workspaces", json({ name, group })),
+    request<WorkspaceMeta>("/workspaces", json({ name, group })),
 
   getWorkspace: (id: string) =>
-    request<WorkspaceMeta>(`/api/workspaces/${seg(id)}`),
+    request<WorkspaceMeta>(`/workspaces/${seg(id)}`),
 
   deleteWorkspace: (id: string) =>
-    request<{ deleted: string }>(`/api/workspaces/${seg(id)}`, {
+    request<{ deleted: string }>(`/workspaces/${seg(id)}`, {
       method: "DELETE",
     }),
 
@@ -130,7 +133,7 @@ export const api = {
     const form = new FormData();
     form.append("source", "csv");
     form.append("file", file);
-    return request<IngestResult>(`/api/workspaces/${seg(id)}/ingest`, {
+    return request<IngestResult>(`/workspaces/${seg(id)}/ingest`, {
       method: "POST",
       body: form,
     });
@@ -140,35 +143,35 @@ export const api = {
     const form = new FormData();
     form.append("source", "sheets");
     form.append("force", String(force));
-    return request<IngestResult>(`/api/workspaces/${seg(id)}/ingest`, {
+    return request<IngestResult>(`/workspaces/${seg(id)}/ingest`, {
       method: "POST",
       body: form,
     });
   },
 
   check: (id: string) =>
-    request<CapacityCheck>(`/api/workspaces/${seg(id)}/check`, {
+    request<CapacityCheck>(`/workspaces/${seg(id)}/check`, {
       method: "POST",
     }),
 
   solve: (id: string, skipCheck = false) =>
     request<SolveResult>(
-      `/api/workspaces/${seg(id)}/solve`,
+      `/workspaces/${seg(id)}/solve`,
       json({ skip_check: skipCheck }),
     ),
 
   publish: (id: string, run = "latest") =>
     request<PublishResult>(
-      `/api/workspaces/${seg(id)}/publish`,
+      `/workspaces/${seg(id)}/publish`,
       json({ run, formats: ["xlsx", "html"] }),
     ),
 
   listRuns: (id: string) =>
-    request<RunSummary[]>(`/api/workspaces/${seg(id)}/runs`),
+    request<RunSummary[]>(`/workspaces/${seg(id)}/runs`),
 
   getAssignments: (id: string, runId: string) =>
     request<Assignment[]>(
-      `/api/workspaces/${seg(id)}/runs/${seg(runId)}/assignments`,
+      `/workspaces/${seg(id)}/runs/${seg(runId)}/assignments`,
     ),
 
   patchAssignment: (
@@ -179,38 +182,38 @@ export const api = {
     slotId: string,
   ) =>
     request<PatchAssignmentResult>(
-      `/api/workspaces/${seg(id)}/runs/${seg(runId)}/assignments/${seg(assignmentId)}`,
+      `/workspaces/${seg(id)}/runs/${seg(runId)}/assignments/${seg(assignmentId)}`,
       { method: "PATCH", body: JSON.stringify({ panel_id: panelId, slot_id: slotId }) },
     ),
 
   /** Re-solve honouring every lock (C6). Writes a fresh run. */
   resolve: (id: string, runId: string, skipCheck = false) =>
     request<SolveResult>(
-      `/api/workspaces/${seg(id)}/runs/${seg(runId)}/resolve`,
+      `/workspaces/${seg(id)}/runs/${seg(runId)}/resolve`,
       json({ skip_check: skipCheck }),
     ),
 
   invitePreview: (id: string, runId: string) =>
     request<InvitePreview>(
-      `/api/workspaces/${seg(id)}/runs/${seg(runId)}/notify/invite/preview`,
+      `/workspaces/${seg(id)}/runs/${seg(runId)}/notify/invite/preview`,
       { method: "POST" },
     ),
 
   inviteSend: (id: string, runId: string, confirmCount: number) =>
     request<{ sent_total?: number; failed_total?: number; attempted?: number; message?: string }>(
-      `/api/workspaces/${seg(id)}/runs/${seg(runId)}/notify/invite/send`,
+      `/workspaces/${seg(id)}/runs/${seg(runId)}/notify/invite/send`,
       json({ confirm_count: confirmCount }),
     ),
 
   resultPreview: (id: string, runId: string) =>
     request<ResultPreview>(
-      `/api/workspaces/${seg(id)}/runs/${seg(runId)}/notify/result/preview`,
+      `/workspaces/${seg(id)}/runs/${seg(runId)}/notify/result/preview`,
       { method: "POST" },
     ),
 
   resultSend: (id: string, runId: string, confirmCount: number, verifiedBy: string) =>
     request<{ sent_total?: number; attempted?: number; message?: string }>(
-      `/api/workspaces/${seg(id)}/runs/${seg(runId)}/notify/result/send`,
+      `/workspaces/${seg(id)}/runs/${seg(runId)}/notify/result/send`,
       json({ confirm_count: confirmCount, verified_by: verifiedBy }),
     ),
 };

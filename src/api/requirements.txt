@@ -1,0 +1,31 @@
+# Runtime dependencies for the Vercel Python function (src/api/main.py).
+#
+# Kept in lockstep with [project.dependencies] in pyproject.toml — the API
+# imports the whole iff_scheduler package tree, and api/services.py pulls
+# several helpers straight from iff_scheduler.cli, which is why typer and
+# rich are here even though this is an HTTP service, not a CLI.
+
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+
+ortools>=9.9
+pydantic>=2.5
+pyyaml>=6.0
+pandas>=2.2
+jinja2>=3.1
+openpyxl>=3.1
+icalendar>=5.0
+
+gspread>=6.0
+google-auth>=2.28
+google-auth-oauthlib>=1.2
+google-api-python-client>=2.120
+python-dotenv>=1.0
+
+supabase>=2.4
+asyncpg>=0.29
+
+# Imported transitively via iff_scheduler.cli (see note above).
+typer>=0.12
+rich>=13.7

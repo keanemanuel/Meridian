@@ -7,13 +7,34 @@ those public functions and is never modified.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+# `api` and `iff_scheduler` are sibling top-level packages under `src/` (see
+# `[tool.hatch.build.targets.wheel] packages` in pyproject.toml). Locally that
+# layer is put on sys.path by `pip install -e .` or `uvicorn --app-dir src`.
+# Vercel's Python runtime imports this file directly with no such wrapper, so
+# without this the `api.routers` import below — and every `iff_scheduler`
+# import behind it — fails at cold start. Safe to keep everywhere: a no-op
+# once `src/` is already on the path.
+_SRC_DIR = str(Path(__file__).resolve().parent.parent)
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 
-from api.routers import notify, pipeline, schedule, workspaces
+# Vercel's dashboard has no file upload — a deploy pastes credential JSON
+# directly into GOOGLE_SERVICE_ACCOUNT_FILE / GMAIL_OAUTH_CREDENTIALS /
+# GMAIL_TOKEN_CACHE. The core reads those as paths, so materialize any
+# JSON-shaped value to a file under /tmp before anything else runs (docs/DEPLOY.md).
+from api.credentials_bootstrap import materialize_json_credentials  # noqa: E402
+
+materialize_json_credentials()
+
+from fastapi import FastAPI, Request  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+from api.routers import notify, pipeline, schedule, workspaces  # noqa: E402
 
 app = FastAPI(
     title="Meridian API",

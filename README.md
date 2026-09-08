@@ -303,6 +303,16 @@ Result emails use separate templates per outcome (accepted / waitlisted / reject
 
 ---
 
+## Deploy
+
+Beta ships as one Vercel project — Next.js frontend and FastAPI scheduler
+API from a single domain, Postgres via Supabase in place of the CSV/YAML
+store. Full step-by-step instructions, the exact environment variables, and
+the known limitations of the current deploy are in
+[`docs/DEPLOY.md`](docs/DEPLOY.md).
+
+---
+
 ## Contributing
 
 1. Branch from `main` using `feat/`, `fix/` or `docs/` prefixes
