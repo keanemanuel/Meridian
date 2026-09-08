@@ -102,6 +102,64 @@ def test_unknown_workspace_returns_detail_404(client: TestClient) -> None:
     assert resp.json() == {"detail": "Workspace 'nope' not found."}
 
 
+def test_create_workspace_extracts_sheet_id_from_url(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /api/workspaces accepts an optional `sheet_url` and stores just
+    the extracted ID, so the UI can link a Sheet at creation time."""
+    monkeypatch.setattr("api.routers.workspaces.supabase_enabled", lambda: False)
+    url = "https://docs.google.com/spreadsheets/d/1AbC_dE-fG123456/edit#gid=0"
+    resp = client.post(
+        "/api/workspaces",
+        json={"name": "with-sheet", "group": "Test Environment", "sheet_url": url},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["sheet_id"] == "1AbC_dE-fG123456"
+
+
+def test_create_workspace_blank_sheet_url_links_nothing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("api.routers.workspaces.supabase_enabled", lambda: False)
+    resp = client.post(
+        "/api/workspaces",
+        json={"name": "no-sheet", "group": "Test Environment", "sheet_url": "   "},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["sheet_id"] is None
+
+
+def test_patch_workspace_sheet_links_and_replaces(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("api.routers.workspaces.supabase_enabled", lambda: False)
+    assert _create_ws(client, name="sheet-patch").status_code == 201
+
+    first = client.patch(
+        "/api/workspaces/sheet-patch/sheet",
+        json={"sheet_url": "https://docs.google.com/spreadsheets/d/SHEET_ONE/edit"},
+    )
+    assert first.status_code == 200
+    assert first.json()["sheet_id"] == "SHEET_ONE"
+
+    second = client.patch(
+        "/api/workspaces/sheet-patch/sheet",
+        json={"sheet_url": "https://docs.google.com/spreadsheets/d/SHEET_TWO/edit"},
+    )
+    assert second.json()["sheet_id"] == "SHEET_TWO"
+
+
+def test_patch_workspace_sheet_unknown_workspace_is_404(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("api.routers.workspaces.supabase_enabled", lambda: False)
+    resp = client.patch(
+        "/api/workspaces/ghost/sheet",
+        json={"sheet_url": "https://docs.google.com/spreadsheets/d/ID/edit"},
+    )
+    assert resp.status_code == 404
+
+
 # --------------------------------------------------------------- pipeline
 
 

@@ -27,7 +27,11 @@ type WorkspacesContextValue = {
   connecting: boolean;
   error: string | null;
   refresh: () => Promise<void>;
-  create: (name: string, group: string) => Promise<WorkspaceMeta>;
+  create: (
+    name: string,
+    group: string,
+    sheetUrl?: string,
+  ) => Promise<WorkspaceMeta>;
 };
 
 const WorkspacesContext = createContext<WorkspacesContextValue | null>(null);
@@ -62,9 +66,10 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   const create = useCallback(
-    async (name: string, group: string) => {
+    async (name: string, group: string, sheetUrl?: string) => {
       try {
         const created = await api.createWorkspace(name, group, {
+          sheetUrl,
           onRetry: () => setConnecting(true),
         });
         await refresh();

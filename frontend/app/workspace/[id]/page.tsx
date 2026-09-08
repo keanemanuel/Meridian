@@ -1,16 +1,28 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { use, useCallback, useEffect, useState } from "react";
 import { ImportModal } from "@/components/ImportModal";
 import { Modal } from "@/components/Modal";
+import { RoomView } from "@/components/RoomView";
 import { useToast } from "@/components/Toast";
 import { Badge, Button, EmptyState, Spinner } from "@/components/ui";
 import { ApiError, api } from "@/lib/api";
 import { formatRunId } from "@/lib/schedule";
-import type { CapacityCheck, RunSummary, WorkspaceMeta } from "@/lib/types";
+import type {
+  Assignment,
+  CapacityCheck,
+  RunSummary,
+  WorkspaceMeta,
+} from "@/lib/types";
 
-type Action = "import" | "check" | "solve" | "publish";
+type Action = "import" | "check" | "solve";
+
+/** Only the ID is stored; rebuild a usable link to the Sheet from it. */
+function sheetUrlFromId(sheetId: string): string {
+  return `https://docs.google.com/spreadsheets/d/${sheetId}/edit`;
+}
 
 export default function WorkspacePage({
   params,
@@ -18,6 +30,7 @@ export default function WorkspacePage({
   const { id: rawId } = use(params);
   const workspaceId = decodeURIComponent(rawId);
   const toast = useToast();
+  const router = useRouter();
 
   const [meta, setMeta] = useState<WorkspaceMeta | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -26,28 +39,54 @@ export default function WorkspacePage({
 
   const [busy, setBusy] = useState<Action | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const [showEditSheet, setShowEditSheet] = useState(false);
   const [capacity, setCapacity] = useState<CapacityCheck | null>(null);
   /** Set when solve came back 409 INFEASIBLE — the user may override (E-06). */
   const [infeasible, setInfeasible] = useState<string | null>(null);
+  /** Latest run's assignments, shown inline below — no separate Publish click. */
+  const [schedule, setSchedule] = useState<{
+    runId: string;
+    assignments: Assignment[];
+  } | null>(null);
 
   const loadRuns = useCallback(async () => {
     const list = await api.listRuns(workspaceId);
     // Run ids are lexically sortable timestamps; newest first.
-    setRuns([...list].sort((a, b) => b.run_id.localeCompare(a.run_id)));
+    const sorted = [...list].sort((a, b) => b.run_id.localeCompare(a.run_id));
+    setRuns(sorted);
+    return sorted;
   }, [workspaceId]);
+
+  const loadSchedule = useCallback(
+    async (runId: string) => {
+      try {
+        const assignments = await api.getAssignments(workspaceId, runId);
+        setSchedule({ runId, assignments });
+      } catch {
+        // A run row with no assignments yet is not an error worth surfacing here.
+        setSchedule(null);
+      }
+    },
+    [workspaceId],
+  );
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       setLoading(true);
-      // A capacity table belongs to the workspace it was run for.
+      // A capacity table and schedule belong to the workspace they were run for.
       setCapacity(null);
+      setSchedule(null);
       try {
-        const [m] = await Promise.all([api.getWorkspace(workspaceId), loadRuns()]);
-        if (!cancelled) {
-          setMeta(m);
-          setLoadError(null);
-        }
+        const [m, sorted] = await Promise.all([
+          api.getWorkspace(workspaceId),
+          loadRuns(),
+        ]);
+        if (cancelled) return;
+        setMeta(m);
+        setLoadError(null);
+        const latest = sorted.find((r) => r.has_assignments);
+        if (latest) await loadSchedule(latest.run_id);
       } catch (err) {
         if (!cancelled) setLoadError((err as Error).message);
       } finally {
@@ -57,7 +96,7 @@ export default function WorkspacePage({
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, loadRuns]);
+  }, [workspaceId, loadRuns, loadSchedule]);
 
   const runCheck = async () => {
     setBusy("check");
@@ -83,11 +122,20 @@ export default function WorkspacePage({
     setInfeasible(null);
     try {
       const result = await api.solve(workspaceId, skipCheck);
+      // Publish runs automatically as part of Solve — it builds the room /
+      // applicant / panel views and the conflict report. Kept best-effort:
+      // a failure here doesn't undo a good solve.
+      try {
+        await api.publish(workspaceId, "latest");
+      } catch (err) {
+        toast.fromError(err, "Solved, but building the published views failed.");
+      }
       toast.success(
         `Solved: ${result.interviews_placed}/${result.interviews_required} interviews placed, ` +
           `${result.clashes} clash(es), ${result.locked} locked — ${result.solve_seconds}s.`,
       );
       await loadRuns();
+      await loadSchedule(result.run_id);
     } catch (err) {
       // 409 is the Capacity Advisor refusing to proceed — offer the override.
       if (err instanceof ApiError && err.status === 409) {
@@ -95,21 +143,6 @@ export default function WorkspacePage({
       } else {
         toast.fromError(err, "Solve failed.");
       }
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const runPublish = async () => {
-    setBusy("publish");
-    try {
-      const result = await api.publish(workspaceId, "latest");
-      toast.success(
-        `Published run ${result.run_id}: ${result.room_views} room view(s), ` +
-          `${result.applicants} applicants, ${result.clashes_red} red clash(es) → ${result.output_dir}`,
-      );
-    } catch (err) {
-      toast.fromError(err, "Publish failed.");
     } finally {
       setBusy(null);
     }
@@ -133,12 +166,46 @@ export default function WorkspacePage({
     );
   }
 
+  const runHref = (runId: string) =>
+    `/workspace/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}`;
+
   return (
     <div className="mx-auto max-w-5xl px-8 py-8">
       <div className="flex items-center gap-3">
         <h1 className="text-lg font-semibold text-neutral-900">{meta.name}</h1>
         <Badge>{meta.group}</Badge>
         {meta.sheet_id && <Badge tone="green">Sheet linked</Badge>}
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+        {meta.sheet_id ? (
+          <>
+            <span className="text-neutral-500">Google Sheet:</span>
+            <a
+              href={sheetUrlFromId(meta.sheet_id)}
+              target="_blank"
+              rel="noreferrer"
+              className="max-w-md truncate font-mono text-xs text-blue-600 hover:underline"
+            >
+              {sheetUrlFromId(meta.sheet_id)}
+            </a>
+            <button
+              type="button"
+              onClick={() => setShowEditSheet(true)}
+              className="text-xs font-medium text-neutral-500 hover:text-neutral-800"
+            >
+              Edit Sheet URL
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setShowEditSheet(true)}
+            className="text-xs font-medium text-neutral-500 hover:text-neutral-800"
+          >
+            + Link Google Sheet
+          </button>
+        )}
       </div>
 
       <div className="mt-6 flex flex-wrap gap-2">
@@ -164,13 +231,6 @@ export default function WorkspacePage({
         >
           Solve
         </Button>
-        <Button
-          onClick={runPublish}
-          loading={busy === "publish"}
-          disabled={busy !== null}
-        >
-          Publish
-        </Button>
       </div>
 
       {capacity && <CapacityTable check={capacity} />}
@@ -189,7 +249,7 @@ export default function WorkspacePage({
             {runs.map((run, i) => (
               <li key={run.run_id}>
                 <Link
-                  href={`/workspace/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(run.run_id)}`}
+                  href={runHref(run.run_id)}
                   className="flex items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-neutral-50"
                 >
                   <span className="flex-1 font-medium text-neutral-800">
@@ -208,6 +268,27 @@ export default function WorkspacePage({
         )}
       </section>
 
+      {schedule && schedule.assignments.length > 0 && (
+        <section className="mt-10">
+          <div className="mb-3 flex flex-wrap items-center gap-3">
+            <h2 className="text-sm font-semibold text-neutral-900">Schedule</h2>
+            <span className="text-xs text-neutral-500">
+              {formatRunId(schedule.runId)}
+            </span>
+            <Link
+              href={runHref(schedule.runId)}
+              className="ml-auto text-xs font-medium text-neutral-600 hover:text-neutral-900"
+            >
+              Open full view — edit · re-solve · send ›
+            </Link>
+          </div>
+          <RoomView
+            assignments={schedule.assignments}
+            onSelect={() => router.push(runHref(schedule.runId))}
+          />
+        </section>
+      )}
+
       {showImport && (
         <ImportModal
           workspaceId={workspaceId}
@@ -219,6 +300,15 @@ export default function WorkspacePage({
                 `${result.collapsed} collapsed, ${result.warnings} warning(s).`,
             )
           }
+        />
+      )}
+
+      {showEditSheet && (
+        <EditSheetModal
+          workspaceId={workspaceId}
+          current={meta.sheet_id ? sheetUrlFromId(meta.sheet_id) : ""}
+          onClose={() => setShowEditSheet(false)}
+          onSaved={(updated) => setMeta(updated)}
         />
       )}
 
@@ -238,6 +328,79 @@ export default function WorkspacePage({
         </Modal>
       )}
     </div>
+  );
+}
+
+function EditSheetModal({
+  workspaceId,
+  current,
+  onClose,
+  onSaved,
+}: {
+  workspaceId: string;
+  current: string;
+  onClose: () => void;
+  onSaved: (updated: WorkspaceMeta) => void;
+}) {
+  const toast = useToast();
+  const [url, setUrl] = useState(current);
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    setSaving(true);
+    try {
+      const updated = await api.setWorkspaceSheet(workspaceId, trimmed);
+      toast.success("Google Sheet linked.");
+      onSaved(updated);
+      onClose();
+    } catch (err) {
+      toast.fromError(err, "Could not update the Sheet URL.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="Google Sheet" onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4">
+        <div>
+          <label
+            htmlFor="edit-sheet-url"
+            className="mb-1.5 block text-xs font-medium text-neutral-600"
+          >
+            Google Sheet URL
+          </label>
+          <input
+            id="edit-sheet-url"
+            autoFocus
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://docs.google.com/spreadsheets/d/…"
+            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
+          />
+          <p className="mt-1 text-xs text-neutral-500">
+            Paste the full share URL or just the sheet ID. This enables live
+            import from Sheets.
+          </p>
+        </div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button type="button" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            variant="primary"
+            loading={saving}
+            disabled={!url.trim()}
+          >
+            Save
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 

@@ -23,11 +23,13 @@ from iff_scheduler.db import supabase_enabled
 from iff_scheduler.workspace import (
     WorkspaceMeta,
     create_workspace,
+    extract_sheet_id,
     find_workspace,
     interim_dir,
     load_workspaces,
     runs_dir,
     save_workspaces,
+    set_workspace_sheet,
 )
 
 router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
@@ -36,6 +38,13 @@ router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 class WorkspaceCreate(BaseModel):
     name: str
     group: str
+    # Optional so the UI's "+ New" form can link a Sheet in the same step
+    # (a full Sheets URL or a bare ID). Blank / whitespace means "no sheet".
+    sheet_url: str | None = None
+
+
+class SheetLink(BaseModel):
+    sheet_url: str
 
 
 def _scaffold_dirs(name: str) -> None:
@@ -87,14 +96,22 @@ def list_workspaces() -> list[WorkspaceMeta]:
 
 @router.post("", response_model=WorkspaceMeta, status_code=status.HTTP_201_CREATED)
 def post_workspace(body: WorkspaceCreate) -> WorkspaceMeta:
+    """Create a workspace, optionally linking a Google Sheet in the same
+    request so the UI never has to fall back to `iffsched workspace
+    set-sheet`."""
+    raw_url = (body.sheet_url or "").strip()
+    sheet_id = extract_sheet_id(raw_url) if raw_url else None
     try:
         if supabase_enabled():
             from iff_scheduler.db import workspace_repo
 
-            meta = workspace_repo.create_workspace(body.name, body.group)
+            meta = workspace_repo.create_workspace(body.name, body.group, sheet_id=sheet_id)
             _scaffold_dirs(body.name)
             return meta
-        return create_workspace(body.name, body.group)
+        meta = create_workspace(body.name, body.group)
+        if sheet_id is not None:
+            meta = set_workspace_sheet(body.name, sheet_id)
+        return meta
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -102,6 +119,24 @@ def post_workspace(body: WorkspaceCreate) -> WorkspaceMeta:
 @router.get("/{workspace_id}", response_model=WorkspaceMeta)
 def get_workspace(workspace_id: str) -> WorkspaceMeta:
     return resolve_workspace(workspace_id)
+
+
+@router.patch("/{workspace_id}/sheet", response_model=WorkspaceMeta)
+def patch_workspace_sheet(workspace_id: str, body: SheetLink) -> WorkspaceMeta:
+    """Attach or replace the workspace's linked Google Sheet from a full
+    Sheets URL (or a bare ID). The HTTP twin of `iffsched workspace
+    set-sheet`."""
+    sheet_id = extract_sheet_id(body.sheet_url.strip())
+    if not sheet_id:
+        raise HTTPException(status_code=422, detail="sheet_url must not be empty.")
+    try:
+        if supabase_enabled():
+            from iff_scheduler.db import workspace_repo
+
+            return workspace_repo.set_sheet(workspace_id, sheet_id)
+        return set_workspace_sheet(workspace_id, sheet_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.delete("/{workspace_id}", status_code=status.HTTP_200_OK)

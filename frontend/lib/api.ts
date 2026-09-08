@@ -177,6 +177,10 @@ export type RetryHooks = {
   onRetry?: (attempt: number, maxAttempts: number) => void;
 };
 
+/** `createWorkspace` extras: an optional Google Sheet URL to link in the
+ * same request, plus the cold-start retry hook. */
+export type CreateWorkspaceOpts = RetryHooks & { sheetUrl?: string };
+
 export const api = {
   health: () => request<{ status: string }>("/health"),
 
@@ -186,15 +190,26 @@ export const api = {
   listWorkspaces: (hooks?: RetryHooks) =>
     request<WorkspaceMeta[]>("/workspaces", { retry: true, ...hooks }),
 
-  createWorkspace: (name: string, group: string, hooks?: RetryHooks) =>
+  createWorkspace: (name: string, group: string, opts?: CreateWorkspaceOpts) =>
     request<WorkspaceMeta>("/workspaces", {
-      ...json({ name, group }),
+      ...json({
+        name,
+        group,
+        sheet_url: opts?.sheetUrl?.trim() || null,
+      }),
       retry: true,
-      ...hooks,
+      onRetry: opts?.onRetry,
     }),
 
   getWorkspace: (id: string) =>
     request<WorkspaceMeta>(`/workspaces/${seg(id)}`),
+
+  /** Attach or replace the workspace's linked Google Sheet (URL or bare ID). */
+  setWorkspaceSheet: (id: string, sheetUrl: string) =>
+    request<WorkspaceMeta>(`/workspaces/${seg(id)}/sheet`, {
+      method: "PATCH",
+      body: JSON.stringify({ sheet_url: sheetUrl }),
+    }),
 
   deleteWorkspace: (id: string) =>
     request<{ deleted: string }>(`/workspaces/${seg(id)}`, {
