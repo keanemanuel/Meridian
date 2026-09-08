@@ -96,24 +96,32 @@ This assumes the one-time setup is done:
 
 ## 2. Deploy the frontend to Vercel
 
+There is **no `vercel.json`** — Vercel hosts only the Next.js app and
+zero-config detection handles the build. All configuration is in the
+project settings.
+
 1. [vercel.com](https://vercel.com) → **New Project** → import `Meridian`.
-2. **Framework Preset:** Next.js. **Root Directory:** `frontend`.
-   Root `vercel.json` now builds only `frontend/package.json` — there is no
-   Python build and no `/api/*` route on Vercel any more.
-3. **Environment variables** (Project Settings → Environment Variables,
-   Production + Preview):
+2. **Settings → Build & Deployment → Root Directory:** set to `frontend`
+   and save. This is what points Vercel's Next.js detection at the app;
+   without it the build runs from the repo root, finds no framework, and
+   every route 404s.
+3. **Framework Preset:** Next.js (auto-detected once Root Directory is set;
+   leave Build/Output/Install commands on their defaults).
+4. **Settings → Environment Variables** (Production + Preview):
 
    | Variable | Value |
    |---|---|
-   | `NEXT_PUBLIC_API_URL` | The Railway public URL **including `/api`**, e.g. `https://meridian-api-production.up.railway.app/api` |
-   | `SUPABASE_URL` | Same as Railway (only if a frontend component reads Supabase directly) |
+   | `NEXT_PUBLIC_API_URL` | The Railway public URL **including `/api`**, e.g. `https://meridian-production-f9c9.up.railway.app/api` — no trailing slash |
+   | `SUPABASE_URL` | Same as Railway (only if a frontend component reads Supabase directly — none today) |
    | `SUPABASE_KEY` | Same as Railway (same caveat) |
 
    `NEXT_PUBLIC_API_URL` is read in `frontend/lib/api.ts` as the base for
    every call; each path there already omits the `/api` prefix, so the
-   value must carry it.
+   value must carry it. It is baked in at **build** time — set it before
+   the first deploy, and after changing it use **Redeploy** without the
+   build cache.
 
-4. Deploy.
+5. Deploy.
 
 ---
 
@@ -138,9 +146,14 @@ scripts/start_api.sh          # uvicorn on :8000
 cd frontend && npm run dev     # Next.js on :3000
 ```
 
-`NEXT_PUBLIC_API_URL` stays **unset** locally; `next.config.ts` proxies
+To run fully local, leave `NEXT_PUBLIC_API_URL` **unset** in
+`frontend/.env.local` (or delete the file): `next.config.ts` then proxies
 `/api/*` to `:8000` in development only (the rewrite returns `[]` outside
-`NODE_ENV=development`, so the Vercel build carries no proxy rule).
+`NODE_ENV=development`, so a Vercel build carries no proxy rule). If
+`frontend/.env.local` instead points at the Railway URL, `npm run dev`
+talks to the deployed API directly and `start_api.sh` isn't needed.
+`frontend/.env.local` is gitignored and never reaches Vercel — the
+deployed value lives only in the Vercel project's env vars.
 
 ---
 
