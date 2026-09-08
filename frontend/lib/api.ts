@@ -70,12 +70,50 @@ function parseDetail(status: number, body: unknown): ApiError {
   return new ApiError(status, `Request failed (${status})`);
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** Per-attempt hard ceiling. The API runs on Railway's free tier, which
+ * cold-starts in 10–30s after an idle period; a shorter timeout would abort
+ * a request the backend is still legitimately booting to answer. */
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/** Retries *after* the first try, for calls that opt in (`retry: true`).
+ * 3 retries × 5s gaps rides out a cold start without hammering the box. */
+const RETRY_ATTEMPTS = 3;
+const RETRY_GAP_MS = 5_000;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Options accepted alongside `fetch`'s own — `retry` turns on the
+ * cold-start retry loop, `onRetry` fires before each wait so the UI can show
+ * a "connecting" state instead of an error. */
+type RequestInitEx = RequestInit & {
+  retry?: boolean;
+  onRetry?: (attempt: number, maxAttempts: number) => void;
+};
+
+/** Retry only failures that a cold/booting backend produces: the fetch
+ * itself threw (DNS/connection refused/timeout → status 0) or an edge proxy
+ * returned a gateway error while the app was still starting. A 4xx is a real
+ * answer — never retry it. */
+function isTransient(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    (err.status === 0 ||
+      err.status === 502 ||
+      err.status === 503 ||
+      err.status === 504)
+  );
+}
+
+async function attemptOnce<T>(path: string, init?: RequestInit): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
   let res: Response;
   try {
     res = await fetch(`${API_URL}${path}`, {
       ...init,
       cache: "no-store",
+      signal: controller.signal,
       headers: {
         ...(init?.body instanceof FormData
           ? {}
@@ -83,11 +121,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         ...init?.headers,
       },
     });
-  } catch {
+  } catch (err) {
+    const timedOut = err instanceof DOMException && err.name === "AbortError";
     throw new ApiError(
       0,
-      `Cannot reach the API at ${API_URL}. Is the backend running?`,
+      timedOut
+        ? `The API at ${API_URL} did not respond within ${REQUEST_TIMEOUT_MS / 1000}s.`
+        : `Cannot reach the API at ${API_URL}. Is the backend running?`,
     );
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!res.ok) {
@@ -104,6 +147,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function request<T>(path: string, init?: RequestInitEx): Promise<T> {
+  const { retry = false, onRetry, ...fetchInit } = init ?? {};
+  const maxAttempts = retry ? RETRY_ATTEMPTS + 1 : 1;
+
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await attemptOnce<T>(path, fetchInit);
+    } catch (err) {
+      if (attempt >= maxAttempts || !isTransient(err)) throw err;
+      onRetry?.(attempt, maxAttempts);
+      await sleep(RETRY_GAP_MS);
+    }
+  }
+}
+
 const json = (body: unknown): RequestInit => ({
   method: "POST",
   body: JSON.stringify(body),
@@ -112,13 +170,28 @@ const json = (body: unknown): RequestInit => ({
 /** Assignment ids are `applicant:choice`, so they must be encoded into the path. */
 const seg = (s: string) => encodeURIComponent(s);
 
+/** Callback the first-contact calls take so a caller (the workspaces
+ * provider, the New Workspace form) can swap in a "connecting…" state while
+ * a cold Railway backend boots. */
+export type RetryHooks = {
+  onRetry?: (attempt: number, maxAttempts: number) => void;
+};
+
 export const api = {
   health: () => request<{ status: string }>("/health"),
 
-  listWorkspaces: () => request<WorkspaceMeta[]>("/workspaces"),
+  // First contact after an idle period pays the Railway cold start, so this
+  // and createWorkspace ride the retry loop; every later call assumes a warm
+  // backend and fails fast.
+  listWorkspaces: (hooks?: RetryHooks) =>
+    request<WorkspaceMeta[]>("/workspaces", { retry: true, ...hooks }),
 
-  createWorkspace: (name: string, group: string) =>
-    request<WorkspaceMeta>("/workspaces", json({ name, group })),
+  createWorkspace: (name: string, group: string, hooks?: RetryHooks) =>
+    request<WorkspaceMeta>("/workspaces", {
+      ...json({ name, group }),
+      retry: true,
+      ...hooks,
+    }),
 
   getWorkspace: (id: string) =>
     request<WorkspaceMeta>(`/workspaces/${seg(id)}`),

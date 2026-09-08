@@ -15,7 +15,7 @@ function NewWorkspaceModal({
   group: string;
   onClose: () => void;
 }) {
-  const { create } = useWorkspaces();
+  const { create, connecting } = useWorkspaces();
   const toast = useToast();
   const router = useRouter();
   const [name, setName] = useState("");
@@ -63,6 +63,11 @@ function NewWorkspaceModal({
             {group}
           </p>
         </div>
+        {saving && connecting && (
+          <p className="text-xs text-neutral-400">
+            Connecting to backend… the API may be waking up (up to ~30s).
+          </p>
+        )}
         <div className="flex justify-end gap-2 pt-1">
           <Button type="button" onClick={onClose}>
             Cancel
@@ -155,7 +160,7 @@ function Section({
 }
 
 export function Sidebar() {
-  const { groups, loading, error } = useWorkspaces();
+  const { groups, loading, connecting, error } = useWorkspaces();
   const [newIn, setNewIn] = useState<string | null>(null);
 
   return (
@@ -163,11 +168,21 @@ export function Sidebar() {
       <nav className="flex-1 overflow-y-auto py-3">
         {loading && (
           <p className="flex items-center gap-2 px-3 py-2 text-xs text-neutral-500">
-            <Spinner /> Loading workspaces…
+            <Spinner />{" "}
+            {connecting
+              ? "Connecting to backend…"
+              : "Loading workspaces…"}
           </p>
         )}
 
-        {error && (
+        {connecting && (
+          <p className="mx-3 mt-1 text-xs text-neutral-400">
+            The scheduler API is waking up — this can take up to half a
+            minute on the first request.
+          </p>
+        )}
+
+        {error && !loading && (
           <p className="mx-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
             {error}
           </p>

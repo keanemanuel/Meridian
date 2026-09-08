@@ -22,6 +22,9 @@ type WorkspacesContextValue = {
   workspaces: WorkspaceMeta[];
   groups: string[];
   loading: boolean;
+  /** True while a request is being retried through a Railway cold start —
+   * the UI shows "Connecting to backend…" rather than an error. */
+  connecting: boolean;
   error: string | null;
   refresh: () => Promise<void>;
   create: (name: string, group: string) => Promise<WorkspaceMeta>;
@@ -32,17 +35,21 @@ const WorkspacesContext = createContext<WorkspacesContextValue | null>(null);
 export function WorkspacesProvider({ children }: { children: ReactNode }) {
   const [workspaces, setWorkspaces] = useState<WorkspaceMeta[]>([]);
   const [loading, setLoading] = useState(true);
+  const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const list = await api.listWorkspaces();
+      const list = await api.listWorkspaces({
+        onRetry: () => setConnecting(true),
+      });
       setWorkspaces(list);
       setError(null);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setLoading(false);
+      setConnecting(false);
     }
   }, []);
 
@@ -56,9 +63,15 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
 
   const create = useCallback(
     async (name: string, group: string) => {
-      const created = await api.createWorkspace(name, group);
-      await refresh();
-      return created;
+      try {
+        const created = await api.createWorkspace(name, group, {
+          onRetry: () => setConnecting(true),
+        });
+        await refresh();
+        return created;
+      } finally {
+        setConnecting(false);
+      }
     },
     [refresh],
   );
@@ -71,8 +84,8 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
   }, [workspaces]);
 
   const value = useMemo<WorkspacesContextValue>(
-    () => ({ workspaces, groups, loading, error, refresh, create }),
-    [workspaces, groups, loading, error, refresh, create],
+    () => ({ workspaces, groups, loading, connecting, error, refresh, create }),
+    [workspaces, groups, loading, connecting, error, refresh, create],
   );
 
   return (
