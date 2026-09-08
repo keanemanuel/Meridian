@@ -65,6 +65,27 @@ def health() -> dict[str, Any]:
     return {"status": "ok"}
 
 
+@app.get("/api/debug", tags=["meta"])
+def debug() -> dict[str, Any]:
+    """Deploy diagnostics: which store the API resolved at runtime and
+    whether the raw `SUPABASE_*` env vars are visible to the process.
+    Reports booleans only — never the values — so it is safe to expose."""
+    import os
+
+    from dotenv import load_dotenv
+
+    from iff_scheduler import workspace as ws
+    from iff_scheduler.db import supabase_enabled
+
+    load_dotenv()
+    return {
+        "supabase_enabled": supabase_enabled(),
+        "supabase_url_set": bool(os.environ.get("SUPABASE_URL")),
+        "supabase_key_set": bool(os.environ.get("SUPABASE_KEY")),
+        "workspaces_file_exists": ws.WORKSPACES_FILE.exists(),
+    }
+
+
 app.include_router(workspaces.router)
 app.include_router(pipeline.router)
 app.include_router(schedule.router)

@@ -50,6 +50,21 @@ def test_health(client: TestClient) -> None:
     assert resp.json() == {"status": "ok"}
 
 
+def test_debug_reports_backend_flags_as_booleans(client: TestClient) -> None:
+    """/api/debug is the deploy-diagnostic endpoint: it must always answer
+    200 with the four boolean flags, whatever backend is configured."""
+    resp = client.get("/api/debug")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) == {
+        "supabase_enabled",
+        "supabase_url_set",
+        "supabase_key_set",
+        "workspaces_file_exists",
+    }
+    assert all(isinstance(v, bool) for v in body.values())
+
+
 # --------------------------------------------------------------- workspaces
 
 

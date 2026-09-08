@@ -90,7 +90,21 @@ This assumes the one-time setup is done:
 
    ```
    curl https://<your-railway-domain>/api/health      # → {"status":"ok"}
+   curl https://<your-railway-domain>/api/debug        # backend/env flags
    ```
+
+   `/api/debug` returns booleans only (never the values):
+
+   ```json
+   {"supabase_enabled": true, "supabase_url_set": true,
+    "supabase_key_set": true, "workspaces_file_exists": false}
+   ```
+
+   If `supabase_url_set` / `supabase_key_set` are `false`, the `SUPABASE_*`
+   vars aren't reaching the process — fix them in Railway → Variables and
+   redeploy. `GET /api/workspaces` will not 500 in that state: it logs the
+   failure to stderr (visible in Railway logs) and falls back to the file
+   store (an empty list on a fresh box).
 
 ---
 
