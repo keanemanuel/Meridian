@@ -7,15 +7,19 @@ with no overlapping availability gets an empty slot list. `validate.py` is
 the single place that turns those into rejections, so the reasons stay in
 one report (CLAUDE.md invariant 3: "nothing is guessed").
 
-Raw column names follow the Google Form fields in SPEC.md §9.1. Per-day
-availability columns are addressed by the day's configured `label`
-(`config/event.yaml`), e.g. "Availability — Thu", "Availability — Fri" — this
-keeps the mapping driven by config rather than by parsing a formatted date
-out of the header text.
+Raw column names are the headers of the real IFF recruitment Google Form
+(see `COLUMN_*` below). Availability comes from a single "Preferred Interview
+Date" column whose cells name a day ("Thursday, 18 September 2025"), not time
+blocks — `parse_preferred_dates` turns each named weekday that matches an
+event day into that whole day's window, so an interview may land anywhere in
+it. Matching is by weekday name, not the literal date: the form's calendar
+year need not equal the configured event year, and nothing is inferred
+beyond the day the applicant actually chose (CLAUDE.md invariant 3).
 """
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -29,13 +33,26 @@ from iff_scheduler.domain.grid import SlotGrid
 from iff_scheduler.settings import DivisionsConfig, EventConfig
 
 COLUMN_TIMESTAMP = "Timestamp"
-COLUMN_EMAIL = "Email address"
-COLUMN_FULL_NAME = "Full name"
-COLUMN_PHONE = "Phone / WhatsApp"
-COLUMN_SUBDIVISION_1 = "First-choice sub-division"
-COLUMN_SUBDIVISION_2 = "Second-choice sub-division"
-COLUMN_AVAILABILITY_PREFIX = "Availability — "
+COLUMN_EMAIL = "Email Address"
+COLUMN_FULL_NAME = "Full Name"
+COLUMN_PHONE = "Phone Number (WhatsApp)"
+COLUMN_STUDENT_ID = "Student ID"
+COLUMN_SUBDIVISION_1 = "First Preference"
+COLUMN_SUBDIVISION_2 = "Second Preference"
+COLUMN_PREFERRED_DATE = "Preferred Interview Date"
+# The real form has no free-text scheduling-notes field; kept so an augmented
+# export that adds one still flows through (`.get` returns None otherwise).
 COLUMN_NOTES = "Accessibility / scheduling notes"
+
+_WEEKDAYS = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
 
 
 @dataclass
@@ -53,10 +70,15 @@ class ParsedRow:
     availability_slots: list[str]
     submitted_at: datetime | None
     notes: str | None
+    student_id: str = ""
 
 
 def parse_availability_cell(raw: str) -> list[tuple[Time, Time]]:
-    """Parse "18:00-18:30, 19:00 - 19:30" into [(18:00, 18:30), (19:00, 19:30)]."""
+    """Parse "18:00-18:30, 19:00 - 19:30" into [(18:00, 18:30), (19:00, 19:30)].
+
+    Retained for exports/sheets that still supply explicit time-block strings;
+    the live IFF form uses `parse_preferred_dates` instead.
+    """
     raw = (raw or "").strip()
     if not raw:
         return []
@@ -68,6 +90,30 @@ def parse_availability_cell(raw: str) -> list[tuple[Time, Time]]:
         start_str, _, end_str = token.partition("-")
         windows.append((Time.fromisoformat(start_str.strip()), Time.fromisoformat(end_str.strip())))
     return windows
+
+
+def parse_preferred_dates(
+    raw: str, event: EventConfig
+) -> dict[Date, list[tuple[Time, Time]]]:
+    """Turn a "Preferred Interview Date" cell into per-day availability windows.
+
+    Cells look like "Thursday, 18 September 2025" (a single value, or several
+    comma-joined if the form allowed multiple picks). Every weekday name found
+    that matches an event day makes that whole day available — the window is
+    the day's configured opening hours, so the solver may place the interview
+    in any slot that day. An empty or unrecognised cell yields no availability,
+    which `validate.py` turns into a NO_AVAILABILITY rejection (E-02) rather
+    than a guess.
+    """
+    text = (raw or "").lower()
+    if not text:
+        return {}
+    named = {w for w in _WEEKDAYS if re.search(rf"\b{re.escape(w)}\b", text)}
+    return {
+        day.date: [(day.start, day.end)]
+        for day in event.days
+        if day.date.strftime("%A").lower() in named
+    }
 
 
 def merge_windows(windows: list[tuple[Time, Time]]) -> list[tuple[Time, Time]]:
@@ -131,6 +177,17 @@ def map_sub_division(raw: str, mapping: Mapping[str, DivisionCode]) -> DivisionC
     return mapping.get((raw or "").strip())
 
 
+# Google Forms writes its own submission timestamp in the sheet's locale, not
+# ISO 8601 — commonly M/D/YYYY with a 24- or 12-hour clock. Try ISO first, then
+# these; anything else is left as None for validate.py to reject (E, invariant 3).
+_TIMESTAMP_FORMATS = (
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M",
+    "%d/%m/%Y %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S",
+)
+
+
 def parse_timestamp(raw: str) -> datetime | None:
     raw = (raw or "").strip()
     if not raw:
@@ -138,7 +195,13 @@ def parse_timestamp(raw: str) -> datetime | None:
     try:
         return datetime.fromisoformat(raw)
     except ValueError:
-        return None
+        pass
+    for fmt in _TIMESTAMP_FORMATS:
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def parse_row(
@@ -151,16 +214,14 @@ def parse_row(
     sub_division_1 = (raw.get(COLUMN_SUBDIVISION_1) or "").strip()
     sub_division_2 = (raw.get(COLUMN_SUBDIVISION_2) or "").strip()
 
-    availability_by_day: dict[Date, list[tuple[Time, Time]]] = {}
-    for day in event.days:
-        column = f"{COLUMN_AVAILABILITY_PREFIX}{day.label}"
-        availability_by_day[day.date] = parse_availability_cell(raw.get(column) or "")
+    availability_by_day = parse_preferred_dates(raw.get(COLUMN_PREFERRED_DATE) or "", event)
 
     return ParsedRow(
         row_number=row_number,
         email=(raw.get(COLUMN_EMAIL) or "").strip().lower(),
         full_name=(raw.get(COLUMN_FULL_NAME) or "").strip(),
         phone=(raw.get(COLUMN_PHONE) or "").strip(),
+        student_id=(raw.get(COLUMN_STUDENT_ID) or "").strip(),
         sub_division_1=sub_division_1,
         sub_division_2=sub_division_2,
         division_1=map_sub_division(sub_division_1, divisions.sub_division_mapping),

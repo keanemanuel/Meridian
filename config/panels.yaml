@@ -1,23 +1,63 @@
-# BALANCED BASELINE for 120 applicants / 240 interviews / 24 slots:
-# 2 panels per division = 12 panels = 288 capacity = 83% utilisation.
+# Real-room baseline for 120 applicants / 240 interviews / 23 slots.
+#
+# Each division fields 2 panels on Thursday and 2 on Friday. Panels inherit
+# their room's day(s): a panel in a Thursday-only room is automatically
+# Thursday-only, so `active_windows` is only needed for the two rooms that
+# run both evenings (2018, 2019).
+#
+# Capacity: 12 Thu panels x 10 slots + 12 Fri panels x 13 slots = 276,
+# ~15% headroom over 240. Run `iffsched check` against the real applicant
+# sheet before solving — it will recommend more panels per division if a
+# division's demand runs hot.
 panels:
-  - {id: MEDMARDOC-A, division: MEDMARDOC, room: "2014"}
-  - {id: MEDMARDOC-B, division: MEDMARDOC, room: "2014"}
-  - {id: CREATIVE-A,  division: CREATIVE,  room: "2014"}
-  - {id: CREATIVE-B,  division: CREATIVE,  room: "2014"}
-  - {id: LOGISTICS-A, division: LOGISTICS, room: "2014"}
-  - {id: LOGISTICS-B, division: LOGISTICS, room: "2014"}
-  - {id: FNB-A,       division: FNB,       room: "2016"}
-  - {id: FNB-B,       division: FNB,       room: "2016"}
-  - {id: PROGRAM-A,   division: PROGRAM,   room: "2016"}
-  - {id: PROGRAM-B,   division: PROGRAM,   room: "2016"}
-  - {id: PROGRAM-C,   division: PROGRAM,   room: "2016"}   # +1 for high demand
-  - {id: LIAISON-A,   division: LIAISON,   room: "2016"}
-  - {id: LIAISON-B,   division: LIAISON,   room: "2016"}
+  # ---------------- Thursday ----------------
+  - {id: MEDMARDOC-T1, division: MEDMARDOC, room: "2016"}
+  - {id: MEDMARDOC-T2, division: MEDMARDOC, room: "2017"}
+  - {id: CREATIVE-T1,  division: CREATIVE,  room: "2016"}
+  - {id: CREATIVE-T2,  division: CREATIVE,  room: "2017"}
+  - {id: LOGISTICS-T1, division: LOGISTICS, room: "2020"}
+  - {id: LOGISTICS-T2, division: LOGISTICS, room: "3013"}
+  - {id: LIAISON-T1,   division: LIAISON,   room: "2020"}
+  - {id: LIAISON-T2,   division: LIAISON,   room: "3013"}
+  - id: FNB-T1
+    division: FNB
+    room: "2018"
+    active_windows: [{date: 2026-09-17, start: "18:00", end: "21:30"}]
+  - id: FNB-T2
+    division: FNB
+    room: "2019"
+    active_windows: [{date: 2026-09-17, start: "18:00", end: "21:30"}]
+  - id: PROGRAM-T1
+    division: PROGRAM
+    room: "2018"
+    active_windows: [{date: 2026-09-17, start: "18:00", end: "21:30"}]
+  - id: PROGRAM-T2
+    division: PROGRAM
+    room: "2019"
+    active_windows: [{date: 2026-09-17, start: "18:00", end: "21:30"}]
 
-# Panels may also declare limited availability:
-#  - id: LIAISON-B
-#    division: LIAISON
-#    room: "2016"
-#    active_windows:
-#      - {date: 2026-09-17, start: "18:00", end: "22:00"}   # Thursday only
+  # ----------------- Friday -----------------
+  - {id: MEDMARDOC-F1, division: MEDMARDOC, room: "2014"}
+  - {id: MEDMARDOC-F2, division: MEDMARDOC, room: "2015"}
+  - {id: CREATIVE-F1,  division: CREATIVE,  room: "2014"}
+  - {id: CREATIVE-F2,  division: CREATIVE,  room: "2015"}
+  - {id: LOGISTICS-F1, division: LOGISTICS, room: "2014"}
+  - {id: LOGISTICS-F2, division: LOGISTICS, room: "3033"}
+  - {id: LIAISON-F1,   division: LIAISON,   room: "2015"}
+  - {id: LIAISON-F2,   division: LIAISON,   room: "3033"}
+  - id: FNB-F1
+    division: FNB
+    room: "2018"
+    active_windows: [{date: 2026-09-18, start: "17:00", end: "21:30"}]
+  - id: FNB-F2
+    division: FNB
+    room: "2019"
+    active_windows: [{date: 2026-09-18, start: "17:00", end: "21:30"}]
+  - id: PROGRAM-F1
+    division: PROGRAM
+    room: "2018"
+    active_windows: [{date: 2026-09-18, start: "17:00", end: "21:30"}]
+  - id: PROGRAM-F2
+    division: PROGRAM
+    room: "2019"
+    active_windows: [{date: 2026-09-18, start: "17:00", end: "21:30"}]

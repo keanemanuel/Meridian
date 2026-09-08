@@ -81,6 +81,10 @@ class RoomEntry(BaseModel):
     id: str
     max_concurrent_panels: int
     divisions: list[DivisionCode]
+    # Which event days this physical room is available on (FR-20). Empty means
+    # every day. A room listed for Thursday only cannot host a Friday slot, and
+    # `resolve_panels` shrinks any panel in it to that day's slots accordingly.
+    days: list[Date] = []
 
 
 class RoomsConfig(BaseModel):

@@ -1,9 +1,47 @@
-# Current 2-room plan. At the 12-panel baseline this means 6 simultaneous
-# interviews per room — only viable if these are halls. See SPEC.md §1.2, Finding A.
+# Real IFF room allocation. Different rooms are available on each evening;
+# 2018 and 2019 are the only rooms booked for both. `days` empty would mean
+# "every day" — here every room states its day(s) explicitly.
+#
+# Every room can host any division (there is no per-room division split in the
+# real booking), so `divisions` lists all of them. `max_concurrent_panels: 2`
+# — each room runs up to two interview stations at once.
 rooms:
-  - id: "2014"
-    max_concurrent_panels: 6
-    divisions: [MEDMARDOC, CREATIVE, LOGISTICS]
+  # ---- Thursday 2026-09-17 ----
   - id: "2016"
-    max_concurrent_panels: 6
-    divisions: [FNB, PROGRAM, LIAISON]
+    max_concurrent_panels: 2
+    divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
+    days: [2026-09-17]
+  - id: "2017"
+    max_concurrent_panels: 2
+    divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
+    days: [2026-09-17]
+  - id: "2020"
+    max_concurrent_panels: 2
+    divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
+    days: [2026-09-17]
+  - id: "3013"
+    max_concurrent_panels: 2
+    divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
+    days: [2026-09-17]
+  # ---- Friday 2026-09-18 ----
+  - id: "2014"
+    max_concurrent_panels: 3   # hosts 3 Friday panels (see panels.yaml)
+    divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
+    days: [2026-09-18]
+  - id: "2015"
+    max_concurrent_panels: 3   # hosts 3 Friday panels (see panels.yaml)
+    divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
+    days: [2026-09-18]
+  - id: "3033"
+    max_concurrent_panels: 2
+    divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
+    days: [2026-09-18]
+  # ---- Both evenings ----
+  - id: "2018"
+    max_concurrent_panels: 2
+    divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
+    days: [2026-09-17, 2026-09-18]
+  - id: "2019"
+    max_concurrent_panels: 2
+    divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
+    days: [2026-09-17, 2026-09-18]

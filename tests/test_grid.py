@@ -114,8 +114,9 @@ def test_grid_regenerates_from_committed_event_config() -> None:
     assert settings.event.interview_duration_minutes == 20
 
     grid = build_slot_grid(settings.event)
-    assert len(grid.slots) == 24
+    # Real IFF windows: Thu 18:00-21:30 (10 slots) + Fri 17:00-21:30 (13) = 23.
+    assert len(grid.slots) == 23
 
     event_30 = settings.event.model_copy(update={"interview_duration_minutes": 30})
     grid_30 = build_slot_grid(event_30)
-    assert len(grid_30.slots) == 16
+    assert len(grid_30.slots) == 16  # Thu 7 + Fri 9

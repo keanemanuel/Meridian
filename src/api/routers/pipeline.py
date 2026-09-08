@@ -191,8 +191,8 @@ def publish(
 
     grid = build_slot_grid(settings.event)
     applicants = load_clean_applicants(applicants_path)
-    panels = resolve_panels(settings.panels, grid)
-    rooms = resolve_rooms(settings.rooms)
+    panels = resolve_panels(settings.panels, settings.rooms, grid)
+    rooms = resolve_rooms(settings.rooms, grid)
     assignments = load_assignments(assignments_path)
 
     resolved_run_id = run_dir.resolve().name

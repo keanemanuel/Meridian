@@ -36,23 +36,22 @@ from iff_scheduler.settings import load_settings
 
 HEADER = [
     "Timestamp",
-    "Email address",
-    "Full name",
-    "Phone / WhatsApp",
-    "First-choice sub-division",
-    "Second-choice sub-division",
-    "Availability — Thu",
-    "Availability — Fri",
-    "Accessibility / scheduling notes",
+    "Full Name",
+    "Student ID",
+    "Phone Number (WhatsApp)",
+    "Email Address",
+    "First Preference",
+    "Second Preference",
+    "Preferred Interview Date",
 ]
 
-THU_AVAILABILITY = "18:00-18:20, 18:20-18:40, 18:40-19:00, 19:00-19:20"
+PREFERRED_DATE = "Thursday, 18 September 2025"
 
 
 def _row(
     timestamp: str, email: str, full_name: str, sub_1: str = "Creative", sub_2: str = "WebMaster"
 ) -> list[str]:
-    return [timestamp, email, full_name, "+62-812", sub_1, sub_2, THU_AVAILABILITY, "", ""]
+    return [timestamp, full_name, "IFF-0000", "+62-812", email, sub_1, sub_2, PREFERRED_DATE]
 
 
 class FakeWorksheet:
@@ -81,7 +80,7 @@ def test_read_raw_shapes_sheet_like_csv_source() -> None:
 
     assert list(df.columns) == HEADER
     assert len(df) == 1
-    assert df.iloc[0]["Email address"] == "ayu@example.com"
+    assert df.iloc[0]["Email Address"] == "ayu@example.com"
 
 
 def test_read_raw_empty_sheet_is_empty_frame() -> None:

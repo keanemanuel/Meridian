@@ -45,6 +45,9 @@ class Room(BaseModel):
     id: str
     max_concurrent_panels: int
     divisions: list[DivisionCode]
+    # Event days this room is available on, resolved from config (empty in
+    # config means "every day"; `resolve_rooms` fills it with the actual dates).
+    days: list[Date] = []
 
 
 class Panel(BaseModel):
@@ -67,6 +70,7 @@ class Applicant(BaseModel):
     full_name: str
     email: str
     phone: str
+    student_id: str = ""
     sub_division_1: str
     sub_division_2: str
     division_1: DivisionCode

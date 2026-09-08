@@ -8,6 +8,7 @@ comparable. Pure: no I/O, no adapters, no network.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date as Date
 from typing import Protocol
 
 from iff_scheduler.domain.grid import SlotGrid
@@ -68,20 +69,33 @@ class Solver(Protocol):
     def solve(self, problem: SolveProblem) -> SolveResult: ...
 
 
-def resolve_panels(panels: PanelsConfig, grid: SlotGrid) -> list[Panel]:
+def _room_days_by_id(rooms: RoomsConfig, grid: SlotGrid) -> dict[str, set[Date]]:
+    """Each room's available event dates. An empty `days` in config means the
+    room is open every day (FR-20)."""
+    all_dates = {slot.date for slot in grid.slots}
+    return {
+        r.id: (set(r.days) if r.days else set(all_dates)) for r in rooms.rooms
+    }
+
+
+def resolve_panels(panels: PanelsConfig, rooms: RoomsConfig, grid: SlotGrid) -> list[Panel]:
     """Turn configured panels into domain panels with their active slots resolved.
 
     A panel that declares no `active_windows` is active for the whole event
-    (FR-25). Slot ids come back in grid order, so downstream iteration is
-    deterministic (FR-35).
+    (FR-25), but never outside the days its room exists (FR-20): a panel in a
+    Thursday-only room keeps only Thursday slots. Slot ids come back in grid
+    order, so downstream iteration is deterministic (FR-35).
     """
+    room_days = _room_days_by_id(rooms, grid)
     resolved: list[Panel] = []
     for entry in panels.panels:
+        allowed_dates = room_days.get(entry.room, {slot.date for slot in grid.slots})
         if entry.active_windows:
             active = [
                 slot.slot_id
                 for slot in grid.slots
-                if any(
+                if slot.date in allowed_dates
+                and any(
                     window.date == slot.date
                     and window.start <= slot.start_time
                     and slot.end_time <= window.end
@@ -89,16 +103,22 @@ def resolve_panels(panels: PanelsConfig, grid: SlotGrid) -> list[Panel]:
                 )
             ]
         else:
-            active = [slot.slot_id for slot in grid.slots]
+            active = [slot.slot_id for slot in grid.slots if slot.date in allowed_dates]
         resolved.append(
             Panel(id=entry.id, division=entry.division, room=entry.room, active_slot_ids=active)
         )
     return resolved
 
 
-def resolve_rooms(rooms: RoomsConfig) -> list[Room]:
+def resolve_rooms(rooms: RoomsConfig, grid: SlotGrid) -> list[Room]:
+    room_days = _room_days_by_id(rooms, grid)
     return [
-        Room(id=r.id, max_concurrent_panels=r.max_concurrent_panels, divisions=list(r.divisions))
+        Room(
+            id=r.id,
+            max_concurrent_panels=r.max_concurrent_panels,
+            divisions=list(r.divisions),
+            days=sorted(room_days[r.id]),
+        )
         for r in rooms.rooms
     ]
 
@@ -107,6 +127,7 @@ def validate_problem(problem: SolveProblem) -> None:
     """Fail loudly on a malformed problem rather than silently dropping a
     constraint (CLAUDE.md invariant 3)."""
     slot_ids = {slot.slot_id for slot in problem.slots}
+    slot_date_by_id = {slot.slot_id: slot.date for slot in problem.slots}
     rooms_by_id = {room.id: room for room in problem.rooms}
     panels_by_id = {panel.id: panel for panel in problem.panels}
 
@@ -123,6 +144,20 @@ def validate_problem(problem: SolveProblem) -> None:
                 f"'{room.id}' is configured for {[d.value for d in room.divisions]} "
                 "— fix panels.yaml or rooms.yaml."
             )
+        if room.days:
+            off_day = sorted(
+                {
+                    slot_date_by_id[s].isoformat()
+                    for s in panel.active_slot_ids
+                    if s in slot_date_by_id and slot_date_by_id[s] not in set(room.days)
+                }
+            )
+            if off_day:
+                raise ValueError(
+                    f"Panel '{panel.id}' is active on {off_day}, but its room "
+                    f"'{room.id}' is only available on "
+                    f"{[d.isoformat() for d in room.days]} (FR-20)."
+                )
         unknown = [s for s in panel.active_slot_ids if s not in slot_ids]
         if unknown:
             raise ValueError(f"Panel '{panel.id}' references slots not on the grid: {unknown}")

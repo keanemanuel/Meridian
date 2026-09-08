@@ -78,8 +78,8 @@ def patch_assignment(
         raise HTTPException(status_code=404, detail=f"{path} not found — solve first.")
 
     grid = build_slot_grid(settings.event)
-    panels = resolve_panels(settings.panels, grid)
-    rooms = resolve_rooms(settings.rooms)
+    panels = resolve_panels(settings.panels, settings.rooms, grid)
+    rooms = resolve_rooms(settings.rooms, grid)
     panels_by_id = {p.id: p for p in panels}
     slots_by_id = {s.slot_id: s for s in grid.slots}
 

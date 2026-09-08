@@ -304,6 +304,7 @@ def _load_clean_applicants(path: Path) -> list[Applicant]:
                 full_name=row["full_name"],
                 email=row["email"],
                 phone=row["phone"],
+                student_id=row.get("student_id", ""),
                 sub_division_1=row["sub_division_1"],
                 sub_division_2=row["sub_division_2"],
                 division_1=DivisionCode(row["division_1"]),
@@ -352,6 +353,7 @@ def check(
         panels=settings.panels,
         grid=grid,
         target_utilisation=settings.solver.target_utilisation,
+        rooms=settings.rooms,
     )
 
     table = Table(title="Capacity Advisor")
@@ -473,8 +475,8 @@ def _build_problem(
     grid = build_slot_grid(settings.event)
     return SolveProblem(
         applicants=applicants,
-        panels=resolve_panels(settings.panels, grid),
-        rooms=resolve_rooms(settings.rooms),
+        panels=resolve_panels(settings.panels, settings.rooms, grid),
+        rooms=resolve_rooms(settings.rooms, grid),
         slots=grid.slots,
         weights=settings.solver.weights,
         min_gap_slots=settings.event.min_gap_slots,
@@ -543,6 +545,7 @@ def solve(
             panels=settings.panels,
             grid=grid,
             target_utilisation=settings.solver.target_utilisation,
+            rooms=settings.rooms,
         )
         if not is_feasible(rows):
             infeasible = ", ".join(r.division.value for r in rows if r.verdict == "INFEASIBLE")
@@ -709,8 +712,8 @@ def publish(
     settings = load_settings(config_dir)
     grid = build_slot_grid(settings.event)
     applicants = _load_clean_applicants(resolved_input_path)
-    panels = resolve_panels(settings.panels, grid)
-    rooms = resolve_rooms(settings.rooms)
+    panels = resolve_panels(settings.panels, settings.rooms, grid)
+    rooms = resolve_rooms(settings.rooms, grid)
     assignments = _load_assignments(assignments_path)
 
     resolved_run_id = run_dir.resolve().name
@@ -813,8 +816,8 @@ def lock(
 
     settings = load_settings(config_dir)
     grid = build_slot_grid(settings.event)
-    panels = resolve_panels(settings.panels, grid)
-    rooms = resolve_rooms(settings.rooms)
+    panels = resolve_panels(settings.panels, settings.rooms, grid)
+    rooms = resolve_rooms(settings.rooms, grid)
     assignments = _load_assignments(from_path)
 
     violations = validate_edits(assignments, panels, rooms, grid.slots)

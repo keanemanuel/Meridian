@@ -617,7 +617,7 @@ def _full_scale_problem() -> SolveProblem:
     settings = load_settings()
     grid = build_slot_grid(settings.event)
     slots = grid.slots
-    assert len(slots) == 24  # 2 days x 4 hours / 20 minutes
+    assert len(slots) == 23  # Thu 18:00-21:30 (10) + Fri 17:00-21:30 (13)
 
     applicants: list[Applicant] = []
     for count, division_1, division_2, sub_1, sub_2 in _DEMAND_PROFILE:
@@ -640,8 +640,8 @@ def _full_scale_problem() -> SolveProblem:
 
     return SolveProblem(
         applicants=applicants,
-        panels=resolve_panels(settings.panels, grid),
-        rooms=resolve_rooms(settings.rooms),
+        panels=resolve_panels(settings.panels, settings.rooms, grid),
+        rooms=resolve_rooms(settings.rooms, grid),
         slots=slots,
         weights=settings.solver.weights,
         min_gap_slots=settings.event.min_gap_slots,

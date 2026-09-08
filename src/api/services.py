@@ -55,6 +55,7 @@ def run_capacity_check(settings: Settings, workspace_id: str) -> dict[str, Any]:
         panels=settings.panels,
         grid=grid,
         target_utilisation=settings.solver.target_utilisation,
+        rooms=settings.rooms,
     )
     serialised = [
         {
@@ -93,6 +94,7 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
             panels=settings.panels,
             grid=grid,
             target_utilisation=settings.solver.target_utilisation,
+        rooms=settings.rooms,
         )
         if not is_feasible(rows):
             infeasible = [r.division.value for r in rows if r.verdict == "INFEASIBLE"]

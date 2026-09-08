@@ -13,6 +13,7 @@ from iff_scheduler.ingest.normalize import (
     map_sub_division,
     merge_windows,
     parse_availability_cell,
+    parse_preferred_dates,
     parse_row,
     parse_timestamp,
 )
@@ -40,6 +41,56 @@ def _event(matching: str = "strict") -> EventConfig:
         availability_matching=matching,
         days=[DayConfig(date=date(2026, 9, 17), label="Thu", start=time(18, 0), end=time(18, 40))],
     )
+
+
+def _two_day_event() -> EventConfig:
+    return EventConfig(
+        event_name="Test",
+        timezone="Asia/Jakarta",
+        interview_duration_minutes=20,
+        days=[
+            DayConfig(date=date(2026, 9, 17), label="Thu", start=time(18, 0), end=time(19, 0)),
+            DayConfig(date=date(2026, 9, 18), label="Fri", start=time(17, 0), end=time(18, 0)),
+        ],
+    )
+
+
+# ---- parse_preferred_dates (the live IFF form's availability capture) ----
+
+
+def test_preferred_dates_matches_weekday_name_not_literal_date() -> None:
+    # The form's calendar year (2025) differs from the event year (2026);
+    # matching is by weekday, and the whole day's window comes back.
+    out = parse_preferred_dates("Thursday, 18 September 2025", _two_day_event())
+    assert out == {date(2026, 9, 17): [(time(18, 0), time(19, 0))]}
+
+
+def test_preferred_dates_handles_multiple_days_in_one_cell() -> None:
+    out = parse_preferred_dates(
+        "Thursday, 18 September 2025, Friday, 19 September 2025", _two_day_event()
+    )
+    assert set(out) == {date(2026, 9, 17), date(2026, 9, 18)}
+
+
+def test_preferred_dates_blank_or_unmatched_is_empty() -> None:
+    assert parse_preferred_dates("", _two_day_event()) == {}
+    assert parse_preferred_dates("Sometime next week", _two_day_event()) == {}
+
+
+def test_parse_row_full_day_availability_covers_every_slot_that_day() -> None:
+    event = _two_day_event()
+    grid = build_slot_grid(event)
+    raw = {
+        "Timestamp": "8/20/2026 15:45:00",
+        "Email Address": "ayu@example.com",
+        "Full Name": "Ayu",
+        "First Preference": "Creative",
+        "Second Preference": "WebMaster",
+        "Preferred Interview Date": "Friday, 19 September 2025",
+    }
+    row = parse_row(raw, 1, event, DIVISIONS, grid)
+    assert row.submitted_at == datetime(2026, 8, 20, 15, 45)
+    assert row.availability_slots == ["2026-09-18_1700", "2026-09-18_1720", "2026-09-18_1740"]
 
 
 # ---- parse_availability_cell ----
@@ -124,31 +175,33 @@ def test_parse_row_resolves_same_parent_pair() -> None:
     grid = build_slot_grid(_event())
     raw = {
         "Timestamp": "2026-08-20T15:45:00",
-        "Email address": "  Ayu@Example.com ",
-        "Full name": "Ayu Prameswari",
-        "Phone / WhatsApp": "+62 812",
-        "First-choice sub-division": "Media Marketing",
-        "Second-choice sub-division": "Media Documentation",
-        "Availability — Thu": "18:00-18:30",
-        "Accessibility / scheduling notes": "",
+        "Email Address": "  Ayu@Example.com ",
+        "Full Name": "Ayu Prameswari",
+        "Phone Number (WhatsApp)": "+62 812",
+        "Student ID": "IFF-0001",
+        "First Preference": "Media Marketing",
+        "Second Preference": "Media Documentation",
+        "Preferred Interview Date": "Thursday, 18 September 2025",
     }
     row = parse_row(raw, 1, _event(), DIVISIONS, grid)
     assert row.email == "ayu@example.com"
+    assert row.student_id == "IFF-0001"
     assert row.division_1 == DivisionCode.MEDMARDOC
     assert row.division_2 == DivisionCode.MEDMARDOC
     assert row.sub_division_1 != row.sub_division_2
-    assert row.availability_slots == ["2026-09-17_1800"]
+    # A picked day = every slot that day (the test event day is 18:00-18:40).
+    assert row.availability_slots == ["2026-09-17_1800", "2026-09-17_1820"]
 
 
 def test_parse_row_leaves_unknown_subdivision_as_none_rather_than_guessing() -> None:
     grid = build_slot_grid(_event())
     raw = {
         "Timestamp": "2026-08-20T15:45:00",
-        "Email address": "gita@example.com",
-        "Full name": "Gita Ayu Lestari",
-        "First-choice sub-division": "Media Markting",
-        "Second-choice sub-division": "Creative",
-        "Availability — Thu": "18:00-18:30",
+        "Email Address": "gita@example.com",
+        "Full Name": "Gita Ayu Lestari",
+        "First Preference": "Media Markting",
+        "Second Preference": "Creative",
+        "Preferred Interview Date": "Thursday, 18 September 2025",
     }
     row = parse_row(raw, 1, _event(), DIVISIONS, grid)
     assert row.division_1 is None

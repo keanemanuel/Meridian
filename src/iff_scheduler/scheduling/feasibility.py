@@ -14,13 +14,14 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import date as Date
 from math import ceil
 from typing import Literal
 
 from iff_scheduler.domain.enums import DivisionCode
 from iff_scheduler.domain.grid import SlotGrid
 from iff_scheduler.domain.models import Applicant
-from iff_scheduler.settings import PanelEntry, PanelsConfig
+from iff_scheduler.settings import PanelEntry, PanelsConfig, RoomsConfig
 
 Verdict = Literal["OK", "TIGHT", "INFEASIBLE"]
 
@@ -38,12 +39,16 @@ class DivisionCapacity:
     verdict: Verdict
 
 
-def _panel_active_slot_ids(panel: PanelEntry, grid: SlotGrid) -> set[str]:
-    """A panel with no declared active_windows is active for the whole event (FR-25)."""
+def _panel_active_slot_ids(
+    panel: PanelEntry, grid: SlotGrid, room_dates: set[Date] | None = None
+) -> set[str]:
+    """A panel with no declared active_windows is active for the whole event
+    (FR-25), minus any day its room does not exist on (FR-20)."""
+    slots = grid.slots if room_dates is None else [s for s in grid.slots if s.date in room_dates]
     if not panel.active_windows:
-        return {slot.slot_id for slot in grid.slots}
+        return {slot.slot_id for slot in slots}
     ids: set[str] = set()
-    for slot in grid.slots:
+    for slot in slots:
         for window in panel.active_windows:
             if (
                 window.date == slot.date
@@ -66,14 +71,27 @@ def _demand_by_division(applicants: list[Applicant]) -> Counter[DivisionCode]:
     return demand
 
 
+def _room_dates(rooms: RoomsConfig | None, grid: SlotGrid) -> dict[str, set[Date]]:
+    all_dates = {slot.date for slot in grid.slots}
+    if rooms is None:
+        return {}
+    return {r.id: (set(r.days) if r.days else set(all_dates)) for r in rooms.rooms}
+
+
 def compute_capacity_advisor(
     applicants: list[Applicant],
     panels: PanelsConfig,
     grid: SlotGrid,
     target_utilisation: float,
+    rooms: RoomsConfig | None = None,
 ) -> list[DivisionCapacity]:
-    """Build the per-division demand/supply table (SPEC.md §5.5)."""
+    """Build the per-division demand/supply table (SPEC.md §5.5).
+
+    When `rooms` is given, a panel's supply is capped to the days its room is
+    available on (FR-20) — matching what the solver will actually see.
+    """
     demand = _demand_by_division(applicants)
+    room_dates = _room_dates(rooms, grid)
 
     panels_by_division: dict[DivisionCode, list[PanelEntry]] = defaultdict(list)
     for panel in panels.panels:
@@ -89,7 +107,10 @@ def compute_capacity_advisor(
         division_demand = demand.get(division, 0)
         division_panels = panels_by_division.get(division, [])
 
-        active_by_panel = [_panel_active_slot_ids(panel, grid) for panel in division_panels]
+        active_by_panel = [
+            _panel_active_slot_ids(panel, grid, room_dates.get(panel.room))
+            for panel in division_panels
+        ]
         raw_supply = sum(len(ids) for ids in active_by_panel)
 
         applicants_by_slot: Counter[str] = Counter()

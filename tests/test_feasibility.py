@@ -180,11 +180,11 @@ def test_is_feasible_true_when_nothing_infeasible() -> None:
 # ---- against the committed baseline config (SPEC.md §1.2 Finding A) ----
 
 
-def test_baseline_config_shows_why_program_gets_a_third_panel() -> None:
-    """With demand split perfectly evenly across divisions (40 each, as in Finding
-    A's worked example), 2 panels x 24 slots x 0.83 target = 39.84 < 40 — just
-    short. The formula recommends 3, which is exactly why panels.yaml gives
-    PROGRAM a third panel while every other division has 2."""
+def test_baseline_config_covers_an_even_40_per_division_split() -> None:
+    """Finding A's worked example: demand split perfectly evenly (40 per
+    division). The real-room panels.yaml fields 4 panels per division (2 each
+    evening). At 23 slots x 0.83 the formula recommends 3, so 4 configured
+    clears the bar with headroom on every division."""
     settings = load_settings()
     grid = build_slot_grid(settings.event)
     all_slots = [s.slot_id for s in grid.slots]
@@ -198,15 +198,16 @@ def test_baseline_config_shows_why_program_gets_a_third_panel() -> None:
     ]
 
     rows = compute_capacity_advisor(
-        applicants, settings.panels, grid, settings.solver.target_utilisation
+        applicants,
+        settings.panels,
+        grid,
+        settings.solver.target_utilisation,
+        rooms=settings.rooms,
     )
     creative = next(r for r in rows if r.division == DivisionCode.CREATIVE)
     program = next(r for r in rows if r.division == DivisionCode.PROGRAM)
 
-    assert creative.panels_configured == 2
-    assert creative.recommended_panels == 3
-    assert creative.verdict == "TIGHT"
-
-    assert program.panels_configured == 3
-    assert program.recommended_panels == 3
-    assert program.verdict == "OK"
+    for row in (creative, program):
+        assert row.panels_configured == 4
+        assert row.recommended_panels == 3
+        assert row.verdict == "OK"

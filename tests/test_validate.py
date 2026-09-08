@@ -121,9 +121,11 @@ def test_run_ingest_against_fixture() -> None:
     assert collapsed[0].email == "eka@example.com"
     assert collapsed[0].reason_code == "DUPLICATE_EMAIL"
 
+    # The live form captures availability a whole day at a time (a picked day
+    # is every slot that day), so SPARSE_AVAILABILITY is unreachable from a
+    # real submission — no warnings expected.
     warnings = [r for r in result.report if r.outcome == "WARNING"]
-    assert len(warnings) == 1
-    assert warnings[0].email == "fajar@example.com"
+    assert warnings == []
 
 
 def test_same_parent_pair_yields_two_interviews_not_one() -> None:
@@ -164,6 +166,7 @@ def test_write_outputs_produces_expected_csv_columns(tmp_path: Path) -> None:
         "full_name",
         "email",
         "phone",
+        "student_id",
         "sub_division_1",
         "sub_division_2",
         "division_1",
@@ -184,4 +187,6 @@ def test_write_outputs_produces_expected_csv_columns(tmp_path: Path) -> None:
         "reason_code",
         "message",
     ]
-    assert len(report_df) == 6
+    # 4 rejections + 1 collapsed duplicate (no sparse-availability warning
+    # now that availability is captured per whole day).
+    assert len(report_df) == 5
