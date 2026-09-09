@@ -65,6 +65,25 @@ def _scaffold_dirs(name: str) -> None:
     runs_dir(name).mkdir(parents=True, exist_ok=True)
 
 
+def _relocate_workspace_dir(old_name: str, new_name: str) -> None:
+    """Move a workspace's on-disk tree to sit under its new name.
+
+    In Supabase mode `workspace_repo.rename_workspace` renames the row in
+    place, but the namespaced data directory (ingested applicants, every
+    immutable `runs/<timestamp>/`) is keyed by name and would otherwise be
+    orphaned under the old one — so a `check` or re-solve under the new name
+    would 404. The file store already moves it (`rename_workspace`); this
+    brings the DB path in line.
+    """
+    if old_name != new_name:
+        old_root = ws.workspace_root(old_name)
+        new_root = ws.workspace_root(new_name)
+        if old_root.exists() and not new_root.exists():
+            new_root.parent.mkdir(parents=True, exist_ok=True)
+            old_root.rename(new_root)
+    _scaffold_dirs(new_name)
+
+
 def _list_from_file() -> list[WorkspaceMeta]:
     return sorted(load_workspaces(), key=lambda w: (w.group, w.name))
 
@@ -162,7 +181,7 @@ def patch_workspace_name(workspace_id: str, body: WorkspaceRename) -> WorkspaceM
             from iff_scheduler.db import workspace_repo
 
             meta = workspace_repo.rename_workspace(workspace_id, body.name)
-            _scaffold_dirs(meta.name)
+            _relocate_workspace_dir(workspace_id, meta.name)
             return meta
         return rename_workspace(workspace_id, body.name)
     except ValueError as exc:

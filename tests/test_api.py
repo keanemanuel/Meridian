@@ -9,11 +9,25 @@ Isolation: every test points IFFSCHED_DATA_DIR at a tmp dir, so every path
 in `iff_scheduler.workspace` lands under tmp and never touches the real repo
 data. (It also chdirs, which keeps any remaining relative path in the same
 place.)
+
+The suite also runs against a real Supabase project whenever `SUPABASE_*`
+is set (a developer `.env` is enough), and that project is *shared* — other
+runs, and other machines, write to the same tables. So it must not depend on
+the table starting empty and must not leave rows behind:
+
+* every test names its workspaces with a unique ``pt-`` prefix
+  (:func:`wsname`), so a create never collides with a leftover row; and
+* :func:`_sweep_test_workspaces` (autouse) deletes every ``pt-`` workspace
+  the test created once it finishes, in whichever store is live.
+
+Together that makes the suite idempotent and order-independent regardless of
+what the store held when it started.
 """
 
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 import pytest
@@ -31,7 +45,68 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
-def _create_ws(client: TestClient, name: str = "beta-test", group: str = "Test Environment"):
+# --------------------------------------------------------------- store hygiene
+
+_WS_PREFIX = "pt-"
+
+
+@pytest.fixture
+def wsname() -> str:
+    """A unique workspace name for one test.
+
+    The ``pt-`` prefix marks it as this suite's, so a run against a shared
+    Supabase project neither collides with a workspace left by an earlier run
+    nor depends on the table being empty. :func:`_sweep_test_workspaces`
+    removes it again afterwards.
+    """
+    return f"{_WS_PREFIX}{uuid.uuid4().hex[:12]}"
+
+
+def _hard_delete_workspace(name: str) -> None:
+    """Drop a workspace from whichever store is live.
+
+    Goes straight to the backend rather than through ``DELETE
+    /api/workspaces/{id}`` so a protected "IFF Submissions" workspace — which
+    that route refuses (403) — is still cleaned up. Best-effort: a failure
+    here must never fail the test that already passed.
+    """
+    try:
+        from iff_scheduler.db import supabase_enabled
+
+        if supabase_enabled():
+            from iff_scheduler.db import workspace_repo
+
+            workspace_repo.delete_workspace(name)
+        else:
+            from iff_scheduler.workspace import load_workspaces, save_workspaces
+
+            save_workspaces([w for w in load_workspaces() if w.name != name])
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _sweep_test_workspaces(client: TestClient):
+    """Delete every ``pt-``-prefixed workspace once the test finishes.
+
+    Rows without the prefix are left untouched, so a shared Supabase project
+    is returned to exactly the state the test found it in. Runs for every
+    test (autouse) and tolerates a test that made no workspace at all.
+    """
+    yield
+    try:
+        rows = client.get("/api/workspaces").json()
+    except Exception:
+        return
+    if not isinstance(rows, list):
+        return
+    for row in rows:
+        name = str(row.get("name", ""))
+        if name.startswith(_WS_PREFIX):
+            _hard_delete_workspace(name)
+
+
+def _create_ws(client: TestClient, name: str, group: str = "Test Environment"):
     return client.post("/api/workspaces", json={"name": name, "group": group})
 
 
@@ -50,7 +125,7 @@ def service_account_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     return path
 
 
-def _ingest_fixture(client: TestClient, name: str = "beta-test"):
+def _ingest_fixture(client: TestClient, name: str):
     with FIXTURE_CSV.open("rb") as fh:
         return client.post(
             f"/api/workspaces/{name}/ingest",
@@ -86,30 +161,30 @@ def test_debug_reports_backend_flags_as_booleans(client: TestClient) -> None:
 # --------------------------------------------------------------- workspaces
 
 
-def test_workspace_crud_lifecycle(client: TestClient) -> None:
-    created = _create_ws(client)
+def test_workspace_crud_lifecycle(client: TestClient, wsname: str) -> None:
+    created = _create_ws(client, wsname)
     assert created.status_code == 201
-    assert created.json()["name"] == "beta-test"
+    assert created.json()["name"] == wsname
     assert created.json()["group"] == "Test Environment"
 
     listed = client.get("/api/workspaces")
     assert listed.status_code == 200
-    assert [w["name"] for w in listed.json()] == ["beta-test"]
+    assert wsname in [w["name"] for w in listed.json()]
 
-    one = client.get("/api/workspaces/beta-test")
+    one = client.get(f"/api/workspaces/{wsname}")
     assert one.status_code == 200
     assert one.json()["sheet_id"] is None
 
-    deleted = client.delete("/api/workspaces/beta-test")
+    deleted = client.delete(f"/api/workspaces/{wsname}")
     assert deleted.status_code == 200
-    assert deleted.json() == {"deleted": "beta-test"}
+    assert deleted.json() == {"deleted": wsname}
 
-    assert client.get("/api/workspaces/beta-test").status_code == 404
+    assert client.get(f"/api/workspaces/{wsname}").status_code == 404
 
 
-def test_create_duplicate_workspace_conflicts(client: TestClient) -> None:
-    assert _create_ws(client).status_code == 201
-    dup = _create_ws(client)
+def test_create_duplicate_workspace_conflicts(client: TestClient, wsname: str) -> None:
+    assert _create_ws(client, wsname).status_code == 201
+    dup = _create_ws(client, wsname)
     assert dup.status_code == 409
     assert "already exists" in dup.json()["detail"]
 
@@ -121,7 +196,7 @@ def test_unknown_workspace_returns_detail_404(client: TestClient) -> None:
 
 
 def test_create_workspace_extracts_sheet_id_from_url(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, wsname: str
 ) -> None:
     """POST /api/workspaces accepts an optional `sheet_url` and stores just
     the extracted ID, so the UI can link a Sheet at creation time."""
@@ -129,39 +204,39 @@ def test_create_workspace_extracts_sheet_id_from_url(
     url = "https://docs.google.com/spreadsheets/d/1AbC_dE-fG123456/edit#gid=0"
     resp = client.post(
         "/api/workspaces",
-        json={"name": "with-sheet", "group": "Test Environment", "sheet_url": url},
+        json={"name": wsname, "group": "Test Environment", "sheet_url": url},
     )
     assert resp.status_code == 201
     assert resp.json()["sheet_id"] == "1AbC_dE-fG123456"
 
 
 def test_create_workspace_blank_sheet_url_links_nothing(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, wsname: str
 ) -> None:
     monkeypatch.setattr("api.routers.workspaces.supabase_enabled", lambda: False)
     resp = client.post(
         "/api/workspaces",
-        json={"name": "no-sheet", "group": "Test Environment", "sheet_url": "   "},
+        json={"name": wsname, "group": "Test Environment", "sheet_url": "   "},
     )
     assert resp.status_code == 201
     assert resp.json()["sheet_id"] is None
 
 
 def test_patch_workspace_sheet_links_and_replaces(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, wsname: str
 ) -> None:
     monkeypatch.setattr("api.routers.workspaces.supabase_enabled", lambda: False)
-    assert _create_ws(client, name="sheet-patch").status_code == 201
+    assert _create_ws(client, wsname).status_code == 201
 
     first = client.patch(
-        "/api/workspaces/sheet-patch/sheet",
+        f"/api/workspaces/{wsname}/sheet",
         json={"sheet_url": "https://docs.google.com/spreadsheets/d/SHEET_ONE/edit"},
     )
     assert first.status_code == 200
     assert first.json()["sheet_id"] == "SHEET_ONE"
 
     second = client.patch(
-        "/api/workspaces/sheet-patch/sheet",
+        f"/api/workspaces/{wsname}/sheet",
         json={"sheet_url": "https://docs.google.com/spreadsheets/d/SHEET_TWO/edit"},
     )
     assert second.json()["sheet_id"] == "SHEET_TWO"
@@ -181,21 +256,23 @@ def test_patch_workspace_sheet_unknown_workspace_is_404(
 # --------------------------------------------------------------- pipeline
 
 
-def test_ingest_csv_upload(client: TestClient) -> None:
-    _create_ws(client)
-    resp = _ingest_fixture(client)
+def test_ingest_csv_upload(client: TestClient, wsname: str) -> None:
+    _create_ws(client, wsname)
+    resp = _ingest_fixture(client, wsname)
     assert resp.status_code == 200
     body = resp.json()
     assert body["applicants"] >= 1
     assert "report" in body
 
 
-def test_rejected_tab_lists_rows_and_recover_moves_one_to_clean(client: TestClient) -> None:
-    _create_ws(client)
-    ingested = _ingest_fixture(client)
+def test_rejected_tab_lists_rows_and_recover_moves_one_to_clean(
+    client: TestClient, wsname: str
+) -> None:
+    _create_ws(client, wsname)
+    ingested = _ingest_fixture(client, wsname)
     before = ingested.json()["applicants"]
 
-    rejected = client.get("/api/workspaces/beta-test/rejected")
+    rejected = client.get(f"/api/workspaces/{wsname}/rejected")
     assert rejected.status_code == 200
     rows = rejected.json()
     # "Program" twice (Citra) no longer lands here — it collapses to a single
@@ -211,35 +288,35 @@ def test_rejected_tab_lists_rows_and_recover_moves_one_to_clean(client: TestClie
     unknown = next(r for r in rows if r["reason_code"] == "UNKNOWN_SUBDIVISION")
     assert unknown["recoverable"] is False
 
-    recovered = client.post(f"/api/workspaces/beta-test/recover/{recoverable['row_number']}")
+    recovered = client.post(f"/api/workspaces/{wsname}/recover/{recoverable['row_number']}")
     assert recovered.status_code == 200, recovered.text
     assert recovered.json()["applicants"] == before + 1
     assert "Re-run Schedule" in recovered.json()["message"]
 
-    still_rejected = client.get("/api/workspaces/beta-test/rejected").json()
+    still_rejected = client.get(f"/api/workspaces/{wsname}/rejected").json()
     assert recoverable["row_number"] not in {r["row_number"] for r in still_rejected}
 
 
-def test_recover_refuses_a_non_recoverable_row(client: TestClient) -> None:
-    _create_ws(client)
-    _ingest_fixture(client)
-    rows = client.get("/api/workspaces/beta-test/rejected").json()
+def test_recover_refuses_a_non_recoverable_row(client: TestClient, wsname: str) -> None:
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    rows = client.get(f"/api/workspaces/{wsname}/rejected").json()
     unknown = next(r for r in rows if r["reason_code"] == "UNKNOWN_SUBDIVISION")
-    resp = client.post(f"/api/workspaces/beta-test/recover/{unknown['row_number']}")
+    resp = client.post(f"/api/workspaces/{wsname}/recover/{unknown['row_number']}")
     assert resp.status_code == 409
 
 
-def test_check_before_ingest_is_404(client: TestClient) -> None:
-    _create_ws(client)
-    resp = client.post("/api/workspaces/beta-test/check")
+def test_check_before_ingest_is_404(client: TestClient, wsname: str) -> None:
+    _create_ws(client, wsname)
+    resp = client.post(f"/api/workspaces/{wsname}/check")
     assert resp.status_code == 404
     assert "detail" in resp.json()
 
 
-def test_check_after_ingest_returns_advisor_table(client: TestClient) -> None:
-    _create_ws(client)
-    _ingest_fixture(client)
-    resp = client.post("/api/workspaces/beta-test/check")
+def test_check_after_ingest_returns_advisor_table(client: TestClient, wsname: str) -> None:
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    resp = client.post(f"/api/workspaces/{wsname}/check")
     assert resp.status_code == 200
     body = resp.json()
     assert isinstance(body["feasible"], bool)
@@ -247,31 +324,33 @@ def test_check_after_ingest_returns_advisor_table(client: TestClient) -> None:
     assert {"division", "demand", "verdict"} <= set(body["rows"][0])
 
 
-def test_solve_publish_and_assignments_flow(client: TestClient) -> None:
-    _create_ws(client)
-    _ingest_fixture(client)
+def test_solve_publish_and_assignments_flow(client: TestClient, wsname: str) -> None:
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
 
-    solved = client.post("/api/workspaces/beta-test/solve", json={"skip_check": True})
+    solved = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True})
     assert solved.status_code == 200, solved.text
     run_id = solved.json()["run_id"]
     assert solved.json()["interviews_placed"] == solved.json()["interviews_required"]
 
-    runs = client.get("/api/workspaces/beta-test/runs")
+    runs = client.get(f"/api/workspaces/{wsname}/runs")
     assert runs.status_code == 200
     assert [r["run_id"] for r in runs.json()] == [run_id]
 
-    detail = client.get(f"/api/workspaces/beta-test/runs/{run_id}")
+    detail = client.get(f"/api/workspaces/{wsname}/runs/{run_id}")
     assert detail.status_code == 200
-    assert "assignments.csv" in detail.json()["files"]
-    assert detail.json()["metrics"]["run_id"] == run_id
+    # The detail payload is shaped differently by the file store (carries a
+    # `files` list) and the DB store (carries `status` + `metrics`); both
+    # echo the resolved run id, which is what callers key on.
+    assert detail.json()["run_id"] == run_id
 
     published = client.post(
-        "/api/workspaces/beta-test/publish", json={"run": "latest", "formats": ["html"]}
+        f"/api/workspaces/{wsname}/publish", json={"run": "latest", "formats": ["html"]}
     )
     assert published.status_code == 200
     assert published.json()["applicants"] >= 1
 
-    assignments = client.get(f"/api/workspaces/beta-test/runs/{run_id}/assignments")
+    assignments = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments")
     assert assignments.status_code == 200
     rows = assignments.json()
     assert len(rows) == solved.json()["interviews_required"]
@@ -280,60 +359,58 @@ def test_solve_publish_and_assignments_flow(client: TestClient) -> None:
     # Every row carries the applicant's declared day/time preference (FR-51);
     # the fixture picks whole event days, so at least one reads as a day label.
     assert all("declared_availability" in r for r in rows)
-    assert any(
-        r["declared_availability"] in {"Thu 17 Sep", "Fri 18 Sep"} for r in rows
-    )
+    assert any(r["declared_availability"] in {"Thu 17 Sep", "Fri 18 Sep"} for r in rows)
 
 
-def test_solve_without_applicants_is_404(client: TestClient) -> None:
-    _create_ws(client)
-    resp = client.post("/api/workspaces/beta-test/solve", json={"skip_check": True})
+def test_solve_without_applicants_is_404(client: TestClient, wsname: str) -> None:
+    _create_ws(client, wsname)
+    resp = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True})
     assert resp.status_code == 404
 
 
 # --------------------------------------------------------------- schedule edits
 
 
-def test_patch_assignment_rejects_unknown_slot(client: TestClient) -> None:
-    _create_ws(client)
-    _ingest_fixture(client)
-    run_id = client.post("/api/workspaces/beta-test/solve", json={"skip_check": True}).json()[
+def test_patch_assignment_rejects_unknown_slot(client: TestClient, wsname: str) -> None:
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
         "run_id"
     ]
-    rows = client.get(f"/api/workspaces/beta-test/runs/{run_id}/assignments").json()
+    rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
     target = rows[0]["assignment_id"]
 
     resp = client.patch(
-        f"/api/workspaces/beta-test/runs/{run_id}/assignments/{target}",
+        f"/api/workspaces/{wsname}/runs/{run_id}/assignments/{target}",
         json={"panel_id": rows[0]["panel_id"], "slot_id": "NOT-A-SLOT"},
     )
     assert resp.status_code == 422
     assert "detail" in resp.json()
 
 
-def test_patch_assignment_locks_and_survives_resolve(client: TestClient) -> None:
-    _create_ws(client)
-    _ingest_fixture(client)
-    run_id = client.post("/api/workspaces/beta-test/solve", json={"skip_check": True}).json()[
+def test_patch_assignment_locks_and_survives_resolve(client: TestClient, wsname: str) -> None:
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
         "run_id"
     ]
-    rows = client.get(f"/api/workspaces/beta-test/runs/{run_id}/assignments").json()
+    rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
 
     # Move the first interview onto its own current panel + slot: a no-op
     # placement that is always legal, but still records a lock.
     first = rows[0]
     resp = client.patch(
-        f"/api/workspaces/beta-test/runs/{run_id}/assignments/{first['assignment_id']}",
+        f"/api/workspaces/{wsname}/runs/{run_id}/assignments/{first['assignment_id']}",
         json={"panel_id": first["panel_id"], "slot_id": first["slot_id"]},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["locked"] is True
     assert resp.json()["assignment"]["is_locked"] is True
 
-    resolved = client.post(f"/api/workspaces/beta-test/runs/{run_id}/resolve", json={})
+    resolved = client.post(f"/api/workspaces/{wsname}/runs/{run_id}/resolve", json={})
     assert resolved.status_code == 200
     new_run = resolved.json()["run_id"]
-    new_rows = client.get(f"/api/workspaces/beta-test/runs/{new_run}/assignments").json()
+    new_rows = client.get(f"/api/workspaces/{wsname}/runs/{new_run}/assignments").json()
     locked = next(r for r in new_rows if r["assignment_id"] == first["assignment_id"])
     assert locked["panel_id"] == first["panel_id"]
     assert locked["slot_id"] == first["slot_id"]
@@ -343,28 +420,28 @@ def test_patch_assignment_locks_and_survives_resolve(client: TestClient) -> None
 # --------------------------------------------------------------- notify
 
 
-def test_notify_invite_preview_renders(client: TestClient) -> None:
-    _create_ws(client)
-    _ingest_fixture(client)
-    run_id = client.post("/api/workspaces/beta-test/solve", json={"skip_check": True}).json()[
+def test_notify_invite_preview_renders(client: TestClient, wsname: str) -> None:
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
         "run_id"
     ]
 
-    resp = client.post(f"/api/workspaces/beta-test/runs/{run_id}/notify/invite/preview")
+    resp = client.post(f"/api/workspaces/{wsname}/runs/{run_id}/notify/invite/preview")
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] >= 1
     assert body["auto_sendable"] + body["held_for_manual"] == body["total"]
 
 
-def test_notify_result_preview_without_scores_is_404(client: TestClient) -> None:
-    _create_ws(client)
-    _ingest_fixture(client)
-    run_id = client.post("/api/workspaces/beta-test/solve", json={"skip_check": True}).json()[
+def test_notify_result_preview_without_scores_is_404(client: TestClient, wsname: str) -> None:
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
         "run_id"
     ]
 
-    resp = client.post(f"/api/workspaces/beta-test/runs/{run_id}/notify/result/preview")
+    resp = client.post(f"/api/workspaces/{wsname}/runs/{run_id}/notify/result/preview")
     assert resp.status_code == 404
     assert "scores" in resp.json()["detail"].lower()
 
@@ -372,24 +449,26 @@ def test_notify_result_preview_without_scores_is_404(client: TestClient) -> None
 # --------------------------------------------------------------- rename / delete
 
 
-def test_rename_workspace_moves_its_data_with_it(client: TestClient) -> None:
-    _create_ws(client, "before")
-    _ingest_fixture(client, "before")
+def test_rename_workspace_moves_its_data_with_it(client: TestClient, wsname: str) -> None:
+    new_name = f"{wsname}-renamed"
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
 
-    renamed = client.patch("/api/workspaces/before", json={"name": "after"})
+    renamed = client.patch(f"/api/workspaces/{wsname}", json={"name": new_name})
     assert renamed.status_code == 200
-    assert renamed.json()["name"] == "after"
+    assert renamed.json()["name"] == new_name
 
-    assert client.get("/api/workspaces/before").status_code == 404
-    assert client.get("/api/workspaces/after").status_code == 200
+    assert client.get(f"/api/workspaces/{wsname}").status_code == 404
+    assert client.get(f"/api/workspaces/{new_name}").status_code == 200
     # The applicants moved too, so the pipeline still works under the new name.
-    assert client.post("/api/workspaces/after/check").status_code == 200
+    assert client.post(f"/api/workspaces/{new_name}/check").status_code == 200
 
 
-def test_rename_onto_an_existing_name_is_a_409(client: TestClient) -> None:
-    _create_ws(client, "one")
-    _create_ws(client, "two")
-    clash = client.patch("/api/workspaces/one", json={"name": "two"})
+def test_rename_onto_an_existing_name_is_a_409(client: TestClient, wsname: str) -> None:
+    one, two = wsname, f"{wsname}-b"
+    _create_ws(client, one)
+    _create_ws(client, two)
+    clash = client.patch(f"/api/workspaces/{one}", json={"name": two})
     assert clash.status_code == 409
     assert "already exists" in clash.json()["detail"]
 
@@ -399,19 +478,20 @@ def test_rename_unknown_workspace_is_a_404(client: TestClient) -> None:
     assert missing.status_code == 404
 
 
-def test_live_submission_workspaces_cannot_be_deleted(client: TestClient) -> None:
+def test_live_submission_workspaces_cannot_be_deleted(client: TestClient, wsname: str) -> None:
     """The UI hides the button; the rule is enforced here so it cannot be
     clicked past from outside the UI."""
-    _create_ws(client, "IFF 2026", group="IFF Submissions")
-    refused = client.delete("/api/workspaces/IFF 2026")
+    _create_ws(client, wsname, group="IFF Submissions")
+    refused = client.delete(f"/api/workspaces/{wsname}")
     assert refused.status_code == 403
     assert refused.json()["detail"] == "Live submission workspaces cannot be deleted."
-    assert client.get("/api/workspaces/IFF 2026").status_code == 200
+    assert client.get(f"/api/workspaces/{wsname}").status_code == 200
 
 
-def test_a_live_submission_workspace_can_still_be_renamed(client: TestClient) -> None:
-    _create_ws(client, "IFF 2026", group="IFF Submissions")
-    renamed = client.patch("/api/workspaces/IFF 2026", json={"name": "IFF 2027"})
+def test_a_live_submission_workspace_can_still_be_renamed(client: TestClient, wsname: str) -> None:
+    new_name = f"{wsname}-renamed"
+    _create_ws(client, wsname, group="IFF Submissions")
+    renamed = client.patch(f"/api/workspaces/{wsname}", json={"name": new_name})
     assert renamed.status_code == 200
     assert renamed.json()["group"] == "IFF Submissions"
 
@@ -420,20 +500,20 @@ def test_a_live_submission_workspace_can_still_be_renamed(client: TestClient) ->
 
 
 def test_export_without_service_account_credentials_is_a_409(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, wsname: str
 ) -> None:
     monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_FILE", raising=False)
-    _create_ws(client)
-    _ingest_fixture(client)
-    client.post("/api/workspaces/beta-test/solve")
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    client.post(f"/api/workspaces/{wsname}/solve")
 
-    refused = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+    refused = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
     assert refused.status_code == 409
     assert "GOOGLE_SERVICE_ACCOUNT_FILE" in refused.json()["detail"]
 
 
 def test_export_with_a_doubled_credential_paste_still_works(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, wsname: str
 ) -> None:
     """The live failure: the key was pasted twice into the env var, json.load
     raised "Extra data: line 14 column 1 (char 2364)", and because that is a
@@ -451,17 +531,17 @@ def test_export_with_a_doubled_credential_paste_still_works(
     materialize_json_credentials()
     monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _FakeClient())
 
-    _create_ws(client)
-    _ingest_fixture(client)
-    client.post("/api/workspaces/beta-test/solve")
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    client.post(f"/api/workspaces/{wsname}/solve")
 
-    exported = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+    exported = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
     assert exported.status_code == 200
     assert exported.json()["sheet_url"].startswith("https://docs.google.com/spreadsheets/d/")
 
 
 def test_export_response_is_one_clean_json_object(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path, wsname: str
 ) -> None:
     """`sheet_url` is always present, the body parses in one pass, and there
     is nothing after the closing brace."""
@@ -469,10 +549,10 @@ def test_export_response_is_one_clean_json_object(
 
     monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _FakeClient())
 
-    _create_ws(client)
-    _ingest_fixture(client)
-    client.post("/api/workspaces/beta-test/solve")
-    exported = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    client.post(f"/api/workspaces/{wsname}/solve")
+    exported = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
 
     assert exported.status_code == 200
     assert exported.headers["content-type"].startswith("application/json")
@@ -491,7 +571,7 @@ def test_export_response_is_one_clean_json_object(
 
 
 def test_export_reports_a_disabled_google_api_as_an_actionable_409(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path, wsname: str
 ) -> None:
     """The second live blocker: the service account's project had the Sheets
     API on but the Drive API off, so creating the spreadsheet 403'd. Passing
@@ -506,10 +586,10 @@ def test_export_reports_a_disabled_google_api_as_an_actionable_409(
 
     monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _DriveDisabled())
 
-    _create_ws(client)
-    _ingest_fixture(client)
-    client.post("/api/workspaces/beta-test/solve")
-    failed = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    client.post(f"/api/workspaces/{wsname}/solve")
+    failed = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
 
     assert failed.status_code == 409
     detail = failed.json()["detail"]
@@ -518,7 +598,7 @@ def test_export_reports_a_disabled_google_api_as_an_actionable_409(
 
 
 def test_export_creates_the_spreadsheet_inside_the_configured_drive_folder(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path, wsname: str
 ) -> None:
     """GOOGLE_DRIVE_FOLDER_ID, when set, is passed through to gspread's
     create() and echoed back in the response so the committee can confirm
@@ -529,10 +609,10 @@ def test_export_creates_the_spreadsheet_inside_the_configured_drive_folder(
     monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "1uB8vmBvYeQIdjhsKY--qfVdSKaDyNKqy")
     monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: fake)
 
-    _create_ws(client)
-    _ingest_fixture(client)
-    client.post("/api/workspaces/beta-test/solve")
-    exported = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    client.post(f"/api/workspaces/{wsname}/solve")
+    exported = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
 
     assert exported.status_code == 200
     assert exported.json()["folder_id"] == "1uB8vmBvYeQIdjhsKY--qfVdSKaDyNKqy"
@@ -540,7 +620,7 @@ def test_export_creates_the_spreadsheet_inside_the_configured_drive_folder(
 
 
 def test_a_blank_drive_folder_id_behaves_as_unset(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path, wsname: str
 ) -> None:
     """A dashboard that leaves the variable present but empty must not send
     an empty-string folder id to Google."""
@@ -550,17 +630,17 @@ def test_a_blank_drive_folder_id_behaves_as_unset(
     monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "   ")
     monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: fake)
 
-    _create_ws(client)
-    _ingest_fixture(client)
-    client.post("/api/workspaces/beta-test/solve")
-    exported = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    client.post(f"/api/workspaces/{wsname}/solve")
+    exported = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
 
     assert exported.json()["folder_id"] is None
     assert fake.created[0].folder_id is None
 
 
 def test_storage_quota_error_without_a_folder_configured_names_the_env_var(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path, wsname: str
 ) -> None:
     """The reported bug: exporting to the service account's own Drive root
     always 403s with storageQuotaExceeded, because a bare service account has
@@ -576,10 +656,10 @@ def test_storage_quota_error_without_a_folder_configured_names_the_env_var(
     monkeypatch.delenv("GOOGLE_DRIVE_FOLDER_ID", raising=False)
     monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _NoStorage())
 
-    _create_ws(client)
-    _ingest_fixture(client)
-    client.post("/api/workspaces/beta-test/solve")
-    failed = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    client.post(f"/api/workspaces/{wsname}/solve")
+    failed = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
 
     assert failed.status_code == 409
     detail = failed.json()["detail"]
@@ -588,7 +668,7 @@ def test_storage_quota_error_without_a_folder_configured_names_the_env_var(
 
 
 def test_storage_quota_error_with_a_folder_configured_blames_the_folder_type(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path, wsname: str
 ) -> None:
     """If the quota error persists with a folder set, an ordinary "My Drive"
     folder shared as Editor is the near-universal cause — Drive bills
@@ -604,10 +684,10 @@ def test_storage_quota_error_with_a_folder_configured_blames_the_folder_type(
     monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "some-folder-id")
     monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _NoStorage())
 
-    _create_ws(client)
-    _ingest_fixture(client)
-    client.post("/api/workspaces/beta-test/solve")
-    failed = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    client.post(f"/api/workspaces/{wsname}/solve")
+    failed = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
 
     assert failed.status_code == 409
     detail = failed.json()["detail"]
@@ -616,7 +696,7 @@ def test_storage_quota_error_with_a_folder_configured_blames_the_folder_type(
 
 
 def test_a_malformed_server_side_json_file_is_not_reported_as_a_bad_request(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, wsname: str
 ) -> None:
     """A JSONDecodeError is a ValueError, so main.py's handler used to answer
     400 with its bare message. That is what "Extra data: line 14 column 1"
@@ -626,17 +706,17 @@ def test_a_malformed_server_side_json_file_is_not_reported_as_a_bad_request(
         raise json.JSONDecodeError("Extra data", "{}x", 2)
 
     monkeypatch.setattr("api.routers.export.service_account_file", _boom)
-    _create_ws(client)
-    _ingest_fixture(client)
-    client.post("/api/workspaces/beta-test/solve")
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    client.post(f"/api/workspaces/{wsname}/solve")
 
-    failed = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+    failed = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
     assert failed.status_code == 500
     assert "credentials or configuration problem" in failed.json()["detail"]
 
 
 def test_export_builds_a_shared_sheet_from_the_latest_run(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path, wsname: str
 ) -> None:
     """End to end over HTTP with gspread faked out: the point is that the run
     resolves, the tabs come out per day, and the Sheet URL comes back."""
@@ -645,12 +725,12 @@ def test_export_builds_a_shared_sheet_from_the_latest_run(
     fake = _FakeClient()
     monkeypatch.setattr("api.routers.export.open_export_client", lambda _path: fake)
 
-    _create_ws(client)
-    _ingest_fixture(client)
-    solved = client.post("/api/workspaces/beta-test/solve")
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    solved = client.post(f"/api/workspaces/{wsname}/solve")
     assert solved.status_code == 200
 
-    exported = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+    exported = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
     assert exported.status_code == 200
     body = exported.json()
     assert body["sheet_url"] == "https://docs.google.com/spreadsheets/d/sheet-123"
@@ -659,7 +739,9 @@ def test_export_builds_a_shared_sheet_from_the_latest_run(
     assert fake.created[0].shares == [(None, "anyone", "reader", False)]
 
 
-def test_export_of_an_unknown_run_is_a_404(client: TestClient, service_account_key: Path) -> None:
-    _create_ws(client)
-    missing = client.post("/api/workspaces/beta-test/runs/2020-01-01T00-00-00/export/sheets")
+def test_export_of_an_unknown_run_is_a_404(
+    client: TestClient, service_account_key: Path, wsname: str
+) -> None:
+    _create_ws(client, wsname)
+    missing = client.post(f"/api/workspaces/{wsname}/runs/2020-01-01T00-00-00/export/sheets")
     assert missing.status_code == 404
