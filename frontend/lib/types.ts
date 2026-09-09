@@ -112,3 +112,12 @@ export type PatchAssignmentResult = {
   locked: boolean;
   total_locks: number;
 };
+
+/** `POST /runs/{runId}/export/sheets` — a freshly created timetable Sheet. */
+export type SheetExportResult = {
+  sheet_url: string;
+  sheet_id: string;
+  tabs: string[];
+  rows_written: number;
+  clashes: number;
+};

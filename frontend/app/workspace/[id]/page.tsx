@@ -14,10 +14,11 @@ import type {
   Assignment,
   CapacityCheck,
   RunSummary,
+  SolveResult,
   WorkspaceMeta,
 } from "@/lib/types";
 
-type Action = "import" | "check" | "solve";
+type Action = "import" | "check" | "solve" | "export";
 
 /** Only the ID is stored; rebuild a usable link to the Sheet from it. */
 function sheetUrlFromId(sheetId: string): string {
@@ -43,11 +44,15 @@ export default function WorkspacePage({
   const [capacity, setCapacity] = useState<CapacityCheck | null>(null);
   /** Set when solve came back 409 INFEASIBLE — the user may override (E-06). */
   const [infeasible, setInfeasible] = useState<string | null>(null);
-  /** Latest run's assignments, shown inline below — no separate Publish click. */
+  /** Latest run's assignments, shown inline below. Publish runs as part of
+   * scheduling, so there is no separate Publish click. */
   const [schedule, setSchedule] = useState<{
     runId: string;
     assignments: Assignment[];
   } | null>(null);
+  /** The counters from the most recent solve in this session, shown
+   * prominently as "X / Y interviews placed". */
+  const [lastSolve, setLastSolve] = useState<SolveResult | null>(null);
 
   const loadRuns = useCallback(async () => {
     const list = await api.listRuns(workspaceId);
@@ -120,6 +125,7 @@ export default function WorkspacePage({
   const runSolve = async (skipCheck = false) => {
     setBusy("solve");
     setInfeasible(null);
+    toast.info("Scheduling…");
     try {
       const result = await api.solve(workspaceId, skipCheck);
       // Publish runs automatically as part of Solve — it builds the room /
@@ -130,9 +136,11 @@ export default function WorkspacePage({
       } catch (err) {
         toast.fromError(err, "Solved, but building the published views failed.");
       }
+      setLastSolve(result);
       toast.success(
-        `Solved: ${result.interviews_placed}/${result.interviews_required} interviews placed, ` +
-          `${result.clashes} clash(es), ${result.locked} locked — ${result.solve_seconds}s.`,
+        `Schedule complete! ${result.interviews_placed}/${result.interviews_required} ` +
+          `interviews placed, ${result.clashes} clash(es), ${result.locked} locked, ` +
+          `${result.solve_seconds}s.`,
       );
       await loadRuns();
       await loadSchedule(result.run_id);
@@ -143,6 +151,26 @@ export default function WorkspacePage({
       } else {
         toast.fromError(err, "Solve failed.");
       }
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runExport = async () => {
+    if (!schedule) return;
+    setBusy("export");
+    toast.info("Exporting to Google Sheets…");
+    try {
+      const result = await api.exportSheets(workspaceId, schedule.runId);
+      toast.success(`Google Sheet ready: ${result.sheet_url}`, [
+        `${result.rows_written} row(s) across ${result.tabs.join(", ")}`,
+        result.clashes > 0
+          ? `${result.clashes} clash row(s) highlighted red`
+          : "No clashes",
+      ]);
+      window.open(result.sheet_url, "_blank", "noreferrer");
+    } catch (err) {
+      toast.fromError(err, "Export to Google Sheets failed.");
     } finally {
       setBusy(null);
     }
@@ -229,9 +257,35 @@ export default function WorkspacePage({
           loading={busy === "solve"}
           disabled={busy !== null}
         >
-          Solve
+          Schedule!
+        </Button>
+        <Button
+          onClick={runExport}
+          loading={busy === "export"}
+          disabled={busy !== null || schedule === null}
+          title={
+            schedule
+              ? "Build a committee-ready Google Sheet for the latest run"
+              : "Schedule first, then there is something to export"
+          }
+        >
+          Export
         </Button>
       </div>
+
+      {lastSolve && (
+        <div className="mt-5 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg border border-neutral-200 bg-white px-4 py-3">
+          <span className="text-2xl font-semibold tabular-nums text-neutral-900">
+            {lastSolve.interviews_placed} / {lastSolve.interviews_required}
+          </span>
+          <span className="text-sm text-neutral-600">interviews placed</span>
+          <span className="ml-auto text-xs text-neutral-500">
+            {lastSolve.clashes} clash{lastSolve.clashes === 1 ? "" : "es"} ·{" "}
+            {lastSolve.locked} locked · {lastSolve.solve_seconds}s ·{" "}
+            {lastSolve.status}
+          </span>
+        </div>
+      )}
 
       {capacity && <CapacityTable check={capacity} />}
 
@@ -242,7 +296,7 @@ export default function WorkspacePage({
         {runs.length === 0 ? (
           <EmptyState
             title="No runs yet"
-            hint="Import applicants, check capacity, then Solve to produce the first timetable."
+            hint="Import applicants, check capacity, then press Schedule! to produce the first timetable."
           />
         ) : (
           <ul className="divide-y divide-neutral-200 overflow-hidden rounded-lg border border-neutral-200 bg-white">
@@ -279,7 +333,7 @@ export default function WorkspacePage({
               href={runHref(schedule.runId)}
               className="ml-auto text-xs font-medium text-neutral-600 hover:text-neutral-900"
             >
-              Open full view — edit · re-solve · send ›
+              Open full view to edit, re-solve or send ›
             </Link>
           </div>
           <RoomView
@@ -292,11 +346,12 @@ export default function WorkspacePage({
       {showImport && (
         <ImportModal
           workspaceId={workspaceId}
-          hasSheet={Boolean(meta.sheet_id)}
+          sheetId={meta.sheet_id}
+          onSheetLinked={(updated) => setMeta(updated)}
           onClose={() => setShowImport(false)}
           onDone={(result) =>
             toast.success(
-              `Imported ${result.applicants} applicant(s) — ${result.rejected} rejected, ` +
+              `Imported ${result.applicants} applicant(s): ${result.rejected} rejected, ` +
                 `${result.collapsed} collapsed, ${result.warnings} warning(s).`,
             )
           }

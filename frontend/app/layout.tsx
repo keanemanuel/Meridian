@@ -8,7 +8,7 @@ import { WorkspacesProvider } from "@/components/WorkspacesProvider";
 const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Meridian",
+  title: "IFF Recruitment",
   description: "Interview scheduler for IFF recruitment.",
 };
 
@@ -21,7 +21,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <div className="flex h-full flex-col">
               <header className="flex h-12 shrink-0 items-center border-b border-neutral-200 bg-white px-5">
                 <span className="text-sm font-semibold tracking-tight text-neutral-900">
-                  Meridian
+                  IFF Recruitment
                 </span>
               </header>
               <div className="flex min-h-0 flex-1">

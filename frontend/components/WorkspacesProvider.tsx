@@ -18,6 +18,15 @@ import type { WorkspaceMeta } from "@/lib/types";
  * unexpected. */
 export const FIXED_GROUPS = ["Test Environment", "IFF Submissions"] as const;
 
+/** Groups holding live recruitment submissions. Renaming one of these
+ * workspaces asks for a stronger confirmation, and deleting one is refused
+ * outright (the API enforces the same rule in
+ * `api/routers/workspaces.py:PROTECTED_GROUPS`). */
+export const PROTECTED_GROUPS: readonly string[] = ["IFF Submissions"];
+
+export const isProtectedGroup = (group: string) =>
+  PROTECTED_GROUPS.includes(group);
+
 type WorkspacesContextValue = {
   workspaces: WorkspaceMeta[];
   groups: string[];
@@ -32,6 +41,8 @@ type WorkspacesContextValue = {
     group: string,
     sheetUrl?: string,
   ) => Promise<WorkspaceMeta>;
+  rename: (id: string, name: string) => Promise<WorkspaceMeta>;
+  remove: (id: string) => Promise<void>;
 };
 
 const WorkspacesContext = createContext<WorkspacesContextValue | null>(null);
@@ -81,6 +92,23 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
     [refresh],
   );
 
+  const rename = useCallback(
+    async (id: string, name: string) => {
+      const updated = await api.renameWorkspace(id, name);
+      await refresh();
+      return updated;
+    },
+    [refresh],
+  );
+
+  const remove = useCallback(
+    async (id: string) => {
+      await api.deleteWorkspace(id);
+      await refresh();
+    },
+    [refresh],
+  );
+
   const groups = useMemo(() => {
     const extra = [...new Set(workspaces.map((w) => w.group))]
       .filter((g) => !FIXED_GROUPS.includes(g as (typeof FIXED_GROUPS)[number]))
@@ -89,8 +117,28 @@ export function WorkspacesProvider({ children }: { children: ReactNode }) {
   }, [workspaces]);
 
   const value = useMemo<WorkspacesContextValue>(
-    () => ({ workspaces, groups, loading, connecting, error, refresh, create }),
-    [workspaces, groups, loading, connecting, error, refresh, create],
+    () => ({
+      workspaces,
+      groups,
+      loading,
+      connecting,
+      error,
+      refresh,
+      create,
+      rename,
+      remove,
+    }),
+    [
+      workspaces,
+      groups,
+      loading,
+      connecting,
+      error,
+      refresh,
+      create,
+      rename,
+      remove,
+    ],
   );
 
   return (

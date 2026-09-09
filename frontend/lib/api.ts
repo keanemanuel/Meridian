@@ -13,6 +13,7 @@ import type {
   PublishResult,
   ResultPreview,
   RunSummary,
+  SheetExportResult,
   SolveResult,
   WorkspaceMeta,
 } from "./types";
@@ -88,6 +89,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 type RequestInitEx = RequestInit & {
   retry?: boolean;
   onRetry?: (attempt: number, maxAttempts: number) => void;
+  /** Overrides REQUEST_TIMEOUT_MS for calls that legitimately take longer
+   * than a normal request, such as creating and formatting a Google Sheet. */
+  timeoutMs?: number;
 };
 
 /** Retry only failures that a cold/booting backend produces: the fetch
@@ -104,9 +108,13 @@ function isTransient(err: unknown): boolean {
   );
 }
 
-async function attemptOnce<T>(path: string, init?: RequestInit): Promise<T> {
+async function attemptOnce<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
+): Promise<T> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   let res: Response;
   try {
@@ -126,7 +134,7 @@ async function attemptOnce<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(
       0,
       timedOut
-        ? `The API at ${API_URL} did not respond within ${REQUEST_TIMEOUT_MS / 1000}s.`
+        ? `The API at ${API_URL} did not respond within ${timeoutMs / 1000}s.`
         : `Cannot reach the API at ${API_URL}. Is the backend running?`,
     );
   } finally {
@@ -148,12 +156,12 @@ async function attemptOnce<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function request<T>(path: string, init?: RequestInitEx): Promise<T> {
-  const { retry = false, onRetry, ...fetchInit } = init ?? {};
+  const { retry = false, onRetry, timeoutMs, ...fetchInit } = init ?? {};
   const maxAttempts = retry ? RETRY_ATTEMPTS + 1 : 1;
 
   for (let attempt = 1; ; attempt++) {
     try {
-      return await attemptOnce<T>(path, fetchInit);
+      return await attemptOnce<T>(path, fetchInit, timeoutMs);
     } catch (err) {
       if (attempt >= maxAttempts || !isTransient(err)) throw err;
       onRetry?.(attempt, maxAttempts);
@@ -209,6 +217,14 @@ export const api = {
     request<WorkspaceMeta>(`/workspaces/${seg(id)}/sheet`, {
       method: "PATCH",
       body: JSON.stringify({ sheet_url: sheetUrl }),
+    }),
+
+  /** Rename a workspace. The name is its id, so every later call must use
+   * the new one. */
+  renameWorkspace: (id: string, name: string) =>
+    request<WorkspaceMeta>(`/workspaces/${seg(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
     }),
 
   deleteWorkspace: (id: string) =>
@@ -279,6 +295,15 @@ export const api = {
     request<SolveResult>(
       `/workspaces/${seg(id)}/runs/${seg(runId)}/resolve`,
       json({ skip_check: skipCheck }),
+    ),
+
+  /** Build a committee-ready Google Sheet for the run, one tab per day.
+   * Slower than the other calls (it creates and formats a Sheet), so it
+   * gets its own generous timeout rather than the shared 30s one. */
+  exportSheets: (id: string, runId: string) =>
+    request<SheetExportResult>(
+      `/workspaces/${seg(id)}/runs/${seg(runId)}/export/sheets`,
+      { method: "POST", timeoutMs: 120_000 },
     ),
 
   invitePreview: (id: string, runId: string) =>

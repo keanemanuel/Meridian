@@ -55,7 +55,7 @@ export function SendModal({
           : { kind: "result", data: data as ResultPreview },
       );
     } catch (err) {
-      toast.fromError(err, "Preview failed — nothing was sent.");
+      toast.fromError(err, "Preview failed. Nothing was sent.");
       onClose();
     } finally {
       setLoading(false);
@@ -105,7 +105,7 @@ export function SendModal({
       if (pending !== null) {
         setCorrectedCount(pending);
         toast.info(
-          `${pending} recipient(s) are actually pending — the rest are already in the ledger. Confirm again to send those ${pending}.`,
+          `${pending} recipient(s) are actually pending. The rest are already in the ledger, so confirm again to send those ${pending}.`,
         );
       } else {
         toast.fromError(err, "Send failed.");
@@ -168,7 +168,7 @@ export function SendModal({
               <ul className="space-y-1 rounded-md border border-neutral-200 px-3 py-2 text-xs text-neutral-600">
                 {preview.data.samples.map((s) => (
                   <li key={s.applicant_id} className="truncate">
-                    <span className="text-neutral-400">{s.to_email}</span> —{" "}
+                    <span className="text-neutral-400">{s.to_email}</span>{": "}
                     {s.subject}
                   </li>
                 ))}

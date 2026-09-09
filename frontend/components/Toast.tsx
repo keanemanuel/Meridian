@@ -63,7 +63,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       fromError: (err, fallback = "Something went wrong.") => {
         const e = err as Partial<ApiError>;
         const details = (e?.issues ?? []).map((i) =>
-          [i.applicant_id, i.code, i.message].filter(Boolean).join(" — "),
+          [i.applicant_id, i.code, i.message].filter(Boolean).join(" · "),
         );
         push("error", e?.message ?? fallback, details.length ? details : undefined);
       },

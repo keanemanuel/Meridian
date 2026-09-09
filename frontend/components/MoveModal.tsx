@@ -79,7 +79,7 @@ export function MoveModal({
       await onMoved();
       onClose();
     } catch (err) {
-      toast.fromError(err, "The edit was rejected — nothing was saved.");
+      toast.fromError(err, "The edit was rejected. Nothing was saved.");
     } finally {
       setSaving(false);
     }
@@ -119,7 +119,7 @@ export function MoveModal({
           >
             {panels.map((p) => (
               <option key={p.panel_id} value={p.panel_id}>
-                {p.panel_id} — {p.room}
+                {p.panel_id} · Room {p.room}
               </option>
             ))}
           </select>
@@ -161,8 +161,8 @@ export function MoveModal({
         )}
         {selfClash && (
           <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-            That is the same slot as this applicant&apos;s other interview — it
-            would double-book them (C1).
+            That is the same slot as this applicant&apos;s other interview, so
+            it would double-book them (C1).
           </p>
         )}
 

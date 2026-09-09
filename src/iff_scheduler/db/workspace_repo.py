@@ -60,6 +60,20 @@ def create_workspace(name: str, group: str, sheet_id: str | None = None) -> Work
     return _to_meta(resp.data[0])
 
 
+def rename_workspace(old_name: str, new_name: str) -> WorkspaceMeta:
+    """Rename in place. `runs`/`assignments` link by UUID, so they follow the
+    row without being touched."""
+    new_name = new_name.strip()
+    if not new_name:
+        raise ValueError("Workspace name must not be blank.")
+    if new_name != old_name and get_workspace(new_name) is not None:
+        raise ValueError(f"Workspace '{new_name}' already exists.")
+    resp = get_client().table(_TABLE).update({"name": new_name}).eq("name", old_name).execute()
+    if not resp.data:
+        raise ValueError(f"Workspace '{old_name}' not found.")
+    return _to_meta(resp.data[0])
+
+
 def set_sheet(name: str, sheet_id: str) -> WorkspaceMeta:
     resp = get_client().table(_TABLE).update({"sheet_id": sheet_id}).eq("name", name).execute()
     if not resp.data:

@@ -28,6 +28,7 @@ from iff_scheduler.workspace import (
     locks_path,
     output_dir,
     raw_dir,
+    rename_workspace,
     runs_dir,
     save_workspaces,
     scores_path,
@@ -172,3 +173,48 @@ def test_two_workspaces_never_share_a_path(workspaces_root: Path) -> None:
         "b", workspaces_root
     )
     assert runs_dir("a", workspaces_root) != runs_dir("b", workspaces_root)
+
+
+# ---- rename (M9: the name is the workspace's id, so its data moves too) ----
+
+
+def test_rename_moves_the_metadata_and_the_data_directory(
+    workspaces_file: Path, tmp_path: Path
+) -> None:
+    root = tmp_path / "workspaces"
+    create_workspace("Old Name", "Test Environment", workspaces_file, root)
+    (interim_dir("Old Name", root) / "applicants.clean.csv").write_text("x", encoding="utf-8")
+
+    renamed = rename_workspace("Old Name", "New Name", workspaces_file, root)
+
+    assert renamed.name == "New Name"
+    assert renamed.group == "Test Environment"
+    assert [w.name for w in load_workspaces(workspaces_file)] == ["New Name"]
+    assert not workspace_root("Old Name", root).exists()
+    assert (interim_dir("New Name", root) / "applicants.clean.csv").read_text() == "x"
+
+
+def test_rename_to_the_same_name_is_a_no_op(workspaces_file: Path, tmp_path: Path) -> None:
+    root = tmp_path / "workspaces"
+    create_workspace("Same", "Test Environment", workspaces_file, root)
+    assert rename_workspace("Same", "Same", workspaces_file, root).name == "Same"
+    assert workspace_root("Same", root).exists()
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        ("Missing", "Whatever", "not found"),
+        ("A", "B", "already exists"),
+        ("A", "   ", "must not be blank"),
+    ],
+)
+def test_rename_fails_loudly_rather_than_overwriting(
+    workspaces_file: Path, tmp_path: Path, old: str, new: str, expected: str
+) -> None:
+    root = tmp_path / "workspaces"
+    create_workspace("A", "Test Environment", workspaces_file, root)
+    create_workspace("B", "Test Environment", workspaces_file, root)
+
+    with pytest.raises(ValueError, match=expected):
+        rename_workspace(old, new, workspaces_file, root)

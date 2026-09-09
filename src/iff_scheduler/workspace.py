@@ -95,6 +95,46 @@ def create_workspace(
     return meta
 
 
+def rename_workspace(
+    old_name: str,
+    new_name: str,
+    path: Path = WORKSPACES_FILE,
+    root: Path = WORKSPACES_ROOT,
+) -> WorkspaceMeta:
+    """Rename a workspace and move its data directory with it.
+
+    The name is the workspace's identity in alpha (SPEC.md §11.2), so the
+    directory has to follow or every namespaced path would point at the old
+    tree. Nothing is merged: if a directory already sits under the new name
+    the rename is refused rather than guessing which tree is current
+    (CLAUDE.md invariant 3).
+    """
+    new_name = new_name.strip()
+    if not new_name:
+        raise ValueError("Workspace name must not be blank.")
+
+    workspaces = load_workspaces(path)
+    existing = find_workspace(old_name, workspaces)
+    if existing is None:
+        raise ValueError(f"Workspace '{old_name}' not found.")
+    if new_name == old_name:
+        return existing
+    if find_workspace(new_name, workspaces) is not None:
+        raise ValueError(f"Workspace '{new_name}' already exists.")
+
+    old_root, new_root = workspace_root(old_name, root), workspace_root(new_name, root)
+    if new_root.exists():
+        raise ValueError(
+            f"A data directory already exists at {new_root}. Move or remove it first."
+        )
+
+    renamed = existing.model_copy(update={"name": new_name})
+    save_workspaces([renamed if w.name == old_name else w for w in workspaces], path)
+    if old_root.exists():
+        old_root.rename(new_root)
+    return renamed
+
+
 def set_workspace_sheet(name: str, url_or_id: str, path: Path = WORKSPACES_FILE) -> WorkspaceMeta:
     workspaces = load_workspaces(path)
     existing = find_workspace(name, workspaces)

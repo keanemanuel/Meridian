@@ -6,7 +6,7 @@ import type { Assignment } from "@/lib/types";
 import { Badge, EmptyState } from "./ui";
 
 function TimeCell({ a }: { a: Assignment | null }) {
-  if (!a) return <span className="text-neutral-300">—</span>;
+  if (!a) return <span className="text-neutral-300">·</span>;
   return (
     <span className={a.is_clash ? "text-red-600" : "text-neutral-700"}>
       {formatDate(a.date)} {formatTime(a.start_time)}
@@ -91,7 +91,7 @@ export function ApplicantsView({ assignments }: { assignments: Assignment[] }) {
                 </td>
 
                 <td className="px-4 py-2 text-neutral-700">
-                  {r.first?.sub_division ?? <span className="text-neutral-300">—</span>}
+                  {r.first?.sub_division ?? <span className="text-neutral-300">·</span>}
                 </td>
                 <td className="px-4 py-2">
                   <TimeCell a={r.first} />
@@ -103,12 +103,12 @@ export function ApplicantsView({ assignments }: { assignments: Assignment[] }) {
                       {r.first.is_locked && <span className="ml-1">🔒</span>}
                     </>
                   ) : (
-                    <span className="text-neutral-300">—</span>
+                    <span className="text-neutral-300">·</span>
                   )}
                 </td>
 
                 <td className="px-4 py-2 text-neutral-700">
-                  {r.second?.sub_division ?? <span className="text-neutral-300">—</span>}
+                  {r.second?.sub_division ?? <span className="text-neutral-300">·</span>}
                 </td>
                 <td className="px-4 py-2">
                   <TimeCell a={r.second} />
@@ -120,7 +120,7 @@ export function ApplicantsView({ assignments }: { assignments: Assignment[] }) {
                       {r.second.is_locked && <span className="ml-1">🔒</span>}
                     </>
                   ) : (
-                    <span className="text-neutral-300">—</span>
+                    <span className="text-neutral-300">·</span>
                   )}
                 </td>
 
@@ -128,7 +128,7 @@ export function ApplicantsView({ assignments }: { assignments: Assignment[] }) {
                   {r.hasClash ? (
                     <Badge tone="red">CLASH</Badge>
                   ) : (
-                    <span className="text-neutral-300">—</span>
+                    <span className="text-neutral-300">·</span>
                   )}
                 </td>
               </tr>
