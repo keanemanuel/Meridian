@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useState } from "react";
 import { ApplicantsView } from "@/components/ApplicantsView";
 import { Modal } from "@/components/Modal";
 import { MoveModal } from "@/components/MoveModal";
@@ -12,7 +12,7 @@ import { SendModal } from "@/components/SendModal";
 import { useToast } from "@/components/Toast";
 import { Badge, Button, Spinner } from "@/components/ui";
 import { ApiError, api, saveBlob } from "@/lib/api";
-import { formatRunId, formatTime } from "@/lib/schedule";
+import { formatRunId, formatTime, interviewBreakdown } from "@/lib/schedule";
 import type { Assignment } from "@/lib/types";
 
 const TABS = [
@@ -58,6 +58,7 @@ export default function RunPage({
   const [moving, setMoving] = useState(false);
   const [history, setHistory] = useState<MoveHistoryEntry[]>([]);
   const [infeasible, setInfeasible] = useState<string | null>(null);
+  const [showBreakdown, setShowBreakdown] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -174,6 +175,10 @@ export default function RunPage({
 
   const clashes = assignments.filter((a) => a.is_clash).length;
   const locks = assignments.filter((a) => a.is_locked).length;
+  const breakdown = useMemo(
+    () => interviewBreakdown(assignments),
+    [assignments],
+  );
   const busy = resolving || moving || downloading;
 
   return (
@@ -190,7 +195,15 @@ export default function RunPage({
           <h1 className="text-lg font-semibold text-neutral-900">
             {formatRunId(runId)}
           </h1>
-          <Badge>{assignments.length} interviews</Badge>
+          <button
+            type="button"
+            onClick={() => setShowBreakdown(true)}
+            disabled={assignments.length === 0}
+            title="Show how these interviews split across applicants"
+            className="rounded transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Badge>{assignments.length} interviews ▾</Badge>
+          </button>
           {clashes > 0 && <Badge tone="red">{clashes} clash</Badge>}
           {locks > 0 && <Badge tone="amber">{locks} 🔒 locked</Badge>}
 
@@ -308,6 +321,59 @@ export default function RunPage({
           runId={runId}
           onClose={() => setSendKind(null)}
         />
+      )}
+
+      {showBreakdown && (
+        <Modal
+          title="Interview breakdown"
+          onClose={() => setShowBreakdown(false)}
+        >
+          <p className="text-sm text-neutral-700">
+            <span className="font-semibold tabular-nums">{breakdown.total}</span>{" "}
+            interviews across{" "}
+            <span className="font-semibold tabular-nums">
+              {breakdown.scheduled}
+            </span>{" "}
+            scheduled applicant{breakdown.scheduled === 1 ? "" : "s"}.
+          </p>
+          <ul className="mt-3 space-y-1.5 text-sm text-neutral-700">
+            <li className="flex items-baseline justify-between gap-4">
+              <span>Applicants with 2 interviews</span>
+              <span className="font-semibold tabular-nums">
+                {breakdown.withTwo}
+              </span>
+            </li>
+            <li className="flex items-baseline justify-between gap-4">
+              <span>Applicants with 1 interview</span>
+              <span
+                className={`font-semibold tabular-nums ${
+                  breakdown.withOne > 0 ? "text-amber-700" : ""
+                }`}
+              >
+                {breakdown.withOne}
+              </span>
+            </li>
+            {breakdown.other.map((o) => (
+              <li
+                key={o.applicantId}
+                className="flex items-baseline justify-between gap-4 text-red-600"
+              >
+                <span>{o.fullName} has an unexpected count</span>
+                <span className="font-semibold tabular-nums">{o.count}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-3 border-t border-neutral-200 pt-2 text-xs text-neutral-500 tabular-nums">
+            {breakdown.withTwo} × 2 + {breakdown.withOne}
+            {breakdown.other.length > 0
+              ? ` + ${breakdown.other.reduce((n, o) => n + o.count, 0)}`
+              : ""}{" "}
+            = {breakdown.total}
+          </p>
+          <div className="mt-4 flex justify-end">
+            <Button onClick={() => setShowBreakdown(false)}>Close</Button>
+          </div>
+        </Modal>
       )}
 
       {infeasible && (
