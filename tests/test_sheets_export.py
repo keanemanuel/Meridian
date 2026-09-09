@@ -207,8 +207,9 @@ class _FakeWorksheet:
 
 
 class _FakeSpreadsheet:
-    def __init__(self, title: str) -> None:
+    def __init__(self, title: str, folder_id: str | None = None) -> None:
         self.title = title
+        self.folder_id = folder_id
         self.id = "sheet-123"
         self.url = "https://docs.google.com/spreadsheets/d/sheet-123"
         self._sheets = [_FakeWorksheet("Sheet1", 0)]
@@ -241,8 +242,8 @@ class _FakeClient:
     def __init__(self) -> None:
         self.created: list[_FakeSpreadsheet] = []
 
-    def create(self, title: str) -> _FakeSpreadsheet:
-        sheet = _FakeSpreadsheet(title)
+    def create(self, title: str, folder_id: str | None = None) -> _FakeSpreadsheet:
+        sheet = _FakeSpreadsheet(title, folder_id)
         self.created.append(sheet)
         return sheet
 
@@ -282,3 +283,25 @@ def test_export_refuses_an_empty_run_rather_than_creating_a_blank_sheet() -> Non
     with pytest.raises(ValueError, match="no scheduled interviews"):
         export_timetable(client, "IFF timetable", [], "Asia/Jakarta")
     assert client.created == []
+
+
+def test_export_defaults_to_the_service_accounts_own_drive_root() -> None:
+    """No folder_id given -> gspread's own default (create in Drive root),
+    which is the behaviour that fails for a bare service account (this is
+    "current behaviour" and is preserved unchanged when nothing is
+    configured)."""
+    client = _FakeClient()
+    export_timetable(client, "IFF timetable", _two_day_tabs(), "Asia/Jakarta")
+    assert client.created[0].folder_id is None
+
+
+def test_export_creates_the_spreadsheet_inside_the_configured_folder() -> None:
+    client = _FakeClient()
+    export_timetable(
+        client,
+        "IFF timetable",
+        _two_day_tabs(),
+        "Asia/Jakarta",
+        folder_id="1uB8vmBvYeQIdjhsKY--qfVdSKaDyNKqy",
+    )
+    assert client.created[0].folder_id == "1uB8vmBvYeQIdjhsKY--qfVdSKaDyNKqy"

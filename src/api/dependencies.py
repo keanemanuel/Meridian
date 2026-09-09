@@ -84,6 +84,20 @@ def service_account_file() -> str:
     return str(path)
 
 
+DRIVE_FOLDER_VAR = "GOOGLE_DRIVE_FOLDER_ID"
+
+
+def drive_folder_id() -> str | None:
+    """The Drive folder the Sheets export should create its spreadsheet in,
+    or None to fall back to the service account's own Drive root.
+
+    Trimmed, and blank collapses to None, so an env var left as `""` in a
+    dashboard behaves like an unset one rather than a folder id of ''.
+    """
+    value = os.environ.get(DRIVE_FOLDER_VAR, "").strip()
+    return value or None
+
+
 def config_dir() -> Path:
     """Config directory, overridable with IFFSCHED_CONFIG_DIR for tests/deploys."""
     override = os.environ.get("IFFSCHED_CONFIG_DIR")

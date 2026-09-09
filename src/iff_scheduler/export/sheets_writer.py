@@ -99,7 +99,7 @@ class ExportedSheet:
 class GspreadClient(Protocol):
     """The single gspread.Client method this writer needs."""
 
-    def create(self, title: str) -> Any: ...
+    def create(self, title: str, folder_id: str | None = None) -> Any: ...
 
 
 def timezone_label(timezone: str, on: Date) -> str:
@@ -318,6 +318,7 @@ def export_timetable(
     timezone: str,
     *,
     share_with_link: bool = True,
+    folder_id: str | None = None,
 ) -> ExportedSheet:
     """Create a new spreadsheet holding `tabs` and return where it landed.
 
@@ -325,11 +326,20 @@ def export_timetable(
     member can open it without a Google account and without being added
     individually. It is never shared as editable: the scheduler is the system
     of record, and an edit made in the Sheet would not come back.
+
+    `folder_id`, when given, creates the spreadsheet as a child of that Drive
+    folder instead of the service account's own Drive root. A plain service
+    account has no personal Drive storage of its own (this is a Google
+    platform limit, not a quota that fills up), so every export 403s with
+    storageQuotaExceeded until it is pointed at storage that isn't the service
+    account's: a Shared Drive folder (`config/export`, `GOOGLE_DRIVE_FOLDER_ID`
+    in `.env.example`; see docs/DEPLOY.md for why it has to be a Shared Drive
+    and not an ordinary "My Drive" folder shared as Editor).
     """
     if not tabs:
         raise ValueError("Nothing to export: this run has no scheduled interviews.")
 
-    spreadsheet = client.create(title)
+    spreadsheet = client.create(title, folder_id=folder_id)
     existing = list(spreadsheet.worksheets())
 
     rows_written = 0

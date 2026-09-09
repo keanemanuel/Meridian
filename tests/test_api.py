@@ -432,8 +432,16 @@ def test_export_response_is_one_clean_json_object(
     assert exported.headers["content-type"].startswith("application/json")
     body, consumed = json.JSONDecoder().raw_decode(exported.text)
     assert consumed == len(exported.text), "response must be exactly one JSON document"
-    assert set(body) == {"sheet_url", "sheet_id", "tabs", "rows_written", "clashes"}
+    assert set(body) == {
+        "sheet_url",
+        "sheet_id",
+        "tabs",
+        "rows_written",
+        "clashes",
+        "folder_id",
+    }
     assert body["sheet_url"].startswith("https://docs.google.com/spreadsheets/d/")
+    assert body["folder_id"] is None
 
 
 def test_export_reports_a_disabled_google_api_as_an_actionable_409(
@@ -444,7 +452,7 @@ def test_export_reports_a_disabled_google_api_as_an_actionable_409(
     Google's paragraph straight through reads like a silent failure."""
 
     class _DriveDisabled:
-        def create(self, title: str) -> None:
+        def create(self, title: str, folder_id: str | None = None) -> None:
             raise RuntimeError(
                 "APIError: [403]: Google Drive API has not been used in project "
                 "198021261604 before or it is disabled. Enable it by visiting ..."
@@ -461,6 +469,104 @@ def test_export_reports_a_disabled_google_api_as_an_actionable_409(
     detail = failed.json()["detail"]
     assert "Google Drive API is not enabled" in detail
     assert "project=198021261604" in detail
+
+
+def test_export_creates_the_spreadsheet_inside_the_configured_drive_folder(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path
+) -> None:
+    """GOOGLE_DRIVE_FOLDER_ID, when set, is passed through to gspread's
+    create() and echoed back in the response so the committee can confirm
+    the export landed where they expect."""
+    from tests.test_sheets_export import _FakeClient
+
+    fake = _FakeClient()
+    monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "1uB8vmBvYeQIdjhsKY--qfVdSKaDyNKqy")
+    monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: fake)
+
+    _create_ws(client)
+    _ingest_fixture(client)
+    client.post("/api/workspaces/beta-test/solve")
+    exported = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+
+    assert exported.status_code == 200
+    assert exported.json()["folder_id"] == "1uB8vmBvYeQIdjhsKY--qfVdSKaDyNKqy"
+    assert fake.created[0].folder_id == "1uB8vmBvYeQIdjhsKY--qfVdSKaDyNKqy"
+
+
+def test_a_blank_drive_folder_id_behaves_as_unset(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path
+) -> None:
+    """A dashboard that leaves the variable present but empty must not send
+    an empty-string folder id to Google."""
+    from tests.test_sheets_export import _FakeClient
+
+    fake = _FakeClient()
+    monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "   ")
+    monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: fake)
+
+    _create_ws(client)
+    _ingest_fixture(client)
+    client.post("/api/workspaces/beta-test/solve")
+    exported = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+
+    assert exported.json()["folder_id"] is None
+    assert fake.created[0].folder_id is None
+
+
+def test_storage_quota_error_without_a_folder_configured_names_the_env_var(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path
+) -> None:
+    """The reported bug: exporting to the service account's own Drive root
+    always 403s with storageQuotaExceeded, because a bare service account has
+    no personal Drive storage — a platform limit, not a quota that filled up."""
+
+    class _NoStorage:
+        def create(self, title: str, folder_id: str | None = None) -> None:
+            raise RuntimeError(
+                "APIError: [403]: The user's Drive storage quota has been "
+                "exceeded. storageQuotaExceeded"
+            )
+
+    monkeypatch.delenv("GOOGLE_DRIVE_FOLDER_ID", raising=False)
+    monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _NoStorage())
+
+    _create_ws(client)
+    _ingest_fixture(client)
+    client.post("/api/workspaces/beta-test/solve")
+    failed = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+
+    assert failed.status_code == 409
+    detail = failed.json()["detail"]
+    assert "GOOGLE_DRIVE_FOLDER_ID" in detail
+    assert "Shared Drive" in detail
+
+
+def test_storage_quota_error_with_a_folder_configured_blames_the_folder_type(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path
+) -> None:
+    """If the quota error persists with a folder set, an ordinary "My Drive"
+    folder shared as Editor is the near-universal cause — Drive bills
+    storage to the file's creator, not to the parent folder's owner."""
+
+    class _NoStorage:
+        def create(self, title: str, folder_id: str | None = None) -> None:
+            raise RuntimeError(
+                "APIError: [403]: The user's Drive storage quota has been "
+                "exceeded. storageQuotaExceeded"
+            )
+
+    monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "some-folder-id")
+    monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _NoStorage())
+
+    _create_ws(client)
+    _ingest_fixture(client)
+    client.post("/api/workspaces/beta-test/solve")
+    failed = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+
+    assert failed.status_code == 409
+    detail = failed.json()["detail"]
+    assert "Shared Drive" in detail
+    assert "member" in detail
 
 
 def test_a_malformed_server_side_json_file_is_not_reported_as_a_bad_request(

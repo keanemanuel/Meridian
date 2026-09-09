@@ -22,7 +22,7 @@ from api.credentials_bootstrap import (
     credential_problem,
     materialize_json_credentials,
 )
-from api.dependencies import SERVICE_ACCOUNT_VAR, service_account_file
+from api.dependencies import SERVICE_ACCOUNT_VAR, drive_folder_id, service_account_file
 
 KEY = {
     "type": "service_account",
@@ -182,3 +182,26 @@ def test_a_path_shaped_value_is_left_completely_alone(
     env.setenv(SERVICE_ACCOUNT_VAR, str(good))
     materialize_json_credentials()
     assert credential_problem(SERVICE_ACCOUNT_VAR) is None
+
+
+# ---- drive_folder_id: where the export creates the spreadsheet ----
+
+
+def test_drive_folder_id_is_none_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GOOGLE_DRIVE_FOLDER_ID", raising=False)
+    assert drive_folder_id() is None
+
+
+def test_drive_folder_id_is_none_when_blank_or_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dashboard that leaves the variable present but empty must behave
+    exactly like it was never set, not like a folder id of ''."""
+    for value in ("", "   "):
+        monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", value)
+        assert drive_folder_id() is None
+
+
+def test_drive_folder_id_is_trimmed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "  1uB8vmBvYeQIdjhsKY--qfVdSKaDyNKqy  ")
+    assert drive_folder_id() == "1uB8vmBvYeQIdjhsKY--qfVdSKaDyNKqy"

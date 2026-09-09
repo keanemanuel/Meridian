@@ -21,6 +21,8 @@ from pydantic import BaseModel
 
 from api.cli_helpers import load_assignments
 from api.dependencies import (
+    DRIVE_FOLDER_VAR,
+    drive_folder_id,
     get_settings,
     resolve_run_dir,
     resolve_run_pk,
@@ -85,7 +87,7 @@ _API_DISABLED = re.compile(
 )
 
 
-def _google_failure(exc: Exception) -> tuple[int, str]:
+def _google_failure(exc: Exception, *, folder_configured: bool) -> tuple[int, str]:
     """(status, detail) the committee can act on, from whatever gspread raised.
 
     A recognised misconfiguration answers 409, like the credential errors
@@ -108,10 +110,30 @@ def _google_failure(exc: Exception) -> tuple[int, str]:
         )
 
     if "storageQuotaExceeded" in text:
+        # A bare service account has *no* personal Drive storage at all — this
+        # is a platform limit, not a quota that filled up, so it never
+        # self-resolves and "try again later" is the wrong advice. The one
+        # storage a service account can write to is a Shared Drive it has been
+        # added to; an ordinary "My Drive" folder shared as Editor does not
+        # work, because Drive bills storage to whoever creates the file, not
+        # to the folder's owner. See docs/DEPLOY.md, "Google Drive export
+        # storage".
+        if folder_configured:
+            return 409, (
+                f"Google still refused the export as an out-of-storage error even though "
+                f"{DRIVE_FOLDER_VAR} is set. That folder must be inside a *Shared Drive* "
+                "with the service account added as a member (Content Manager or above) — "
+                "an ordinary My Drive folder shared as Editor does not give the service "
+                "account any storage, because Drive attributes a file's storage to whoever "
+                "created it, not to the parent folder's owner. See docs/DEPLOY.md, "
+                f'"Google Drive export storage". ({text[:200]})'
+            )
         return 409, (
-            "Google refused the export because the service account is out of Drive "
-            "storage. Delete some previously exported timetables from its Drive and "
-            f"try again. ({text[:200]})"
+            "Google refused the export because the service account has no Drive storage "
+            "of its own — this never resolves on its own. Set "
+            f"{DRIVE_FOLDER_VAR} to a folder inside a Shared Drive that the service "
+            "account has been added to as a member, and redeploy. See docs/DEPLOY.md, "
+            f'"Google Drive export storage". ({text[:200]})'
         )
 
     if "invalid_grant" in text or "unauthorized_client" in text:
@@ -161,6 +183,7 @@ def export_to_sheets(
     tabs = build_tabs(views, settings.event.timezone)
 
     title = body.title or f"{settings.event.event_name} · {workspace_id} · {run_id}"
+    folder_id = drive_folder_id()
     try:
         client = open_export_client(key_file)
         exported = export_timetable(
@@ -169,6 +192,7 @@ def export_to_sheets(
             tabs,
             settings.event.timezone,
             share_with_link=body.share_with_link,
+            folder_id=folder_id,
         )
     except HTTPException:
         raise
@@ -184,7 +208,7 @@ def export_to_sheets(
             file=sys.stderr,
         )
         traceback.print_exc()
-        status, detail = _google_failure(exc)
+        status, detail = _google_failure(exc, folder_configured=folder_id is not None)
         raise HTTPException(status_code=status, detail=detail) from exc
 
     return {
@@ -193,4 +217,5 @@ def export_to_sheets(
         "tabs": exported.tabs,
         "rows_written": exported.rows_written,
         "clashes": exported.clashes,
+        "folder_id": folder_id,
     }

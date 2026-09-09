@@ -51,6 +51,7 @@ This assumes the one-time setup is done:
    | `SUPABASE_URL` | Your Supabase project URL |
    | `SUPABASE_KEY` | Your Supabase anon/service key |
    | `GOOGLE_SERVICE_ACCOUNT_FILE` | Paste the **entire contents** of the service-account JSON key, **once** |
+   | `GOOGLE_DRIVE_FOLDER_ID` | The id of a Shared Drive folder for exported timetables — see "Google Drive export storage" below. Leave unset to create in the service account's own Drive root, which will fail (see that section for why) |
    | `GMAIL_OAUTH_CREDENTIALS` | Paste the **entire contents** of the Gmail OAuth client-secret JSON |
    | `GMAIL_TOKEN_CACHE` | Paste the **entire contents** of a token generated locally (see below) — or leave unset until the deployed app needs to send email |
    | `GMAIL_SENDER_EMAIL` | The Gmail address invites/results send from |
@@ -67,6 +68,50 @@ This assumes the one-time setup is done:
    > timetable; the **Google Drive API** is what creates the exported
    > spreadsheet and shares it by link. With only Sheets enabled, ingest works
    > and `Export` returns a 409 naming the project to fix.
+
+   > ### Google Drive export storage
+   >
+   > A Google service account has **no personal Drive storage of its own** —
+   > `storageQuota.limit` on its Drive `about` is always `0`. That is a
+   > platform limit, not something that fills up with use, so leaving
+   > `GOOGLE_DRIVE_FOLDER_ID` unset and creating in the service account's own
+   > Drive root **always** fails the export with `storageQuotaExceeded`, on
+   > the very first attempt.
+   >
+   > **Sharing an ordinary "My Drive" folder with the service account as
+   > Editor does not fix this.** Drive attributes a file's storage to
+   > whoever *created* it, not to the folder it lives in, so a spreadsheet
+   > the service account creates still counts against the service account's
+   > own (zero) quota even when the parent folder belongs to someone with
+   > storage. The only place a service account can create files that don't
+   > count against its own quota is a **Shared Drive** (Drive's storage
+   > there belongs to the Shared Drive, not to the member who created a
+   > file) — which requires a Google Workspace plan; a personal `@gmail.com`
+   > account cannot create one.
+   >
+   > One-time setup, done by whoever administers the organisation's Google
+   > Workspace:
+   >
+   > 1. In [Google Drive](https://drive.google.com), under **Shared drives**,
+   >    create one (e.g. "IFF Recruitment Exports") — or reuse an existing
+   >    one.
+   > 2. Open its member settings and add the service account's email (the
+   >    `client_email` field in the service-account JSON, something like
+   >    `iffrecruitment@iffrecruitment.iam.gserviceaccount.com`) as a
+   >    **Content Manager** (or **Manager**, if it should also be able to
+   >    move or delete files there).
+   > 3. Optionally create a folder inside that Shared Drive to keep exports
+   >    separate from other content, and open it — the id is the segment
+   >    after `/folders/` in its URL
+   >    (`https://drive.google.com/drive/folders/<this-part>`). Using the
+   >    Shared Drive's own root also works: its id is the segment after
+   >    `/drive/folders/` when you open the Shared Drive itself.
+   > 4. Set `GOOGLE_DRIVE_FOLDER_ID` to that id and redeploy.
+   >
+   > If `Export` still answers `storageQuotaExceeded` with
+   > `GOOGLE_DRIVE_FOLDER_ID` set, the folder is not actually inside a
+   > Shared Drive, or the service account was added to the folder itself
+   > rather than to the Shared Drive as a member — check step 2.
 
    > **The three credential variables are file *paths* locally** (`.env.example`)
    > and nothing reads JSON content directly.

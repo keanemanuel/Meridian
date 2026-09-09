@@ -120,4 +120,7 @@ export type SheetExportResult = {
   tabs: string[];
   rows_written: number;
   clashes: number;
+  /** The Drive folder it was created in (GOOGLE_DRIVE_FOLDER_ID), or null if
+   * it landed in the service account's own Drive root. */
+  folder_id: string | null;
 };
