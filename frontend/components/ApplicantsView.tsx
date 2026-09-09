@@ -14,16 +14,24 @@ function TimeCell({ a }: { a: Assignment | null }) {
   );
 }
 
+type InterviewCountFilter = "all" | "2" | "1";
+
+/** Scheduled interviews visible for this applicant row (0, 1 or 2). */
+const scheduledCount = (r: { first: Assignment | null; second: Assignment | null }) =>
+  (r.first ? 1 : 0) + (r.second ? 1 : 0);
+
 /** One row per applicant, both choices side by side (FR-31). */
 export function ApplicantsView({ assignments }: { assignments: Assignment[] }) {
   const [query, setQuery] = useState("");
   const [clashOnly, setClashOnly] = useState(false);
+  const [countFilter, setCountFilter] = useState<InterviewCountFilter>("all");
 
   const all = applicantRows(assignments);
   const q = query.trim().toLowerCase();
   const rows = all.filter(
     (r) =>
       (!clashOnly || r.hasClash) &&
+      (countFilter === "all" || scheduledCount(r) === Number(countFilter)) &&
       (!q ||
         r.full_name.toLowerCase().includes(q) ||
         r.applicant_id.toLowerCase().includes(q) ||
@@ -62,6 +70,20 @@ export function ApplicantsView({ assignments }: { assignments: Assignment[] }) {
             onChange={(e) => setClashOnly(e.target.checked)}
           />
           Clashes only
+        </label>
+        <label className="flex items-center gap-2 text-sm text-neutral-600">
+          Interview count
+          <select
+            value={countFilter}
+            onChange={(e) =>
+              setCountFilter(e.target.value as InterviewCountFilter)
+            }
+            className="rounded-md border border-neutral-300 px-2 py-1 text-sm outline-none focus:border-neutral-500"
+          >
+            <option value="all">Any</option>
+            <option value="2">2 interviews</option>
+            <option value="1">1 interview</option>
+          </select>
         </label>
         <span className="text-xs text-neutral-400">
           {rows.length} of {all.length} applicants

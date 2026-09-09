@@ -278,7 +278,9 @@ export default function RunPage({
                 <ApplicantsView assignments={assignments} />
               )}
               {tab === "panels" && <PanelsView assignments={assignments} />}
-              {tab === "rooms" && <RoomsView assignments={assignments} />}
+              {tab === "rooms" && (
+                <RoomsView assignments={assignments} onSelect={setSelected} />
+              )}
             </>
           )}
         </div>

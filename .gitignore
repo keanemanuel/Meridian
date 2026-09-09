@@ -37,3 +37,10 @@ tsconfig.tsbuildinfo
 .DS_Store
 .Rhistory
 .vscode/
+
+# Overnight autonomous run scaffolding — not part of the app, don't commit
+overnight_prompts/
+.overnight_state/
+overnight_log_*.txt
+run_overnight.sh
+
