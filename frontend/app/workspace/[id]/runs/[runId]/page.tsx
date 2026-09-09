@@ -8,6 +8,7 @@ import { Modal } from "@/components/Modal";
 import { MoveModal } from "@/components/MoveModal";
 import { PanelsView } from "@/components/PanelsView";
 import { RoomView, type MoveRequest } from "@/components/RoomView";
+import { RoomsView } from "@/components/RoomsView";
 import { SendModal } from "@/components/SendModal";
 import { useToast } from "@/components/Toast";
 import { Badge, Button, Spinner } from "@/components/ui";
@@ -19,6 +20,7 @@ const TABS = [
   { id: "room", label: "Room View" },
   { id: "applicants", label: "Applicants" },
   { id: "panels", label: "Panels" },
+  { id: "rooms", label: "Rooms" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -276,6 +278,7 @@ export default function RunPage({
                 <ApplicantsView assignments={assignments} />
               )}
               {tab === "panels" && <PanelsView assignments={assignments} />}
+              {tab === "rooms" && <RoomsView assignments={assignments} />}
             </>
           )}
         </div>
