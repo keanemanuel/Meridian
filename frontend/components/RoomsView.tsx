@@ -10,7 +10,7 @@ import {
   slotAxis,
 } from "@/lib/schedule";
 import type { Assignment } from "@/lib/types";
-import { Badge, EmptyState } from "./ui";
+import { EmptyState } from "./ui";
 
 /** One card per room, for a single day at a time (FR-32).
  *
@@ -21,6 +21,11 @@ import { Badge, EmptyState } from "./ui";
  * slot-by-slot schedule — the same time -> applicant -> division rows
  * RoomView shows, but scoped to the one room instead of spread across every
  * panel side by side.
+ *
+ * The "divisions represented" chips double as a filter: exactly one is active
+ * at a time and the schedule below shows only that division's interviews, so a
+ * room card reads as one division's running order rather than every division
+ * interleaved. The selection is per-card — each room keeps its own.
  *
  * Clicking an interview calls `onSelect`, the same hook RoomView uses to open
  * the move / detail dialog.
@@ -101,8 +106,9 @@ export function RoomsView({
   );
 }
 
-/** A single room's card: the run-wide summary header, then this day's schedule
- * for that room as a vertical time -> applicant -> division list. */
+/** A single room's card: the run-wide summary header, a one-of division
+ * selector, then this day's schedule for the selected division as a vertical
+ * time -> applicant list. */
 function RoomCard({
   room,
   summary,
@@ -114,23 +120,49 @@ function RoomCard({
   assignments: Assignment[];
   onSelect: (a: Assignment) => void;
 }) {
-  const slots = useMemo(() => slotAxis(assignments), [assignments]);
-  const bySlot = useMemo(() => {
-    const map = new Map<string, Assignment[]>();
-    for (const a of assignments) {
-      const bucket = map.get(a.slot_id);
-      if (bucket) bucket.push(a);
-      else map.set(a.slot_id, [a]);
-    }
-    return map;
-  }, [assignments]);
-
   const panels = summary?.panels ?? [
     ...new Set(assignments.map((a) => a.panel_id)),
   ];
   const interviewCount = summary?.interviewCount ?? assignments.length;
   const clashes = summary?.clashes ?? 0;
-  const divisions = summary?.divisions ?? [];
+
+  /** Chips come from the run-wide summary (most interviews first) so they stay
+   * stable as the day changes; fall back to this day's own divisions if there
+   * is no summary. */
+  const divisions = useMemo(() => {
+    if (summary?.divisions) return summary.divisions;
+    const counts = new Map<string, number>();
+    for (const a of assignments) {
+      counts.set(a.division, (counts.get(a.division) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([division, count]) => ({ division, count }))
+      .sort((x, y) => y.count - x.count || x.division.localeCompare(y.division));
+  }, [summary, assignments]);
+
+  // Default to the first (largest) division; `?? divisions[0]` keeps a sensible
+  // active chip even before the user has clicked or if data arrives late.
+  const [picked, setPicked] = useState<string | null>(null);
+  const activeDivision = picked ?? divisions[0]?.division ?? null;
+
+  const shown = useMemo(
+    () =>
+      activeDivision
+        ? assignments.filter((a) => a.division === activeDivision)
+        : assignments,
+    [assignments, activeDivision],
+  );
+
+  const slots = useMemo(() => slotAxis(shown), [shown]);
+  const bySlot = useMemo(() => {
+    const map = new Map<string, Assignment[]>();
+    for (const a of shown) {
+      const bucket = map.get(a.slot_id);
+      if (bucket) bucket.push(a);
+      else map.set(a.slot_id, [a]);
+    }
+    return map;
+  }, [shown]);
 
   return (
     <section className="overflow-hidden rounded-lg border border-neutral-200 bg-white">
@@ -153,26 +185,45 @@ function RoomCard({
       {divisions.length > 0 && (
         <div className="border-b border-neutral-100 px-4 py-3">
           <p className="mb-2 text-xs uppercase tracking-wide text-neutral-400">
-            Divisions represented ({divisions.length})
+            Divisions represented ({divisions.length}) — pick one
           </p>
-          <ul className="flex flex-wrap gap-1.5">
-            {divisions.map((d) => (
-              <li key={d.division}>
-                <Badge>
-                  {d.division}
-                  <span className="ml-1 tabular-nums text-neutral-400">
-                    {d.count}
-                  </span>
-                </Badge>
-              </li>
-            ))}
+          <ul className="flex flex-wrap gap-1.5" role="tablist">
+            {divisions.map((d) => {
+              const active = d.division === activeDivision;
+              return (
+                <li key={d.division}>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setPicked(d.division)}
+                    className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium transition-colors ${
+                      active
+                        ? "border-neutral-800 bg-neutral-800 text-white"
+                        : "border-neutral-200 bg-neutral-100 text-neutral-600 hover:bg-neutral-200"
+                    }`}
+                  >
+                    {d.division}
+                    <span
+                      className={`ml-1 tabular-nums ${
+                        active ? "text-neutral-300" : "text-neutral-400"
+                      }`}
+                    >
+                      {d.count}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
 
       {slots.length === 0 ? (
         <p className="px-4 py-3 text-xs text-neutral-400">
-          Nothing scheduled in this room today.
+          {activeDivision
+            ? `No ${activeDivision} interviews in this room on this day.`
+            : "Nothing scheduled in this room today."}
         </p>
       ) : (
         <table className="min-w-full border-collapse text-xs">
