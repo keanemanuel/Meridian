@@ -8,7 +8,7 @@ import { Modal } from "@/components/Modal";
 import { RoomView } from "@/components/RoomView";
 import { useToast } from "@/components/Toast";
 import { Badge, Button, EmptyState, Spinner } from "@/components/ui";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, saveBlob } from "@/lib/api";
 import { formatRunId } from "@/lib/schedule";
 import type {
   Assignment,
@@ -18,7 +18,7 @@ import type {
   WorkspaceMeta,
 } from "@/lib/types";
 
-type Action = "import" | "check" | "solve" | "export";
+type Action = "import" | "check" | "solve" | "download";
 
 /** Only the ID is stored; rebuild a usable link to the Sheet from it. */
 function sheetUrlFromId(sheetId: string): string {
@@ -142,6 +142,13 @@ export default function WorkspacePage({
           `interviews placed, ${result.clashes} clash(es), ${result.locked} locked, ` +
           `${result.solve_seconds}s.`,
       );
+      if (result.warnings && result.warnings.length > 0) {
+        toast.info(
+          "Extra panels were added automatically to fit demand. Review your " +
+            "staffing before sending invites.",
+          result.warnings,
+        );
+      }
       await loadRuns();
       await loadSchedule(result.run_id);
     } catch (err) {
@@ -156,27 +163,14 @@ export default function WorkspacePage({
     }
   };
 
-  const runExport = async () => {
+  const downloadXlsx = async () => {
     if (!schedule) return;
-    setBusy("export");
-    toast.info("Exporting to Google Sheets…");
+    setBusy("download");
     try {
-      const result = await api.exportSheets(workspaceId, schedule.runId);
-      toast.success(
-        "Google Sheet ready.",
-        [
-          `${result.rows_written} row(s) across ${result.tabs.join(", ")}`,
-          result.clashes > 0
-            ? `${result.clashes} clash row(s) highlighted red`
-            : "No clashes",
-        ],
-        { href: result.sheet_url, label: "Open the timetable in Google Sheets" },
-      );
-      // Best effort: a popup blocker will stop this, which is why the toast
-      // carries the link too.
-      window.open(result.sheet_url, "_blank", "noreferrer");
+      const { blob, filename } = await api.downloadXlsx(workspaceId, schedule.runId);
+      saveBlob(blob, filename);
     } catch (err) {
-      toast.fromError(err, "Export to Google Sheets failed.");
+      toast.fromError(err, "Download failed.");
     } finally {
       setBusy(null);
     }
@@ -266,16 +260,16 @@ export default function WorkspacePage({
           Schedule!
         </Button>
         <Button
-          onClick={runExport}
-          loading={busy === "export"}
+          onClick={downloadXlsx}
+          loading={busy === "download"}
           disabled={busy !== null || schedule === null}
           title={
             schedule
-              ? "Build a committee-ready Google Sheet for the latest run"
-              : "Schedule first, then there is something to export"
+              ? "Download the published schedule as an Excel workbook"
+              : "Schedule first, then there is something to download"
           }
         >
-          Export
+          Download XLSX
         </Button>
       </div>
 

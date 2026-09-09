@@ -71,6 +71,8 @@ export type SolveResult = {
   solve_seconds: number;
   changed_vs_previous: number;
   conflicts: number;
+  /** Non-fatal notes from the solve — e.g. panels auto-scaled to meet demand. */
+  warnings?: string[];
 };
 
 export type IngestResult = {
@@ -111,16 +113,4 @@ export type PatchAssignmentResult = {
   assignment: Assignment;
   locked: boolean;
   total_locks: number;
-};
-
-/** `POST /runs/{runId}/export/sheets` — a freshly created timetable Sheet. */
-export type SheetExportResult = {
-  sheet_url: string;
-  sheet_id: string;
-  tabs: string[];
-  rows_written: number;
-  clashes: number;
-  /** The Drive folder it was created in (GOOGLE_DRIVE_FOLDER_ID), or null if
-   * it landed in the service account's own Drive root. */
-  folder_id: string | null;
 };

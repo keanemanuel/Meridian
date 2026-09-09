@@ -13,7 +13,6 @@ import type {
   PublishResult,
   ResultPreview,
   RunSummary,
-  SheetExportResult,
   SolveResult,
   WorkspaceMeta,
 } from "./types";
@@ -297,14 +296,33 @@ export const api = {
       json({ skip_check: skipCheck }),
     ),
 
-  /** Build a committee-ready Google Sheet for the run, one tab per day.
-   * Slower than the other calls (it creates and formats a Sheet), so it
-   * gets its own generous timeout rather than the shared 30s one. */
-  exportSheets: (id: string, runId: string) =>
-    request<SheetExportResult>(
-      `/workspaces/${seg(id)}/runs/${seg(runId)}/export/sheets`,
-      { method: "POST", timeoutMs: 120_000 },
-    ),
+  /** The `schedule.xlsx` a prior Publish wrote for this run (Schedule!
+   * publishes automatically, so it's usually already there). Not routed
+   * through `request()`: the response is a binary file, not JSON, so this
+   * fetches directly and mirrors `request()`'s own error handling by hand.
+   *
+   * `runId` should be a concrete run id, not "latest" — every caller already
+   * has one (the just-solved run, or the run page's own id), and the
+   * filename returned matches the server's exactly only when it is. */
+  downloadXlsx: async (
+    id: string,
+    runId: string,
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const res = await fetch(
+      `${API_URL}/workspaces/${seg(id)}/runs/${seg(runId)}/xlsx`,
+      { cache: "no-store" },
+    );
+    if (!res.ok) {
+      let body: unknown = null;
+      try {
+        body = await res.json();
+      } catch {
+        /* non-JSON error body — fall through to the generic message */
+      }
+      throw parseDetail(res.status, body);
+    }
+    return { blob: await res.blob(), filename: `${id} schedule ${runId}.xlsx` };
+  },
 
   invitePreview: (id: string, runId: string) =>
     request<InvitePreview>(
@@ -330,6 +348,23 @@ export const api = {
       json({ confirm_count: confirmCount, verified_by: verifiedBy }),
     ),
 };
+
+/** Trigger the browser's native "Save As" for a blob already in memory —
+ * the second half of `api.downloadXlsx`. A temporary same-origin object URL
+ * sidesteps the cross-origin quirks of an `<a download>` pointed straight at
+ * the API host (NEXT_PUBLIC_API_URL is a different origin from the Vercel
+ * frontend in production, and browsers only honour `download` on a same-
+ * origin or blob: URL). */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
 
 /** The send endpoints reject a `confirm_count` that no longer matches the
  * ledger-filtered pending count, and put the real number in the message
