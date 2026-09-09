@@ -35,6 +35,7 @@ from iff_scheduler.scheduling.feasibility import (
     autoscale_panels,
     compute_capacity_advisor,
     is_feasible,
+    rebalance_panels,
 )
 from iff_scheduler.scheduling.postprocess import build_conflicts, compute_metrics, diff_schedules
 from iff_scheduler.scheduling.solver_cpsat import CpSatSolver
@@ -101,6 +102,12 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
     # committed config.
     capacity_warnings: list[str] = []
     if not skip_check:
+        # Proactive load-balancing split ahead of the INFEASIBLE backstop
+        # (SPEC.md §5.5): widen a division whose per-day load would pack its
+        # panels past 85% so late applicants get a fresh panel, not a clash.
+        settings, rebalance_notes = rebalance_panels(settings, applicants, grid)
+        capacity_warnings.extend(rebalance_notes)
+
         rows = compute_capacity_advisor(
             applicants=applicants,
             panels=settings.panels,
@@ -109,7 +116,8 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
             rooms=settings.rooms,
         )
         if not is_feasible(rows):
-            settings, capacity_warnings = autoscale_panels(settings, applicants, grid)
+            settings, infeasible_notes = autoscale_panels(settings, applicants, grid)
+            capacity_warnings.extend(infeasible_notes)
 
     locks_path = ws.locks_path(workspace_id)
     locks: list[Lock] = _load_locks(locks_path) if locks_path.exists() else []
@@ -139,7 +147,10 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
     previous_dir = _previous_run(runs_dir, run_dir)
 
     conflicts = build_conflicts(result.assignments, problem.applicants, problem.panels)
-    metrics = compute_metrics(result, problem) | {"run_id": run_id}
+    metrics = compute_metrics(result, problem) | {
+        "run_id": run_id,
+        "panel_adjustments": capacity_warnings,
+    }
 
     _assignments_frame(result.assignments).to_csv(run_dir / "assignments.csv", index=False)
     _conflicts_frame(conflicts).to_csv(run_dir / "conflicts.csv", index=False)

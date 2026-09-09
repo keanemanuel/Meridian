@@ -34,6 +34,15 @@ Verdict = Literal["OK", "TIGHT", "INFEASIBLE"]
 
 AUTO_PANEL_TAG = "AUTO"
 
+# Proactive load-balancing split (SPEC.md §5.5, §1.2 Finding A). When an even
+# split of a division's per-day load would push its panels past this
+# utilisation, add a panel and re-spread — rather than packing existing panels
+# to ~100% and forcing later applicants into a clash. Hard-coded on purpose:
+# it is a structural safety margin, not a per-event tuning knob.
+REBALANCE_THRESHOLD = 0.85
+
+BALANCE_PANEL_TAG = "BAL"
+
 
 @dataclass(frozen=True)
 class DivisionCapacity:
@@ -248,4 +257,168 @@ def autoscale_panels(
         f"Auto-scaled {division.value}: added {count} panel(s)"
         for division, count in sorted(added.items(), key=lambda kv: kv[0].value)
     ]
+    return augmented, messages
+
+
+def _event_day_labels(event: EventConfig) -> dict[Date, str]:
+    return {day.date: day.label for day in event.days}
+
+
+def _slots_per_day(grid: SlotGrid, event: EventConfig) -> int:
+    """Largest slot count on any single event day — the most panels of one
+    division a room could ever keep busy in a day."""
+    return max(
+        (sum(1 for s in grid.slots if s.date == day.date) for day in event.days),
+        default=0,
+    )
+
+
+def _demand_by_division_day(
+    applicants: list[Applicant], grid: SlotGrid
+) -> dict[tuple[DivisionCode, Date], int]:
+    """(division, day) -> interviews that division owes applicants who could
+    attend that day. An applicant free on both evenings is counted against
+    both — deliberately conservative, so each division/day is sized for the
+    case where its whole load lands on one day. The slack this leaves is the
+    point (SPEC.md §1.2 Finding A): room to absorb late applicants without a
+    clash, not a bug."""
+    date_of_slot = {slot.slot_id: slot.date for slot in grid.slots}
+    demand: Counter[tuple[DivisionCode, Date]] = Counter()
+    for applicant in applicants:
+        days = {date_of_slot[s] for s in applicant.availability_slots if s in date_of_slot}
+        divisions = [applicant.division_1]
+        if applicant.division_2 is not None:
+            divisions.append(applicant.division_2)
+        for division in divisions:
+            for day in days:
+                demand[(division, day)] += 1
+    return demand
+
+
+def _capacity_by_division_day(
+    panels: list[PanelEntry], grid: SlotGrid, room_dates: dict[str, set[Date]]
+) -> dict[tuple[DivisionCode, Date], int]:
+    """(division, day) -> interview slots the currently allocated panels of
+    that division can run that day."""
+    slots_by_day: dict[Date, list[str]] = defaultdict(list)
+    for slot in grid.slots:
+        slots_by_day[slot.date].append(slot.slot_id)
+
+    capacity: Counter[tuple[DivisionCode, Date]] = Counter()
+    for panel in panels:
+        active = _panel_active_slot_ids(panel, grid, room_dates.get(panel.room))
+        for day, slot_ids in slots_by_day.items():
+            here = sum(1 for sid in slot_ids if sid in active)
+            if here:
+                capacity[(panel.division, day)] += here
+    return capacity
+
+
+def _division_panel_cap(
+    rooms: RoomsConfig,
+    event: EventConfig,
+    division: DivisionCode,
+    base_count: int,
+    slots_per_day: int,
+) -> int:
+    """Hard ceiling on panels for one division so rebalancing can't grow
+    unbounded (req. 4). A rebalance panel is added all-event-days, so it can
+    only ever be seated in a room that runs every evening (`_autoscale_room`);
+    the extra panels are therefore capped at what those rooms can seat at once
+    (FR-24). Never more than a day has slots, either — that buys nothing."""
+    event_dates = {d.date for d in event.days}
+    flexible = sum(
+        r.max_concurrent_panels
+        for r in rooms.rooms
+        if division in r.divisions and (not r.days or set(r.days) >= event_dates)
+    )
+    if flexible <= 0:  # no both-days room accepts it — fall back to any room
+        flexible = sum(r.max_concurrent_panels for r in rooms.rooms if division in r.divisions)
+    ceiling = base_count + flexible
+    return min(ceiling, max(slots_per_day, base_count)) if slots_per_day else ceiling
+
+
+def rebalance_panels(
+    settings: Settings,
+    applicants: list[Applicant],
+    grid: SlotGrid,
+    *,
+    threshold: float = REBALANCE_THRESHOLD,
+    max_rounds: int = 64,
+) -> tuple[Settings, list[str]]:
+    """Proactively split a division's panels *before* the solve whenever an
+    even split of its per-day load would still sit above `threshold`
+    utilisation (default 85%), then re-spread the whole division/day load
+    across every panel — existing and new — instead of packing the old panels
+    and routing only new applicants to the new one.
+
+    The decision made here is purely structural: how many panels each division
+    needs so an even split has slack. CP-SAT then assigns individual
+    applicants to slots, and its balance term (W_BALANCE) does the actual
+    evening-out. Runs ahead of `autoscale_panels`, which stays the INFEASIBLE
+    backstop.
+
+    Returns the (possibly unchanged) settings and one solve-summary log line
+    per split, e.g. "Rebalanced MEDMARDOC (Thu): 1->2 panels, ~50 applicants
+    each" (SPEC.md §5.5).
+    """
+    rooms = settings.rooms
+    labels = _event_day_labels(settings.event)
+    room_dates = _room_dates(rooms, grid)
+    windows = _all_day_windows(settings.event)
+    slots_per_day = _slots_per_day(grid, settings.event)
+
+    demand = _demand_by_division_day(applicants, grid)
+    panels: list[PanelEntry] = list(settings.panels.panels)
+    base_counts = Counter(panel.division for panel in panels)
+    added: Counter[DivisionCode] = Counter()
+    messages: list[str] = []
+
+    for _ in range(max_rounds):
+        capacity = _capacity_by_division_day(panels, grid, room_dates)
+        counts = Counter(panel.division for panel in panels)
+
+        # Pick the single most-overloaded (division, day) this round, add one
+        # panel, then recompute from scratch so every day of that division
+        # sees the wider set before the next split.
+        candidates: list[tuple[float, str, Date, DivisionCode, int]] = []
+        for (division, day), need in demand.items():
+            slot_cap = capacity.get((division, day), 0)
+            if slot_cap <= 0 or need <= 0:
+                continue
+            util = need / slot_cap
+            if util <= threshold:
+                continue
+            panel_cap = _division_panel_cap(
+                rooms, settings.event, division, base_counts[division], slots_per_day
+            )
+            if counts[division] >= panel_cap:
+                continue
+            candidates.append((util, division.value, day, division, need))
+
+        if not candidates:
+            break
+        candidates.sort(key=lambda c: (-c[0], c[1], c[2].isoformat()))
+        _util, _name, day, division, need = candidates[0]
+
+        before = counts[division]
+        after = before + 1
+        added[division] += 1
+        panels.append(
+            PanelEntry(
+                id=f"{division.value}-{BALANCE_PANEL_TAG}-{added[division]}",
+                division=division,
+                room=_autoscale_room(rooms, settings.event, division),
+                active_windows=windows,
+            )
+        )
+        messages.append(
+            f"Rebalanced {division.value} ({labels.get(day, day.isoformat())}): "
+            f"{before}→{after} panels, ~{round(need / after)} applicants each"
+        )
+
+    if not added:
+        return settings, []
+
+    augmented = settings.model_copy(update={"panels": PanelsConfig(panels=panels)})
     return augmented, messages

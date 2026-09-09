@@ -3,15 +3,18 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, time
 
 from iff_scheduler.domain.enums import DivisionCode
 from iff_scheduler.domain.grid import build_slot_grid
 from iff_scheduler.domain.models import Applicant
 from iff_scheduler.scheduling.feasibility import (
+    REBALANCE_THRESHOLD,
     autoscale_panels,
     compute_capacity_advisor,
     is_feasible,
+    rebalance_panels,
 )
 from iff_scheduler.settings import (
     ActiveWindow,
@@ -250,3 +253,110 @@ def test_autoscale_panels_clears_an_infeasible_division() -> None:
     ok_settings, ok_messages = autoscale_panels(settings, [], grid)
     assert ok_messages == []
     assert ok_settings is settings
+
+
+# ---- proactive load-balancing split (SPEC.md §5.5, req: rebalance not overflow) ----
+
+
+_rebalance_msg = re.compile(
+    r"^Rebalanced [A-Z]+ \(.+\): (\d+)→(\d+) panels, ~(\d+) applicants each$"
+)
+
+
+def _creative_panels(settings) -> int:
+    return sum(1 for p in settings.panels.panels if p.division == DivisionCode.CREATIVE)
+
+
+def _both_days_concurrency(settings, division: DivisionCode) -> int:
+    event_dates = {d.date for d in settings.event.days}
+    return sum(
+        r.max_concurrent_panels
+        for r in settings.rooms.rooms
+        if division in r.divisions and (not r.days or set(r.days) >= event_dates)
+    )
+
+
+def test_rebalance_splits_before_panels_pack_past_the_threshold() -> None:
+    """A division whose even per-day split would sit above 85% gets an extra
+    panel, and the whole load is re-spread across ALL panels (~N/each), not
+    dumped on the new one."""
+    settings = load_settings()
+    grid = build_slot_grid(settings.event)
+    all_slots = [s.slot_id for s in grid.slots]
+
+    creative_before = _creative_panels(settings)
+    # 25 applicants, both choices CREATIVE (E-01 same-parent pair) => 50
+    # CREATIVE interviews demanded each day, well past what the committed
+    # panels seat at 85%, but nothing else is touched.
+    applicants = [
+        _applicant(f"C{i}", DivisionCode.CREATIVE, DivisionCode.CREATIVE, all_slots)
+        for i in range(25)
+    ]
+
+    scaled, messages = rebalance_panels(settings, applicants, grid)
+
+    assert messages, "expected at least one rebalance split"
+    assert all("Rebalanced CREATIVE" in m for m in messages)
+    parsed = [_rebalance_msg.match(m) for m in messages]
+    assert all(p is not None for p in parsed), messages
+    # Panel counts step up one at a time: 4->5, 5->6, ...
+    steps = [(int(p.group(1)), int(p.group(2)), int(p.group(3))) for p in parsed]
+    assert steps[0][0] == creative_before
+    for before, after, each in steps:
+        assert after == before + 1
+        # ~even split: reported per-panel load is total / new panel count,
+        # not a near-zero "just the newcomers" figure.
+        assert each == round(50 / after)
+    afters = [s[1] for s in steps]
+    assert afters == list(range(creative_before + 1, creative_before + 1 + len(steps)))
+
+    scaled_creative = _creative_panels(scaled)
+    assert scaled_creative == creative_before + len(messages)
+    # An even split now sits under the threshold, so a second pass is a no-op
+    # and returns the same object untouched (idempotent).
+    again, again_messages = rebalance_panels(scaled, applicants, grid)
+    assert again_messages == []
+    assert again is scaled
+
+
+def test_rebalance_is_capped_so_it_cannot_grow_unbounded() -> None:
+    """Runaway same-day demand can't grow a division past what the rooms that
+    run every evening can seat at once (req. 4)."""
+    settings = load_settings()
+    grid = build_slot_grid(settings.event)
+    all_slots = [s.slot_id for s in grid.slots]
+
+    creative_before = _creative_panels(settings)
+    ceiling = creative_before + _both_days_concurrency(settings, DivisionCode.CREATIVE)
+
+    # Absurd demand: 90 applicants * 2 CREATIVE choices = 180/day.
+    applicants = [
+        _applicant(f"C{i}", DivisionCode.CREATIVE, DivisionCode.CREATIVE, all_slots)
+        for i in range(90)
+    ]
+
+    scaled, messages = rebalance_panels(settings, applicants, grid)
+    assert messages
+    assert _creative_panels(scaled) == ceiling
+    # It stopped at the cap despite the load still being way over threshold.
+    assert len(messages) == ceiling - creative_before
+
+
+def test_rebalance_leaves_a_comfortable_division_untouched() -> None:
+    """When the committed panels already absorb the per-day load with slack
+    under 85%, nothing is added and the settings pass straight through."""
+    settings = load_settings()
+    grid = build_slot_grid(settings.event)
+    all_slots = [s.slot_id for s in grid.slots]
+
+    # 15 applicants CREATIVE + PROGRAM: both divisions stay comfortably under
+    # 85% even if their whole load lands on the shorter (Thursday) evening.
+    applicants = [
+        _applicant(f"X{i}", DivisionCode.CREATIVE, DivisionCode.PROGRAM, all_slots)
+        for i in range(15)
+    ]
+
+    scaled, messages = rebalance_panels(settings, applicants, grid)
+    assert messages == []
+    assert scaled is settings
+    assert REBALANCE_THRESHOLD == 0.85

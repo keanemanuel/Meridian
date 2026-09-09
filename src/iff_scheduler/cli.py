@@ -88,6 +88,7 @@ from iff_scheduler.scheduling.feasibility import (
     autoscale_panels,
     compute_capacity_advisor,
     is_feasible,
+    rebalance_panels,
 )
 from iff_scheduler.scheduling.postprocess import (
     build_conflicts,
@@ -551,6 +552,15 @@ def solve(
 
     autoscale_notes: list[str] = []
     if not skip_check:
+        # Proactive load-balancing split first (SPEC.md §5.5): widen any
+        # division whose per-day load would pack its panels past 85% before
+        # the solve, so later applicants land in a fresh panel instead of a
+        # clash. `autoscale_panels` below stays the INFEASIBLE backstop.
+        settings, rebalance_notes = rebalance_panels(settings, applicants, grid)
+        for note in rebalance_notes:
+            console.print(f"[yellow]{note}[/yellow]")
+        autoscale_notes.extend(rebalance_notes)
+
         rows = compute_capacity_advisor(
             applicants=applicants,
             panels=settings.panels,
@@ -560,8 +570,9 @@ def solve(
         )
         if not is_feasible(rows):
             infeasible = ", ".join(r.division.value for r in rows if r.verdict == "INFEASIBLE")
-            settings, autoscale_notes = autoscale_panels(settings, applicants, grid)
-            for note in autoscale_notes:
+            settings, infeasible_notes = autoscale_panels(settings, applicants, grid)
+            autoscale_notes.extend(infeasible_notes)
+            for note in infeasible_notes:
                 console.print(f"[yellow]{note}[/yellow]")
             console.print(
                 f"[yellow]Capacity Advisor flagged {infeasible}; panels were auto-scaled to "
@@ -600,7 +611,10 @@ def solve(
     previous_dir = _previous_run(resolved_runs_dir, run_dir)
 
     conflicts = build_conflicts(result.assignments, problem.applicants, problem.panels)
-    metrics = compute_metrics(result, problem) | {"run_id": run_id}
+    metrics = compute_metrics(result, problem) | {
+        "run_id": run_id,
+        "panel_adjustments": autoscale_notes,
+    }
 
     _assignments_frame(result.assignments).to_csv(run_dir / "assignments.csv", index=False)
     _conflicts_frame(conflicts).to_csv(run_dir / "conflicts.csv", index=False)
@@ -638,7 +652,7 @@ def solve(
     table.add_row("Objective", str(result.objective_value))
     table.add_row("Solve seconds", f"{result.solve_seconds:.2f}")
     if autoscale_notes:
-        table.add_row("Auto-scaled panels", "; ".join(autoscale_notes))
+        table.add_row("Panel adjustments", "; ".join(autoscale_notes))
     console.print(table)
 
     for line in result.log:
