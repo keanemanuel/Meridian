@@ -268,6 +268,13 @@ export default function RunPage({
         </div>
       </div>
 
+      {resolving && (
+        <div className="flex shrink-0 items-center gap-2 border-t border-blue-200 bg-blue-50 px-8 py-3 text-sm text-blue-800">
+          <Spinner />
+          Solving schedule, this can take up to 2 minutes. Keep this tab open.
+        </div>
+      )}
+
       <div className="flex shrink-0 items-center gap-2 border-t border-neutral-200 bg-white px-8 py-3">
         <Button onClick={() => reSolve(false)} loading={resolving} disabled={busy}>
           Re-solve

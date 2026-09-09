@@ -77,6 +77,13 @@ function parseDetail(status: number, body: unknown): ApiError {
  * a request the backend is still legitimately booting to answer. */
 const REQUEST_TIMEOUT_MS = 30_000;
 
+/** The CP-SAT solve for 100+ applicants routinely runs well past the normal
+ * 30s ceiling — the box is awake and working, it just takes a while. Give
+ * `solve` / `resolve` their own budget. Override with NEXT_PUBLIC_SOLVE_TIMEOUT_MS
+ * (milliseconds) if a cycle's data needs even longer. */
+const SOLVE_TIMEOUT_MS =
+  Number(process.env.NEXT_PUBLIC_SOLVE_TIMEOUT_MS) || 120_000;
+
 /** Retries *after* the first try, for calls that opt in (`retry: true`).
  * 3 retries × 5s gaps rides out a cold start without hammering the box. */
 const RETRY_ATTEMPTS = 3;
@@ -270,10 +277,10 @@ export const api = {
     }),
 
   solve: (id: string, skipCheck = false) =>
-    request<SolveResult>(
-      `/workspaces/${seg(id)}/solve`,
-      json({ skip_check: skipCheck }),
-    ),
+    request<SolveResult>(`/workspaces/${seg(id)}/solve`, {
+      ...json({ skip_check: skipCheck }),
+      timeoutMs: SOLVE_TIMEOUT_MS,
+    }),
 
   publish: (id: string, run = "latest") =>
     request<PublishResult>(
@@ -303,10 +310,10 @@ export const api = {
 
   /** Re-solve honouring every lock (C6). Writes a fresh run. */
   resolve: (id: string, runId: string, skipCheck = false) =>
-    request<SolveResult>(
-      `/workspaces/${seg(id)}/runs/${seg(runId)}/resolve`,
-      json({ skip_check: skipCheck }),
-    ),
+    request<SolveResult>(`/workspaces/${seg(id)}/runs/${seg(runId)}/resolve`, {
+      ...json({ skip_check: skipCheck }),
+      timeoutMs: SOLVE_TIMEOUT_MS,
+    }),
 
   /** The `schedule.xlsx` a prior Publish wrote for this run (Schedule!
    * publishes automatically, so it's usually already there). Not routed

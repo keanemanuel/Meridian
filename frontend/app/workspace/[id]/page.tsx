@@ -302,6 +302,13 @@ export default function WorkspacePage({
         </Button>
       </div>
 
+      {busy === "solve" && (
+        <div className="mt-5 flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+          <Spinner />
+          Solving schedule, this can take up to 2 minutes. Keep this tab open.
+        </div>
+      )}
+
       {lastSolve && (
         <div className="mt-5 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg border border-neutral-200 bg-white px-4 py-3">
           <span className="text-2xl font-semibold tabular-nums text-neutral-900">
