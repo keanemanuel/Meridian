@@ -11,7 +11,7 @@ import { RoomView, type MoveRequest } from "@/components/RoomView";
 import { SendModal } from "@/components/SendModal";
 import { useToast } from "@/components/Toast";
 import { Badge, Button, Spinner } from "@/components/ui";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, saveBlob } from "@/lib/api";
 import { formatRunId, formatTime } from "@/lib/schedule";
 import type { Assignment } from "@/lib/types";
 
@@ -54,7 +54,7 @@ export default function RunPage({
   const [selected, setSelected] = useState<Assignment | null>(null);
   const [sendKind, setSendKind] = useState<"invite" | "result" | null>(null);
   const [resolving, setResolving] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [moving, setMoving] = useState(false);
   const [history, setHistory] = useState<MoveHistoryEntry[]>([]);
   const [infeasible, setInfeasible] = useState<string | null>(null);
@@ -135,27 +135,15 @@ export default function RunPage({
     );
   }, [history, assignments, applyMove, toast]);
 
-  const exportToSheets = async () => {
-    setExporting(true);
+  const downloadXlsx = async () => {
+    setDownloading(true);
     try {
-      const result = await api.exportSheets(workspaceId, runId);
-      toast.success(
-        "Google Sheet ready.",
-        [
-          `${result.rows_written} row(s) across ${result.tabs.join(", ")}`,
-          result.clashes > 0
-            ? `${result.clashes} clash row(s) highlighted red`
-            : "No clashes",
-        ],
-        { href: result.sheet_url, label: "Open the timetable in Google Sheets" },
-      );
-      // Best effort: a popup blocker will stop this, which is why the toast
-      // carries the link too.
-      window.open(result.sheet_url, "_blank", "noreferrer");
+      const { blob, filename } = await api.downloadXlsx(workspaceId, runId);
+      saveBlob(blob, filename);
     } catch (err) {
-      toast.fromError(err, "Export to Google Sheets failed.");
+      toast.fromError(err, "Download failed.");
     } finally {
-      setExporting(false);
+      setDownloading(false);
     }
   };
 
@@ -186,7 +174,7 @@ export default function RunPage({
 
   const clashes = assignments.filter((a) => a.is_clash).length;
   const locks = assignments.filter((a) => a.is_locked).length;
-  const busy = resolving || moving || exporting;
+  const busy = resolving || moving || downloading;
 
   return (
     <div className="flex h-full flex-col">
@@ -219,11 +207,11 @@ export default function RunPage({
               Undo{history.length > 0 ? ` (${history.length})` : ""}
             </Button>
             <Button
-              onClick={exportToSheets}
-              loading={exporting}
+              onClick={downloadXlsx}
+              loading={downloading}
               disabled={busy || assignments.length === 0}
             >
-              Export
+              Download XLSX
             </Button>
           </div>
         </div>
