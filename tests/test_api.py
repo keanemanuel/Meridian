@@ -277,6 +277,13 @@ def test_solve_publish_and_assignments_flow(client: TestClient) -> None:
     assert len(rows) == solved.json()["interviews_required"]
     assert all(":" in r["assignment_id"] for r in rows)
 
+    # Every row carries the applicant's declared day/time preference (FR-51);
+    # the fixture picks whole event days, so at least one reads as a day label.
+    assert all("declared_availability" in r for r in rows)
+    assert any(
+        r["declared_availability"] in {"Thu 17 Sep", "Fri 18 Sep"} for r in rows
+    )
+
 
 def test_solve_without_applicants_is_404(client: TestClient) -> None:
     _create_ws(client)

@@ -31,6 +31,7 @@ from api.dependencies import (
 from api.services import execute_solve
 from iff_scheduler import workspace as ws
 from iff_scheduler.db import supabase_enabled
+from iff_scheduler.domain.availability import summarise_availability
 from iff_scheduler.domain.grid import build_slot_grid
 from iff_scheduler.domain.models import Assignment
 from iff_scheduler.review.edit_validator import validate_edits
@@ -51,18 +52,41 @@ def _serialise(a: Assignment) -> dict[str, Any]:
     return {"assignment_id": _assignment_id(a), **a.model_dump(mode="json")}
 
 
+def _declared_availability(workspace_id: str, settings: Settings) -> dict[str, str]:
+    """applicant_id -> the day/time preference they ticked on the form, for the
+    Applicants view's declared-availability column (FR-51). Best-effort: when
+    the clean applicant list is not on this instance the column is left blank
+    rather than guessed (CLAUDE.md invariant 3)."""
+    path = ws.applicants_clean_path(workspace_id)
+    if not path.exists():
+        return {}
+    slots = build_slot_grid(settings.event).slots
+    return {
+        a.applicant_id: summarise_availability(a.availability_slots, slots)
+        for a in load_clean_applicants(path)
+    }
+
+
 @router.get("/assignments")
-def get_assignments(workspace_id: str, run_id: str) -> list[dict[str, Any]]:
+def get_assignments(workspace_id: str, run_id: str, settings: SettingsDep) -> list[dict[str, Any]]:
+    declared = _declared_availability(workspace_id, settings)
+
+    def serialise(assignments: list[Assignment]) -> list[dict[str, Any]]:
+        return [
+            {**_serialise(a), "declared_availability": declared.get(a.applicant_id, "")}
+            for a in assignments
+        ]
+
     if supabase_enabled():
         from iff_scheduler.db import assignment_repo
 
         run_pk = resolve_run_pk(workspace_id, run_id)
-        return [_serialise(a) for a in assignment_repo.list_assignments(run_pk)]
+        return serialise(assignment_repo.list_assignments(run_pk))
     run_dir = resolve_run_dir(workspace_id, run_id)
     path = run_dir / "assignments.csv"
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"{path} not found — solve first.")
-    return [_serialise(a) for a in load_assignments(path)]
+    return serialise(load_assignments(path))
 
 
 class AssignmentEdit(BaseModel):

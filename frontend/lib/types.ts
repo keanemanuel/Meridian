@@ -41,6 +41,8 @@ export type Assignment = {
   is_locked: boolean;
   same_parent_pair: boolean;
   reason: string | null;
+  /** Day/time preference the applicant ticked on the form; "" if none declared. */
+  declared_availability: string;
 };
 
 export type CapacityRow = {

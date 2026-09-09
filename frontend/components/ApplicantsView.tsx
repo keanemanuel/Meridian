@@ -36,6 +36,7 @@ export function ApplicantsView({ assignments }: { assignments: Assignment[] }) {
 
   const headers = [
     "Name",
+    "Preference",
     "Div 1",
     "Time 1",
     "Room 1",
@@ -88,6 +89,13 @@ export function ApplicantsView({ assignments }: { assignments: Assignment[] }) {
                   <span className="block text-xs text-neutral-400">
                     {r.applicant_id}
                   </span>
+                </td>
+
+                <td
+                  className="px-4 py-2 text-neutral-600"
+                  title="Day / time preference declared on the form"
+                >
+                  {r.availability || <span className="text-neutral-300">·</span>}
                 </td>
 
                 <td className="px-4 py-2 text-neutral-700">
