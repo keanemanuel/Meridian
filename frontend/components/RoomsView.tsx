@@ -7,6 +7,7 @@ import {
   formatTime,
   roomSummaries,
   type RoomSummary,
+  type SlotAxis,
   slotAxis,
 } from "@/lib/schedule";
 import type { Assignment } from "@/lib/types";
@@ -58,6 +59,12 @@ export function RoomsView({
     x.localeCompare(y, undefined, { numeric: true }),
   );
 
+  /** The full slot axis for the chosen day, spanning every room. Each room
+   * card renders one row per entry here regardless of which division is
+   * selected, so rows stay aligned across cards and never "squish" when a
+   * division fills only part of the day. */
+  const daySlots = slotAxis(onDay);
+
   return (
     <div>
       <div className="mb-3 flex items-center gap-3">
@@ -97,6 +104,7 @@ export function RoomsView({
               room={room}
               summary={summaryByRoom.get(room)}
               assignments={onDay.filter((a) => a.room === room)}
+              slots={daySlots}
               onSelect={onSelect}
             />
           ))}
@@ -113,11 +121,15 @@ function RoomCard({
   room,
   summary,
   assignments,
+  slots,
   onSelect,
 }: {
   room: string;
   summary: RoomSummary | undefined;
   assignments: Assignment[];
+  /** The whole day's slot axis, shared by every card. Rows are drawn for all
+   * of these, not just the slots the active division happens to fill. */
+  slots: SlotAxis[];
   onSelect: (a: Assignment) => void;
 }) {
   const panels = summary?.panels ?? [
@@ -153,7 +165,6 @@ function RoomCard({
     [assignments, activeDivision],
   );
 
-  const slots = useMemo(() => slotAxis(shown), [shown]);
   const bySlot = useMemo(() => {
     const map = new Map<string, Assignment[]>();
     for (const a of shown) {
@@ -221,9 +232,7 @@ function RoomCard({
 
       {slots.length === 0 ? (
         <p className="px-4 py-3 text-xs text-neutral-400">
-          {activeDivision
-            ? `No ${activeDivision} interviews in this room on this day.`
-            : "Nothing scheduled in this room today."}
+          Nothing scheduled in this room today.
         </p>
       ) : (
         <table className="min-w-full border-collapse text-xs">
@@ -239,8 +248,14 @@ function RoomCard({
                     scope="row"
                     className="w-24 border-r border-neutral-100 bg-neutral-50 px-3 py-2 text-left align-top font-normal"
                   >
-                    <span className="block font-medium text-neutral-700">
-                      {formatTime(slot.start_time)}–{formatTime(slot.end_time)}
+                    {/* Always two lines — start over end — so every time
+                        cell is the same height regardless of the division
+                        filter or how the range would otherwise wrap. */}
+                    <span className="block font-medium tabular-nums text-neutral-700">
+                      {formatTime(slot.start_time)}
+                    </span>
+                    <span className="block tabular-nums text-neutral-400">
+                      {formatTime(slot.end_time)}
                     </span>
                   </th>
                   <td className="p-0 align-top">
