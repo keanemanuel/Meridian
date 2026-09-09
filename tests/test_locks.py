@@ -31,7 +31,9 @@ from iff_scheduler.scheduling.solver_cpsat import CpSatSolver
 from iff_scheduler.settings import DayConfig, EventConfig, SolverWeights
 
 DAY = date(2026, 9, 17)
-WEIGHTS = SolverWeights(clash=10_000, repeat_panel=50, spread=10, balance=5, lateness=1)
+WEIGHTS = SolverWeights(
+    clash=10_000, different_day=100, repeat_panel=50, spread=10, balance=5, lateness=1
+)
 
 
 # ---------------------------------------------------------------- builders

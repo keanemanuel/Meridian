@@ -163,6 +163,11 @@ class SolverWeights(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     clash: int
+    # Penalty when an applicant's two interviews land on different event days
+    # (FR-36b). Ordered clash >> different_day > repeat_panel so the solver
+    # keeps a pair same-day even at the cost of a repeated panel, but never at
+    # the cost of a clash.
+    different_day: int
     repeat_panel: int
     spread: int
     balance: int

@@ -229,6 +229,7 @@ Priority: **M** = must have for alpha, **S** = should have, **C** = could have.
 | FR-34 | M | Where no in-availability placement exists, the solver shall place the applicant anyway (to satisfy FR-30) and mark the assignment as a **CLASH**, highlighted red in every export. |
 | FR-35 | M | The solver shall be deterministic: the same inputs, config and random seed produce the same schedule. |
 | FR-36 | S | The solver shall prefer compact schedules for applicants (minimise dead time between their two interviews) as a secondary objective. |
+| FR-36b | S | The solver shall prefer scheduling both of an applicant's interviews on the **same event day**, splitting across days only when a hard constraint (availability, panel capacity, no double-booking, minimum gap) leaves no same-day placement. Soft: ranked below clash-avoidance and above the compactness/balance/earliness terms. Target ≥ 90% of multi-interview applicants same-day on the committed two-day grid. |
 | FR-37 | S | The solver shall balance load across panels of the same division rather than filling one panel first. |
 | FR-38 | S | The solver shall prefer earlier slots when all else is equal, so the event can finish early if attendance drops. |
 | FR-39 | M | The solver shall complete a 240-interview instance in under 60 seconds on a standard laptop. |
@@ -434,14 +435,15 @@ C8  Distinct panels for same-parent pairs (FR-30b) — SOFT, auto-relaxed:
 
 ```
 minimise
-      W_CLASH   · Σ x[a,c,p,s] · (1 if s ∉ availability(a) else 0)     ← dominant term
-    + W_REPEAT  · Σ_a  (1 if both interviews used the same panel else 0)
-    + W_SPREAD  · Σ_a  gap_slots_between_a's_two_interviews
-    + W_BALANCE · Σ_d  (max_panel_load(d) − min_panel_load(d))
-    + W_LATE    · Σ x[a,c,p,s] · slot_index(s)
+      W_CLASH     · Σ x[a,c,p,s] · (1 if s ∉ availability(a) else 0)   ← dominant term
+    + W_DIFF_DAY  · Σ_a  (1 if a's two interviews fall on different event days else 0)
+    + W_REPEAT    · Σ_a  (1 if both interviews used the same panel else 0)
+    + W_SPREAD    · Σ_a  gap_slots_between_a's_two_interviews
+    + W_BALANCE   · Σ_d  (max_panel_load(d) − min_panel_load(d))
+    + W_LATE      · Σ x[a,c,p,s] · slot_index(s)
 ```
 
-With weights ordered `W_CLASH ≫ W_REPEAT > W_SPREAD > W_BALANCE > W_LATE` (e.g. 10 000 / 50 / 10 / 5 / 1) this is lexicographic in practice: the solver will never accept an extra clash to gain compactness, and never drop an interview to avoid a repeated panel. That encodes "prioritise time first, guarantee both interviews always" exactly.
+With weights ordered `W_CLASH ≫ W_DIFF_DAY > W_REPEAT > W_SPREAD > W_BALANCE > W_LATE` (e.g. 10 000 / 100 / 50 / 10 / 5 / 1) this is lexicographic in practice: the solver will never accept an extra clash to keep an applicant's two interviews on one day, never split them across days to avoid a repeated panel, and never drop an interview at all. That encodes "prioritise time first, guarantee both interviews always" exactly. On the committed two-day grid this keeps ~93% of multi-interview applicants same-day (FR-36b); the rest are split only where same-day capacity genuinely runs out.
 
 **Why not something simpler?**
 
@@ -1070,7 +1072,7 @@ Please answer these before implementation starts; they change the design.
 
 **Scheduling rules**
 6. What timezone? (Assumed Asia/Jakarta — confirm.)
-7. Must the two interviews be on the same day, or is one on Thursday and one on Friday acceptable?
+7. ~~Must the two interviews be on the same day, or is one on Thursday and one on Friday acceptable?~~ **Answered: same day strongly preferred, not mandatory. Implemented as a soft objective term (FR-36b, W_DIFF_DAY) that only splits a pair across days when a hard constraint leaves no same-day placement; ~93% land same-day on the committed grid.**
 8. Should there be a minimum gap between an applicant's two interviews? What about travel time between rooms?
 9. Do interviewers need scheduled breaks? How long, how often?
 10. Is the second-choice division a genuine second interview, or a fallback only if the first fails? (Spec says both interviews always happen — confirming.)

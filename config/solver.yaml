@@ -5,6 +5,7 @@ two_phase: true            # try zero-clash first, then relax
 phase1_time_fraction: 0.5  # share of the time budget the zero-clash phase may use (§5.4)
 weights:
   clash:    10000          # dominant — never trade an extra clash for anything
+  different_day: 100       # prefer both of an applicant's interviews on the same day (FR-36b)
   repeat_panel: 50         # C8: same panel for both interviews of a same-parent pair
   spread:      10
   balance:      5

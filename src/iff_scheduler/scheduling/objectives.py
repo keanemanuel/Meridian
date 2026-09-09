@@ -5,10 +5,11 @@ CP-SAT solver and the greedy fallback (§5.3) can be compared on the same
 number. `solver_cpsat` builds the identical expression inside the CP-SAT
 model; `test_solver_constraints` asserts the two agree.
 
-The weight ordering `clash >> repeat_panel > spread > balance > lateness`
-makes the objective lexicographic in practice: the solver will never accept
-an extra clash to gain compactness, and never drop an interview to avoid a
-repeated panel (FR-33).
+The weight ordering `clash >> different_day > repeat_panel > spread > balance
+> lateness` makes the objective lexicographic in practice: the solver will
+never accept an extra clash to gain compactness, never split an applicant's
+two interviews across days to avoid a repeated panel, and never drop an
+interview at all (FR-33, FR-36b).
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ class ObjectiveBreakdown:
     """
 
     clashes: int
+    different_days: int
     repeat_panels: int
     spread_slots: int
     balance_spread: int
@@ -42,6 +44,7 @@ class ObjectiveBreakdown:
     def total(self) -> int:
         return (
             self.weights.clash * self.clashes
+            + self.weights.different_day * self.different_days
             + self.weights.repeat_panel * self.repeat_panels
             + self.weights.spread * self.spread_slots
             + self.weights.balance * self.balance_spread
@@ -51,6 +54,7 @@ class ObjectiveBreakdown:
     def as_dict(self) -> dict[str, int]:
         return {
             "clashes": self.clashes,
+            "different_days": self.different_days,
             "repeat_panels": self.repeat_panels,
             "spread_slots": self.spread_slots,
             "balance_spread": self.balance_spread,
@@ -104,12 +108,15 @@ def score_schedule(
 
     repeat_panels = 0
     spread_slots = 0
+    different_days = 0
     for applicant in applicants:
         theirs = per_applicant.get(applicant.applicant_id, [])
         if len(theirs) != 2:
             continue
         first, second = theirs
         spread_slots += abs(slot_index[first.slot_id] - slot_index[second.slot_id])
+        if first.date != second.date:
+            different_days += 1
         if first.panel_id == second.panel_id and c8_applies(applicant, by_division):
             repeat_panels += 1
 
@@ -122,6 +129,7 @@ def score_schedule(
 
     return ObjectiveBreakdown(
         clashes=clashes,
+        different_days=different_days,
         repeat_panels=repeat_panels,
         spread_slots=spread_slots,
         balance_spread=balance_spread,

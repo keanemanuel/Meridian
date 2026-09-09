@@ -24,6 +24,7 @@ import time as timer
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date as Date
 
 from ortools.sat.python import cp_model
 
@@ -135,6 +136,9 @@ class CpSatSolver:
         vars_by_choice_panel: dict[tuple[str, ChoiceIndex, str], list[cp_model.IntVar]] = (
             defaultdict(list)
         )
+        vars_by_choice_day: dict[tuple[str, ChoiceIndex, Date], list[cp_model.IntVar]] = (
+            defaultdict(list)
+        )
         vars_by_panel: dict[str, list[cp_model.IntVar]] = defaultdict(list)
 
         for choice in choices:
@@ -156,6 +160,7 @@ class CpSatSolver:
                     vars_by_panel_slot[(panel.id, slot.slot_id)].append(var)
                     vars_by_applicant_slot[(applicant_id, slot.slot_id)].append(var)
                     vars_by_choice_panel[(applicant_id, choice.choice_index, panel.id)].append(var)
+                    vars_by_choice_day[(applicant_id, choice.choice_index, slot.date)].append(var)
                     vars_by_panel[panel.id].append(var)
 
         # C1 — completeness (FR-30). A choice with no candidate placement makes
@@ -245,6 +250,7 @@ class CpSatSolver:
             choices=choices,
             by_division=by_division,
             vars_by_choice_panel=vars_by_choice_panel,
+            vars_by_choice_day=vars_by_choice_day,
             vars_by_panel=vars_by_panel,
             slots_by_id=slots_by_id,
         )
@@ -351,6 +357,7 @@ class CpSatSolver:
         choices: Sequence[_Choice],
         by_division: dict[DivisionCode, list[Panel]],
         vars_by_choice_panel: dict[tuple[str, ChoiceIndex, str], list[cp_model.IntVar]],
+        vars_by_choice_day: dict[tuple[str, ChoiceIndex, Date], list[cp_model.IntVar]],
         vars_by_panel: dict[str, list[cp_model.IntVar]],
         slots_by_id: dict[str, Slot],
     ) -> cp_model.LinearExpr:
@@ -370,6 +377,36 @@ class CpSatSolver:
                 coefficient += weights.clash
             if coefficient:
                 terms.append(coefficient * var)
+
+        # W_DIFFERENT_DAY — both of an applicant's interviews on one event day
+        # (FR-36b). `same_on[d]` is the AND of "choice 1 lands on day d" and
+        # "choice 2 lands on day d" (each a 0/1 sum by C1); it can be 1 for at
+        # most one day, so `different_day` is forced to 1 exactly when no day
+        # holds both. Soft: ranked above repeat_panel and spread but far below
+        # clash, so a pair is split across days only when every same-day
+        # placement would require a clash. An applicant whose two choices have
+        # no common candidate day is split by construction — the term is still
+        # added (as a constant) so the objective value matches score_schedule.
+        event_dates = sorted({slot.date for slot in problem.slots})
+        if weights.different_day and len(event_dates) > 1:
+            for applicant in problem.applicants:
+                if applicant.single_choice or applicant.division_2 is None:
+                    continue
+                aid = applicant.applicant_id
+                same_day_flags: list[cp_model.IntVar] = []
+                for day in event_dates:
+                    first = vars_by_choice_day.get((aid, 1, day), [])
+                    second = vars_by_choice_day.get((aid, 2, day), [])
+                    if not first or not second:
+                        continue
+                    same_on_day = model.new_bool_var(f"sameday_{aid}_{day.isoformat()}")
+                    model.add(same_on_day <= sum(first))
+                    model.add(same_on_day <= sum(second))
+                    model.add(same_on_day >= sum(first) + sum(second) - 1)
+                    same_day_flags.append(same_on_day)
+                different_day = model.new_bool_var(f"diffday_{aid}")
+                model.add(different_day + sum(same_day_flags) >= 1)
+                terms.append(weights.different_day * different_day)
 
         # W_REPEAT — C8, soft and auto-relaxing (FR-30b, E-01c).
         for applicant in problem.applicants:

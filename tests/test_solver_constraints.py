@@ -36,7 +36,9 @@ from iff_scheduler.settings import DayConfig, EventConfig, SolverWeights, load_s
 DAY = date(2026, 9, 17)
 DAY_2 = date(2026, 9, 18)
 
-WEIGHTS = SolverWeights(clash=10_000, repeat_panel=50, spread=10, balance=5, lateness=1)
+WEIGHTS = SolverWeights(
+    clash=10_000, different_day=100, repeat_panel=50, spread=10, balance=5, lateness=1
+)
 
 
 # ---------------------------------------------------------------- builders
@@ -534,6 +536,86 @@ def test_c8_auto_relaxes_when_the_division_has_only_one_panel() -> None:
 # --------------------------------------------- objective and scale (FR-33..39)
 
 
+def make_two_day_slots(per_day: int = 4) -> list[Slot]:
+    """`per_day` 20-minute slots from 18:00 on each of DAY and DAY_2."""
+    minutes = 20 * per_day
+    event = EventConfig(
+        event_name="Test",
+        timezone="Asia/Jakarta",
+        interview_duration_minutes=20,
+        days=[
+            DayConfig(
+                date=day,
+                label=label,
+                start=time(18, 0),
+                end=time(18 + minutes // 60, minutes % 60),
+            )
+            for day, label in ((DAY, "Thu"), (DAY_2, "Fri"))
+        ],
+    )
+    return build_slot_grid(event).slots
+
+
+def test_both_interviews_prefer_the_same_day() -> None:
+    """FR-36b: given a free choice of days, an applicant's two interviews are
+    scheduled on one day rather than split across Thursday and Friday."""
+    slots = make_two_day_slots(per_day=4)
+    rooms = [make_room("R1", [DivisionCode.CREATIVE, DivisionCode.LOGISTICS])]
+    panels = [
+        make_panel("CREATIVE-A", DivisionCode.CREATIVE, "R1", slots),
+        make_panel("LOGISTICS-A", DivisionCode.LOGISTICS, "R1", slots),
+    ]
+    applicants = [make_applicant("A0", DivisionCode.CREATIVE, DivisionCode.LOGISTICS, slots)]
+
+    result = solve(make_problem(applicants, panels, rooms, slots))
+
+    assert result.status in USABLE_STATUSES
+    assert result.clash_count == 0
+    assert len({a.date for a in result.assignments}) == 1
+
+
+def test_same_day_preference_yields_to_hard_constraints() -> None:
+    """FR-36b is soft: when the Creative panel runs only Thursday and the
+    Logistics panel only Friday, the pair is split across days rather than
+    forcing a clash to keep it on one day."""
+    slots = make_two_day_slots(per_day=3)
+    thu = [s for s in slots if s.date == DAY]
+    fri = [s for s in slots if s.date == DAY_2]
+    rooms = [make_room("R1", [DivisionCode.CREATIVE, DivisionCode.LOGISTICS])]
+    panels = [
+        make_panel("CREATIVE-A", DivisionCode.CREATIVE, "R1", slots, active=thu),
+        make_panel("LOGISTICS-A", DivisionCode.LOGISTICS, "R1", slots, active=fri),
+    ]
+    applicants = [make_applicant("A0", DivisionCode.CREATIVE, DivisionCode.LOGISTICS, slots)]
+
+    result = solve(make_problem(applicants, panels, rooms, slots))
+
+    assert result.status in USABLE_STATUSES
+    assert result.clash_count == 0
+    assert {a.date for a in result.assignments} == {DAY, DAY_2}
+
+
+def test_a_clash_still_outranks_the_same_day_preference() -> None:
+    """Ordering check: W_CLASH >> W_DIFFERENT_DAY. An applicant free for a
+    single Thursday slot takes both interviews that day (one a clash is not
+    needed here — both fit), never a Friday slot to gain nothing."""
+    slots = make_two_day_slots(per_day=3)
+    thu = [s for s in slots if s.date == DAY]
+    rooms = [make_room("R1", [DivisionCode.CREATIVE, DivisionCode.LOGISTICS])]
+    panels = [
+        make_panel("CREATIVE-A", DivisionCode.CREATIVE, "R1", slots),
+        make_panel("LOGISTICS-A", DivisionCode.LOGISTICS, "R1", slots),
+    ]
+    # Available for the first two Thursday slots only.
+    applicants = [make_applicant("A0", DivisionCode.CREATIVE, DivisionCode.LOGISTICS, thu[:2])]
+
+    result = solve(make_problem(applicants, panels, rooms, slots))
+
+    assert result.status in USABLE_STATUSES
+    assert result.clash_count == 0
+    assert {a.date for a in result.assignments} == {DAY}
+
+
 def test_availability_is_preferred_over_earliness() -> None:
     """FR-33: time first. The lateness term prefers slot 0, but the clash weight
     dominates, so an applicant free only late is scheduled late without a clash."""
@@ -677,6 +759,27 @@ def test_full_scale_240_interviews_solve_within_the_time_budget() -> None:
     assert len(panel_slots) == 240
     applicant_slots = {(a.applicant_id, a.slot_id) for a in result.assignments}
     assert len(applicant_slots) == 240
+
+
+@pytest.mark.slow
+def test_full_scale_keeps_almost_every_applicant_same_day() -> None:
+    """FR-36b at scale: on the committed two-day grid, 90-95%+ of the 120
+    multi-interview applicants get both interviews on one day; the rest are
+    split only where capacity leaves no same-day room."""
+    problem = _full_scale_problem()
+    assert len({s.date for s in problem.slots}) == 2
+
+    result = solve(problem)
+    assert result.status in USABLE_STATUSES
+
+    choices_by_applicant: dict[str, list[Assignment]] = {}
+    for a in result.assignments:
+        choices_by_applicant.setdefault(a.applicant_id, []).append(a)
+    multi = [rows for rows in choices_by_applicant.values() if len(rows) == 2]
+    assert len(multi) == 120
+    same_day = sum(1 for rows in multi if rows[0].date == rows[1].date)
+    rate = same_day / len(multi)
+    assert rate >= 0.9, f"only {rate:.0%} of multi-interview applicants are same-day"
 
 
 def test_cpsat_objective_matches_the_independent_score() -> None:
