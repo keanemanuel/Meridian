@@ -9,10 +9,12 @@ from typing import Annotated, Any
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from api.cli_helpers import conflicts_frame, load_assignments, load_clean_applicants
 from api.dependencies import (
+    ensure_run_exists,
     get_settings,
     resolve_run_dir,
     resolve_workspace,
@@ -223,6 +225,45 @@ def publish(
         "warnings_amber": sum(1 for c in conflicts if c.severity == Severity.AMBER),
         "formats": sorted(wanted),
     }
+
+
+_XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@router.get("/runs/{run_id}/xlsx")
+def download_xlsx(workspace_id: str, run_id: str) -> FileResponse:
+    """Download the `schedule.xlsx` a prior `publish` wrote for this run.
+
+    The frontend's Google Sheets export needs a Google Workspace Shared
+    Drive (a bare service account has no Drive storage of its own —
+    docs/DEPLOY.md, "Google Drive export storage") and most committees won't
+    have one, so this is the plain download path: `schedule.xlsx` is written
+    to local disk by `publish` (which `Schedule!` already calls
+    automatically), and this endpoint just serves that file.
+
+    404s if the run itself doesn't exist (checked against whichever store is
+    live); 409s if the run exists but was never published, or its published
+    output isn't on *this* machine's disk — publish artefacts are a local
+    file, never mirrored to Postgres, so a run solved before a Railway
+    redeploy (an ephemeral filesystem — see docs/DEPLOY.md, "Persist run
+    artefacts") needs Publish run again rather than a fresh Schedule!.
+    """
+    resolve_workspace(workspace_id)
+    resolved_run_id = ensure_run_exists(workspace_id, run_id)
+    xlsx_path = ws.output_dir(workspace_id) / resolved_run_id / "schedule.xlsx"
+    if not xlsx_path.is_file():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"No published schedule.xlsx for run '{resolved_run_id}'. "
+                "Publish this run (Schedule! does this automatically) and try again."
+            ),
+        )
+    return FileResponse(
+        xlsx_path,
+        media_type=_XLSX_MEDIA_TYPE,
+        filename=f"{workspace_id} schedule {resolved_run_id}.xlsx",
+    )
 
 
 @router.get("/runs")
