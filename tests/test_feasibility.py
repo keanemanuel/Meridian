@@ -8,7 +8,11 @@ from datetime import date, datetime, time
 from iff_scheduler.domain.enums import DivisionCode
 from iff_scheduler.domain.grid import build_slot_grid
 from iff_scheduler.domain.models import Applicant
-from iff_scheduler.scheduling.feasibility import compute_capacity_advisor, is_feasible
+from iff_scheduler.scheduling.feasibility import (
+    autoscale_panels,
+    compute_capacity_advisor,
+    is_feasible,
+)
 from iff_scheduler.settings import (
     ActiveWindow,
     DayConfig,
@@ -182,9 +186,9 @@ def test_is_feasible_true_when_nothing_infeasible() -> None:
 
 def test_baseline_config_covers_an_even_40_per_division_split() -> None:
     """Finding A's worked example: demand split perfectly evenly (40 per
-    division). The real-room panels.yaml fields 4 panels per division (2 each
-    evening). At 23 slots x 0.83 the formula recommends 3, so 4 configured
-    clears the bar with headroom on every division."""
+    division). panels.yaml is demand-weighted (PROGRAM 6, CREATIVE 4); at
+    23 slots x 0.83 the formula recommends 3 for a 40-demand division, so
+    every division clears the bar with headroom and none is INFEASIBLE."""
     settings = load_settings()
     grid = build_slot_grid(settings.event)
     all_slots = [s.slot_id for s in grid.slots]
@@ -204,10 +208,45 @@ def test_baseline_config_covers_an_even_40_per_division_split() -> None:
         settings.solver.target_utilisation,
         rooms=settings.rooms,
     )
-    creative = next(r for r in rows if r.division == DivisionCode.CREATIVE)
-    program = next(r for r in rows if r.division == DivisionCode.PROGRAM)
+    by_division = {r.division: r for r in rows}
+    # Demand-weighted committed counts.
+    assert by_division[DivisionCode.PROGRAM].panels_configured == 6
+    assert by_division[DivisionCode.MEDMARDOC].panels_configured == 5
+    assert by_division[DivisionCode.CREATIVE].panels_configured == 4
+    assert by_division[DivisionCode.LIAISON].panels_configured == 3
+    # The hot divisions clear an even 40-way split outright; a thinner
+    # division (LIAISON: 3 panels by design) is what autoscale is for.
+    assert by_division[DivisionCode.PROGRAM].verdict == "OK"
+    assert by_division[DivisionCode.CREATIVE].verdict == "OK"
 
-    for row in (creative, program):
-        assert row.panels_configured == 4
-        assert row.recommended_panels == 3
-        assert row.verdict == "OK"
+
+def test_autoscale_panels_clears_an_infeasible_division() -> None:
+    """A division whose demand outstrips the committed config gets extra
+    panels until the Advisor stops flagging it — and the caller is told."""
+    settings = load_settings()
+    grid = build_slot_grid(settings.event)
+    all_slots = [s.slot_id for s in grid.slots]
+
+    # 120 applicants all wanting LIAISON twice — far past its 3 panels.
+    applicants = [
+        _applicant(f"L{i}", DivisionCode.LIAISON, DivisionCode.LIAISON, all_slots)
+        for i in range(120)
+    ]
+
+    before = compute_capacity_advisor(
+        applicants, settings.panels, grid, settings.solver.target_utilisation, rooms=settings.rooms
+    )
+    assert not is_feasible(before)
+
+    scaled, messages = autoscale_panels(settings, applicants, grid)
+
+    assert any("LIAISON" in m for m in messages)
+    assert len(scaled.panels.panels) > len(settings.panels.panels)
+    after = compute_capacity_advisor(
+        applicants, scaled.panels, grid, settings.solver.target_utilisation, rooms=settings.rooms
+    )
+    assert is_feasible(after)
+    # Untouched when nothing is short.
+    ok_settings, ok_messages = autoscale_panels(settings, [], grid)
+    assert ok_messages == []
+    assert ok_settings is settings

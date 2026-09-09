@@ -8,11 +8,11 @@
 rooms:
   # ---- Thursday 2026-09-17 ----
   - id: "2016"
-    max_concurrent_panels: 2
+    max_concurrent_panels: 3   # hosts 3 Thursday panels (see panels.yaml)
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-17]
   - id: "2017"
-    max_concurrent_panels: 2
+    max_concurrent_panels: 3   # hosts 3 Thursday panels (see panels.yaml)
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-17]
   - id: "2020"

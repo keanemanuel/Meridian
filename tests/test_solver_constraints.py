@@ -28,6 +28,7 @@ from iff_scheduler.scheduling.base import (
     resolve_panels,
     resolve_rooms,
 )
+from iff_scheduler.scheduling.feasibility import autoscale_panels
 from iff_scheduler.scheduling.objectives import score_schedule
 from iff_scheduler.scheduling.solver_cpsat import CpSatSolver
 from iff_scheduler.settings import DayConfig, EventConfig, SolverWeights, load_settings
@@ -637,6 +638,11 @@ def _full_scale_problem() -> SolveProblem:
                 )
             )
     assert len(applicants) == 120
+
+    # The live pipeline (execute_solve / `iffsched solve`) auto-scales panels
+    # to the Capacity Advisor's recommendation before solving; mirror that so
+    # this exercises what the deployment actually runs.
+    settings, _notes = autoscale_panels(settings, applicants, grid)
 
     return SolveProblem(
         applicants=applicants,

@@ -21,9 +21,18 @@ from typing import Literal
 from iff_scheduler.domain.enums import DivisionCode
 from iff_scheduler.domain.grid import SlotGrid
 from iff_scheduler.domain.models import Applicant
-from iff_scheduler.settings import PanelEntry, PanelsConfig, RoomsConfig
+from iff_scheduler.settings import (
+    ActiveWindow,
+    EventConfig,
+    PanelEntry,
+    PanelsConfig,
+    RoomsConfig,
+    Settings,
+)
 
 Verdict = Literal["OK", "TIGHT", "INFEASIBLE"]
+
+AUTO_PANEL_TAG = "AUTO"
 
 
 @dataclass(frozen=True)
@@ -158,3 +167,83 @@ def compute_capacity_advisor(
 
 def is_feasible(rows: list[DivisionCapacity]) -> bool:
     return all(row.verdict != "INFEASIBLE" for row in rows)
+
+
+def _all_day_windows(event: EventConfig) -> list[ActiveWindow]:
+    """One active window per event day covering its full opening hours — used
+    to make an auto-scaled panel active on every evening."""
+    return [ActiveWindow(date=d.date, start=d.start, end=d.end) for d in event.days]
+
+
+def _autoscale_room(rooms: RoomsConfig, event: EventConfig, division: DivisionCode) -> str:
+    """Pick the room an auto-scaled panel for `division` should sit in: the
+    first room that accepts the division AND runs every event day, so the
+    panel really is active both evenings. Falls back to the first room that
+    accepts the division, then to the first room at all."""
+    event_dates = {d.date for d in event.days}
+    accepts = [r for r in rooms.rooms if division in r.divisions]
+    both_days = [r for r in accepts if not r.days or set(r.days) >= event_dates]
+    for candidates in (both_days, accepts, list(rooms.rooms)):
+        if candidates:
+            return candidates[0].id
+    raise ValueError("rooms.yaml defines no rooms — cannot auto-scale panels.")
+
+
+def autoscale_panels(
+    settings: Settings,
+    applicants: list[Applicant],
+    grid: SlotGrid,
+    *,
+    max_rounds: int = 12,
+) -> tuple[Settings, list[str]]:
+    """Add panels for any INFEASIBLE division until the Capacity Advisor
+    clears, so the solver can still place every interview (CLAUDE.md
+    invariant 1 — two interviews per applicant, never relaxed).
+
+    This scales *capacity* to the Advisor's own `recommended_panels`; it
+    never touches applicant data or relaxes a hard constraint (invariant 3).
+    Every panel added is real staffing the committee still has to supply, so
+    the returned messages ("Auto-scaled PROGRAM: added 2 panel(s)") are meant
+    to surface as a review-your-staffing warning, not be swallowed.
+
+    Returns the (possibly unchanged) settings and the list of messages —
+    empty when nothing was added.
+    """
+    windows = _all_day_windows(settings.event)
+    panels: list[PanelEntry] = list(settings.panels.panels)
+    added: Counter[DivisionCode] = Counter()
+
+    for _ in range(max_rounds):
+        rows = compute_capacity_advisor(
+            applicants,
+            PanelsConfig(panels=panels),
+            grid,
+            settings.solver.target_utilisation,
+            rooms=settings.rooms,
+        )
+        short = [r for r in rows if r.verdict == "INFEASIBLE"]
+        if not short:
+            break
+        for row in short:
+            need = max(1, row.recommended_panels - row.panels_configured)
+            room_id = _autoscale_room(settings.rooms, settings.event, row.division)
+            for _n in range(need):
+                added[row.division] += 1
+                panels.append(
+                    PanelEntry(
+                        id=f"{row.division.value}-{AUTO_PANEL_TAG}-{added[row.division]}",
+                        division=row.division,
+                        room=room_id,
+                        active_windows=windows,
+                    )
+                )
+
+    if not added:
+        return settings, []
+
+    augmented = settings.model_copy(update={"panels": PanelsConfig(panels=panels)})
+    messages = [
+        f"Auto-scaled {division.value}: added {count} panel(s)"
+        for division, count in sorted(added.items(), key=lambda kv: kv[0].value)
+    ]
+    return augmented, messages

@@ -31,7 +31,11 @@ from iff_scheduler.cli import (
 from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.grid import build_slot_grid
 from iff_scheduler.scheduling.base import USABLE_STATUSES, Lock, SolveResult
-from iff_scheduler.scheduling.feasibility import compute_capacity_advisor, is_feasible
+from iff_scheduler.scheduling.feasibility import (
+    autoscale_panels,
+    compute_capacity_advisor,
+    is_feasible,
+)
 from iff_scheduler.scheduling.postprocess import build_conflicts, compute_metrics, diff_schedules
 from iff_scheduler.scheduling.solver_cpsat import CpSatSolver
 from iff_scheduler.settings import Settings
@@ -88,6 +92,14 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
     grid = build_slot_grid(settings.event)
     applicants = _load_clean_applicants(applicants_path)
 
+    # The Capacity Advisor no longer dead-ends the pipeline. If a division is
+    # INFEASIBLE, `autoscale_panels` provisions extra panels (to the Advisor's
+    # own `recommended_panels`) so every interview can still be placed
+    # (invariant 1). The added panels are real staffing the committee must
+    # supply, so they come back as a warning, never silently. `skip_check`
+    # still bypasses the Advisor entirely for a caller who wants the raw
+    # committed config.
+    capacity_warnings: list[str] = []
     if not skip_check:
         rows = compute_capacity_advisor(
             applicants=applicants,
@@ -97,14 +109,7 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
             rooms=settings.rooms,
         )
         if not is_feasible(rows):
-            infeasible = [r.division.value for r in rows if r.verdict == "INFEASIBLE"]
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Capacity Advisor says INFEASIBLE for {', '.join(infeasible)}. "
-                    "Add panels or pass skip_check=true (E-06)."
-                ),
-            )
+            settings, capacity_warnings = autoscale_panels(settings, applicants, grid)
 
     locks_path = ws.locks_path(workspace_id)
     locks: list[Lock] = _load_locks(locks_path) if locks_path.exists() else []
@@ -117,9 +122,12 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
             status_code=422,
             detail={
                 "message": (
-                    f"No schedule produced: {result.status}. Nothing was written "
-                    "(E-18 — a configuration problem, not a data problem)."
+                    f"No schedule produced: {result.status}. Even after auto-scaling "
+                    "panels, these interviews cannot all be placed — this is an "
+                    "availability/event-time shortage, not a staffing one (widen the "
+                    "form's date options or add event time). Nothing was written (E-18)."
                 ),
+                "warnings": capacity_warnings,
                 "log": result.log,
             },
         )
@@ -138,6 +146,19 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     (run_dir / "solve.log").write_text("\n".join(result.log) + "\n", encoding="utf-8")
     _snapshot_config(config_dir(), run_dir)
+    if capacity_warnings:
+        # The config snapshot above is the committed files; record what
+        # autoscale actually solved with so the run stays reproducible.
+        (run_dir / "autoscale.json").write_text(
+            json.dumps(
+                {
+                    "warnings": capacity_warnings,
+                    "panels": [p.model_dump(mode="json") for p in settings.panels.panels],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
     diff_count = 0
     if previous_dir is not None and (previous_dir / "assignments.csv").exists():
@@ -164,6 +185,7 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
         "solve_seconds": round(result.solve_seconds, 3),
         "changed_vs_previous": diff_count,
         "conflicts": len(conflicts),
+        "warnings": capacity_warnings,
     }
 
 

@@ -84,7 +84,11 @@ from iff_scheduler.scheduling.base import (
     resolve_panels,
     resolve_rooms,
 )
-from iff_scheduler.scheduling.feasibility import compute_capacity_advisor, is_feasible
+from iff_scheduler.scheduling.feasibility import (
+    autoscale_panels,
+    compute_capacity_advisor,
+    is_feasible,
+)
 from iff_scheduler.scheduling.postprocess import (
     build_conflicts,
     compute_metrics,
@@ -539,6 +543,7 @@ def solve(
     grid = build_slot_grid(settings.event)
     applicants = _load_clean_applicants(resolved_input_path)
 
+    autoscale_notes: list[str] = []
     if not skip_check:
         rows = compute_capacity_advisor(
             applicants=applicants,
@@ -549,12 +554,14 @@ def solve(
         )
         if not is_feasible(rows):
             infeasible = ", ".join(r.division.value for r in rows if r.verdict == "INFEASIBLE")
+            settings, autoscale_notes = autoscale_panels(settings, applicants, grid)
+            for note in autoscale_notes:
+                console.print(f"[yellow]{note}[/yellow]")
             console.print(
-                f"[bold red]Capacity Advisor says INFEASIBLE for {infeasible}. Run "
-                "`iffsched check` for the table, then add panels — or pass --skip-check "
-                "to solve anyway (E-06).[/bold red]"
+                f"[yellow]Capacity Advisor flagged {infeasible}; panels were auto-scaled to "
+                "meet the recommendation. Review your staffing before sending invites — run "
+                "`iffsched check` for the full table.[/yellow]"
             )
-            raise typer.Exit(code=1)
 
     locks: list[Lock] = []
     if resolved_locks_path.exists():
@@ -594,6 +601,17 @@ def solve(
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     (run_dir / "solve.log").write_text("\n".join(result.log) + "\n", encoding="utf-8")
     _snapshot_config(config_dir, run_dir)
+    if autoscale_notes:
+        (run_dir / "autoscale.json").write_text(
+            json.dumps(
+                {
+                    "warnings": autoscale_notes,
+                    "panels": [p.model_dump(mode="json") for p in settings.panels.panels],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
     if previous_dir is not None and (previous_dir / "assignments.csv").exists():
         changes = diff_schedules(
@@ -613,6 +631,8 @@ def solve(
     table.add_row("Locked", str(metrics["locked"]))
     table.add_row("Objective", str(result.objective_value))
     table.add_row("Solve seconds", f"{result.solve_seconds:.2f}")
+    if autoscale_notes:
+        table.add_row("Auto-scaled panels", "; ".join(autoscale_notes))
     console.print(table)
 
     for line in result.log:
