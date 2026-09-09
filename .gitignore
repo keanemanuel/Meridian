@@ -1,9 +1,17 @@
-# Secrets and PII — never committed
+# Secrets and PII — never committed.
+# Anchored with a leading slash so these match only the repo-root directories
+# they mean. An unanchored `runs/` also matched
+# `frontend/app/workspace/[id]/runs/`, which silently kept the entire run
+# detail route out of the repository — and so out of every deployed build,
+# where the page then 404'd.
+/data/
+/runs/
+/credentials/
+# Every .env variant (.env, .env.local — which the Vercel CLI writes a
+# VERCEL_OIDC_TOKEN into, .env.production, ...) except the checked-in template.
 .env
-credentials/
-credentials/gmail_token.json
-data/
-runs/
+.env.*
+!.env.example
 
 # Python
 __pycache__/
@@ -17,6 +25,13 @@ __pycache__/
 venv/
 build/
 dist/
+
+# Node / Next.js
+node_modules/
+.next/
+next-env.d.ts
+tsconfig.tsbuildinfo
+.vercel
 
 # OS / editor
 .DS_Store

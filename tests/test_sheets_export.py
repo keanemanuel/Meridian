@@ -231,8 +231,10 @@ class _FakeSpreadsheet:
     def batch_update(self, body: dict[str, Any]) -> None:
         self.batches.append(body)
 
-    def share(self, email_address: Any, perm_type: str, role: str) -> None:
-        self.shares.append((email_address, perm_type, role))
+    def share(self, email_address: Any, perm_type: str, role: str, notify: bool = True) -> None:
+        # `notify` mirrors gspread.Spreadsheet.share: an "anyone with the link"
+        # grant has no recipient to email, so the writer passes notify=False.
+        self.shares.append((email_address, perm_type, role, notify))
 
 
 class _FakeClient:
@@ -259,7 +261,7 @@ def test_export_writes_a_tab_per_day_drops_the_default_and_shares_by_link() -> N
     assert sheet.title == "IFF timetable"
     assert [ws.title for ws in sheet.worksheets()] == ["Thu 17 Sep", "Fri 18 Sep"]
     assert sheet.deleted == ["Sheet1"]
-    assert sheet.shares == [(None, "anyone", "reader")]
+    assert sheet.shares == [(None, "anyone", "reader", False)]
     assert result.sheet_url == "https://docs.google.com/spreadsheets/d/sheet-123"
     assert result.tabs == ["Thu 17 Sep", "Fri 18 Sep"]
     assert result.rows_written == 2

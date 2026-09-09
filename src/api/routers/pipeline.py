@@ -5,7 +5,6 @@ command; the heavy lifting stays in `iff_scheduler` and `api.services`.
 
 from __future__ import annotations
 
-import os
 from typing import Annotated, Any
 
 from dotenv import load_dotenv
@@ -18,6 +17,7 @@ from api.dependencies import (
     resolve_run_dir,
     resolve_workspace,
     run_dir_if_present,
+    service_account_file,
     workspace_pk,
 )
 from api.services import execute_solve, read_run_metrics, run_capacity_check
@@ -110,11 +110,7 @@ async def ingest(
             detail=f"Workspace '{workspace_id}' has no Sheet attached (set-sheet first).",
         )
     load_dotenv()
-    sa_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
-    if not sa_file:
-        raise HTTPException(
-            status_code=409, detail="GOOGLE_SERVICE_ACCOUNT_FILE is not set in the environment."
-        )
+    sa_file = service_account_file()
 
     worksheet_handle = open_worksheet(sa_file, meta.sheet_id, worksheet)
     sheets_source = SheetsApplicantSource(worksheet=worksheet_handle)

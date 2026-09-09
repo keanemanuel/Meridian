@@ -18,10 +18,16 @@ type Toast = {
   message: string;
   /** Audit/validation failures carry a list of specific reasons (E-12, FR-64). */
   details?: string[];
+  /** Rendered as a clickable link under the message. The Sheets export opens
+   * its result in a new tab, but that call sits after an await and so is
+   * routinely popup-blocked; the link is how the user still gets there. */
+  link?: { href: string; label: string };
 };
 
+export type ToastLink = { href: string; label: string };
+
 type ToastContextValue = {
-  success: (message: string, details?: string[]) => void;
+  success: (message: string, details?: string[], link?: ToastLink) => void;
   error: (message: string, details?: string[]) => void;
   info: (message: string, details?: string[]) => void;
   /** Renders an ApiError with its issue list intact. */
@@ -44,11 +50,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const push = useCallback(
-    (kind: ToastKind, message: string, details?: string[]) => {
+    (kind: ToastKind, message: string, details?: string[], link?: ToastLink) => {
       const id = Date.now() + Math.random();
-      setToasts((prev) => [...prev, { id, kind, message, details }]);
-      // Errors stay put — they usually carry a reason worth reading.
-      if (kind !== "error") {
+      setToasts((prev) => [...prev, { id, kind, message, details, link }]);
+      // Errors stay put — they usually carry a reason worth reading. So does
+      // anything carrying a link, which is there to be clicked.
+      if (kind !== "error" && !link) {
         setTimeout(() => dismiss(id), 5000);
       }
     },
@@ -57,7 +64,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<ToastContextValue>(
     () => ({
-      success: (m, d) => push("success", m, d),
+      success: (m, d, link) => push("success", m, d, link),
       error: (m, d) => push("error", m, d),
       info: (m, d) => push("info", m, d),
       fromError: (err, fallback = "Something went wrong.") => {
@@ -91,6 +98,16 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 ✕
               </button>
             </div>
+            {t.link && (
+              <a
+                href={t.link.href}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 inline-block break-all font-medium underline underline-offset-2"
+              >
+                {t.link.label}
+              </a>
+            )}
             {t.details && t.details.length > 0 && (
               <ul className="mt-2 max-h-40 list-disc overflow-y-auto pl-4 text-xs opacity-90">
                 {t.details.slice(0, 25).map((d, i) => (

@@ -50,10 +50,23 @@ This assumes the one-time setup is done:
    |---|---|
    | `SUPABASE_URL` | Your Supabase project URL |
    | `SUPABASE_KEY` | Your Supabase anon/service key |
-   | `GOOGLE_SERVICE_ACCOUNT_FILE` | Paste the **entire contents** of the service-account JSON key |
+   | `GOOGLE_SERVICE_ACCOUNT_FILE` | Paste the **entire contents** of the service-account JSON key, **once** |
    | `GMAIL_OAUTH_CREDENTIALS` | Paste the **entire contents** of the Gmail OAuth client-secret JSON |
    | `GMAIL_TOKEN_CACHE` | Paste the **entire contents** of a token generated locally (see below) — or leave unset until the deployed app needs to send email |
    | `GMAIL_SENDER_EMAIL` | The Gmail address invites/results send from |
+
+   > **Paste each credential exactly once.** Pasting the same key twice is the
+   > easy slip: the value is then two JSON documents, and `json.load` fails
+   > with `Extra data: line 14 column 1 (char 2364)` — which surfaced in the UI
+   > with nothing to say it was about credentials. The bootstrap now tolerates
+   > an exact duplicate (it uses the first copy and warns on stderr), but two
+   > *different* keys are refused: which one is current cannot be guessed.
+
+   > **Enable both Google APIs on the service account's project.** The
+   > **Google Sheets API** covers reading form responses and writing the
+   > timetable; the **Google Drive API** is what creates the exported
+   > spreadsheet and shares it by link. With only Sheets enabled, ingest works
+   > and `Export` returns a 409 naming the project to fix.
 
    > **The three credential variables are file *paths* locally** (`.env.example`)
    > and nothing reads JSON content directly.

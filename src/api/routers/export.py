@@ -10,7 +10,9 @@ authorised gspread client.
 
 from __future__ import annotations
 
-import os
+import re
+import sys
+import traceback
 from typing import Annotated, Any
 
 from dotenv import load_dotenv
@@ -23,6 +25,7 @@ from api.dependencies import (
     resolve_run_dir,
     resolve_run_pk,
     resolve_workspace,
+    service_account_file,
 )
 from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.grid import build_slot_grid
@@ -72,6 +75,58 @@ def _load_run_assignments(workspace_id: str, run_id: str) -> list[Assignment]:
     return load_assignments(path)
 
 
+# Google answers "API has not been used in project N before or it is disabled"
+# with a console URL buried in a paragraph. Creating the spreadsheet needs the
+# Drive API and sharing it needs Drive too, so a project with only the Sheets
+# API enabled ingests fine and then fails here — which is exactly the shape of
+# "the export silently does nothing".
+_API_DISABLED = re.compile(
+    r"(?P<api>[\w ]+ API) has not been used in project (?P<project>\d+) before or it is disabled"
+)
+
+
+def _google_failure(exc: Exception) -> tuple[int, str]:
+    """(status, detail) the committee can act on, from whatever gspread raised.
+
+    A recognised misconfiguration answers 409, like the credential errors
+    above: it is a settings problem that will not fix itself, and 502/503 is
+    what the client treats as a transient cold start worth retrying. Only an
+    unclassified upstream failure keeps 502.
+    """
+    text = str(exc)
+
+    disabled = _API_DISABLED.search(text)
+    if disabled:
+        api, project = disabled.group("api").strip(), disabled.group("project")
+        return 409, (
+            f"The {api} is not enabled on the service account's Google Cloud project "
+            f"({project}), so the timetable Sheet could not be created. Enable it at "
+            f"https://console.cloud.google.com/apis/library?project={project} and try "
+            "again in a minute. The export needs both the Google Sheets API and the "
+            "Google Drive API: Sheets to write the timetable, Drive to create the file "
+            "and share it by link."
+        )
+
+    if "storageQuotaExceeded" in text:
+        return 409, (
+            "Google refused the export because the service account is out of Drive "
+            "storage. Delete some previously exported timetables from its Drive and "
+            f"try again. ({text[:200]})"
+        )
+
+    if "invalid_grant" in text or "unauthorized_client" in text:
+        return 409, (
+            "Google rejected the service account key. It may have been revoked, or "
+            f"the server clock may be wrong. ({text[:200]})"
+        )
+
+    return 502, (
+        f"Google rejected the export: {type(exc).__name__}: {text[:300]} "
+        "Check that the Sheets and Drive APIs are enabled for the service account's "
+        "project and that its key is still valid."
+    )
+
+
 @router.post("/sheets")
 def export_to_sheets(
     workspace_id: str,
@@ -85,19 +140,19 @@ def export_to_sheets(
     body = body or SheetExportBody()
 
     load_dotenv()
-    service_account_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
-    if not service_account_file:
-        raise HTTPException(
-            status_code=409,
-            detail="GOOGLE_SERVICE_ACCOUNT_FILE is not set in the environment.",
-        )
 
+    # Order matters. The run lookup is local and cheap, and "that run does not
+    # exist" is a more specific answer than "your credentials are wrong", so it
+    # goes first. Credentials are then resolved before the first Google call,
+    # so a bad key is reported as a bad key rather than as whatever json.load
+    # happens to say about a file the caller never named.
     assignments = _load_run_assignments(workspace_id, run_id)
     if not assignments:
         raise HTTPException(
             status_code=409,
             detail=f"Run '{run_id}' has no assignments to export — solve first.",
         )
+    key_file = service_account_file()
 
     grid = build_slot_grid(settings.event)
     panels = resolve_panels(settings.panels, settings.rooms, grid)
@@ -105,15 +160,32 @@ def export_to_sheets(
     views = build_room_views(assignments, panels, rooms, grid.slots)
     tabs = build_tabs(views, settings.event.timezone)
 
-    title = body.title or f"{settings.event.event_name} — {workspace_id} — {run_id}"
-    client = open_export_client(service_account_file)
-    exported = export_timetable(
-        client,
-        title,
-        tabs,
-        settings.event.timezone,
-        share_with_link=body.share_with_link,
-    )
+    title = body.title or f"{settings.event.event_name} · {workspace_id} · {run_id}"
+    try:
+        client = open_export_client(key_file)
+        exported = export_timetable(
+            client,
+            title,
+            tabs,
+            settings.event.timezone,
+            share_with_link=body.share_with_link,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Everything past this point is Google's side of the call: the Drive
+        # or Sheets API disabled on the project, the service account out of
+        # storage quota, a revoked key. The traceback goes to stderr (the
+        # platform captures it) and the client gets one line naming the stage
+        # that failed, rather than a bare 500.
+        print(
+            f"POST export/sheets failed for workspace={workspace_id!r} run={run_id!r} "
+            f"while talking to Google.",
+            file=sys.stderr,
+        )
+        traceback.print_exc()
+        status, detail = _google_failure(exc)
+        raise HTTPException(status_code=status, detail=detail) from exc
 
     return {
         "sheet_url": exported.sheet_url,

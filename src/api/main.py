@@ -56,7 +56,34 @@ app.add_middleware(
 async def value_error_handler(_request: Request, exc: ValueError) -> JSONResponse:
     """Core code fails loudly with ValueError on bad input (CLAUDE.md
     invariant 3). Surface that as a 400 with the same {detail: ...} shape
-    FastAPI uses for HTTPException, rather than a bare 500."""
+    FastAPI uses for HTTPException, rather than a bare 500.
+
+    `json.JSONDecodeError` is a ValueError too, but it is never the caller's
+    fault — it means a file *on the server* (a credentials key, a config
+    snapshot) is malformed. Answering 400 with its bare message produced
+    things like "Extra data: line 14 column 1 (char 2364)", which says
+    nothing about which file or which env var. Those get a 500, a stderr
+    traceback the platform can capture, and a message that at least names
+    the category.
+    """
+    import json
+    import sys
+    import traceback
+
+    if isinstance(exc, json.JSONDecodeError):
+        print("Unhandled JSONDecodeError — a server-side JSON file is malformed:", file=sys.stderr)
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": (
+                    f"A JSON file on the server could not be parsed: {exc.msg} "
+                    f"(line {exc.lineno}, column {exc.colno}). This is a credentials "
+                    "or configuration problem, not a problem with the request. "
+                    "Check the service logs for which file."
+                )
+            },
+        )
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 

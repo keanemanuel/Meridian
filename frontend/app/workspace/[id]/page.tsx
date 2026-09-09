@@ -162,12 +162,18 @@ export default function WorkspacePage({
     toast.info("Exporting to Google Sheets…");
     try {
       const result = await api.exportSheets(workspaceId, schedule.runId);
-      toast.success(`Google Sheet ready: ${result.sheet_url}`, [
-        `${result.rows_written} row(s) across ${result.tabs.join(", ")}`,
-        result.clashes > 0
-          ? `${result.clashes} clash row(s) highlighted red`
-          : "No clashes",
-      ]);
+      toast.success(
+        "Google Sheet ready.",
+        [
+          `${result.rows_written} row(s) across ${result.tabs.join(", ")}`,
+          result.clashes > 0
+            ? `${result.clashes} clash row(s) highlighted red`
+            : "No clashes",
+        ],
+        { href: result.sheet_url, label: "Open the timetable in Google Sheets" },
+      );
+      // Best effort: a popup blocker will stop this, which is why the toast
+      // carries the link too.
       window.open(result.sheet_url, "_blank", "noreferrer");
     } catch (err) {
       toast.fromError(err, "Export to Google Sheets failed.");

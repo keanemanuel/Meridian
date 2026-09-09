@@ -13,6 +13,7 @@ place.)
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,21 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
 def _create_ws(client: TestClient, name: str = "beta-test", group: str = "Test Environment"):
     return client.post("/api/workspaces", json={"name": name, "group": group})
+
+
+@pytest.fixture
+def service_account_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A well-formed (entirely fake) service account key on disk.
+
+    The export resolves and shape-checks the key before calling Google, so a
+    placeholder like /dev/null is now correctly refused; these tests need a
+    file that actually looks like a key."""
+    from tests.test_credentials_bootstrap import KEY_JSON
+
+    path = tmp_path / "service_account.json"
+    path.write_text(KEY_JSON, encoding="utf-8")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_FILE", str(path))
+    return path
 
 
 def _ingest_fixture(client: TestClient, name: str = "beta-test"):
@@ -370,15 +386,111 @@ def test_export_without_service_account_credentials_is_a_409(
     assert "GOOGLE_SERVICE_ACCOUNT_FILE" in refused.json()["detail"]
 
 
-def test_export_builds_a_shared_sheet_from_the_latest_run(
+def test_export_with_a_doubled_credential_paste_still_works(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The live failure: the key was pasted twice into the env var, json.load
+    raised "Extra data: line 14 column 1 (char 2364)", and because that is a
+    ValueError it came back as a bare 400 with no hint it was about
+    credentials at all."""
+    from tests.test_credentials_bootstrap import KEY_JSON
+    from tests.test_sheets_export import _FakeClient
+
+    import api.credentials_bootstrap as bootstrap
+    from api.credentials_bootstrap import materialize_json_credentials
+
+    monkeypatch.setattr(bootstrap, "_TMP_DIR", str(tmp_path / "creds"))
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_FILE", KEY_JSON + KEY_JSON)
+    bootstrap._PROBLEMS.clear()
+    materialize_json_credentials()
+    monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _FakeClient())
+
+    _create_ws(client)
+    _ingest_fixture(client)
+    client.post("/api/workspaces/beta-test/solve")
+
+    exported = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+    assert exported.status_code == 200
+    assert exported.json()["sheet_url"].startswith("https://docs.google.com/spreadsheets/d/")
+
+
+def test_export_response_is_one_clean_json_object(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path
+) -> None:
+    """`sheet_url` is always present, the body parses in one pass, and there
+    is nothing after the closing brace."""
+    from tests.test_sheets_export import _FakeClient
+
+    monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _FakeClient())
+
+    _create_ws(client)
+    _ingest_fixture(client)
+    client.post("/api/workspaces/beta-test/solve")
+    exported = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+
+    assert exported.status_code == 200
+    assert exported.headers["content-type"].startswith("application/json")
+    body, consumed = json.JSONDecoder().raw_decode(exported.text)
+    assert consumed == len(exported.text), "response must be exactly one JSON document"
+    assert set(body) == {"sheet_url", "sheet_id", "tabs", "rows_written", "clashes"}
+    assert body["sheet_url"].startswith("https://docs.google.com/spreadsheets/d/")
+
+
+def test_export_reports_a_disabled_google_api_as_an_actionable_409(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path
+) -> None:
+    """The second live blocker: the service account's project had the Sheets
+    API on but the Drive API off, so creating the spreadsheet 403'd. Passing
+    Google's paragraph straight through reads like a silent failure."""
+
+    class _DriveDisabled:
+        def create(self, title: str) -> None:
+            raise RuntimeError(
+                "APIError: [403]: Google Drive API has not been used in project "
+                "198021261604 before or it is disabled. Enable it by visiting ..."
+            )
+
+    monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _DriveDisabled())
+
+    _create_ws(client)
+    _ingest_fixture(client)
+    client.post("/api/workspaces/beta-test/solve")
+    failed = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+
+    assert failed.status_code == 409
+    detail = failed.json()["detail"]
+    assert "Google Drive API is not enabled" in detail
+    assert "project=198021261604" in detail
+
+
+def test_a_malformed_server_side_json_file_is_not_reported_as_a_bad_request(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A JSONDecodeError is a ValueError, so main.py's handler used to answer
+    400 with its bare message. That is what "Extra data: line 14 column 1"
+    looked like to the user."""
+
+    def _boom() -> str:
+        raise json.JSONDecodeError("Extra data", "{}x", 2)
+
+    monkeypatch.setattr("api.routers.export.service_account_file", _boom)
+    _create_ws(client)
+    _ingest_fixture(client)
+    client.post("/api/workspaces/beta-test/solve")
+
+    failed = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+    assert failed.status_code == 500
+    assert "credentials or configuration problem" in failed.json()["detail"]
+
+
+def test_export_builds_a_shared_sheet_from_the_latest_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path
 ) -> None:
     """End to end over HTTP with gspread faked out: the point is that the run
     resolves, the tabs come out per day, and the Sheet URL comes back."""
     from tests.test_sheets_export import _FakeClient
 
     fake = _FakeClient()
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_FILE", "/dev/null")
     monkeypatch.setattr("api.routers.export.open_export_client", lambda _path: fake)
 
     _create_ws(client)
@@ -392,13 +504,10 @@ def test_export_builds_a_shared_sheet_from_the_latest_run(
     assert body["sheet_url"] == "https://docs.google.com/spreadsheets/d/sheet-123"
     assert body["tabs"]
     assert body["rows_written"] > 0
-    assert fake.created[0].shares == [(None, "anyone", "reader")]
+    assert fake.created[0].shares == [(None, "anyone", "reader", False)]
 
 
-def test_export_of_an_unknown_run_is_a_404(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_FILE", "/dev/null")
+def test_export_of_an_unknown_run_is_a_404(client: TestClient, service_account_key: Path) -> None:
     _create_ws(client)
     missing = client.post("/api/workspaces/beta-test/runs/2020-01-01T00-00-00/export/sheets")
     assert missing.status_code == 404

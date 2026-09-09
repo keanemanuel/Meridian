@@ -352,7 +352,8 @@ def export_timetable(
         spreadsheet.batch_update({"requests": requests})
 
     if share_with_link:
-        spreadsheet.share(None, perm_type="anyone", role="reader")
+        # notify=False: there is no recipient to email for an "anyone" grant.
+        spreadsheet.share(None, perm_type="anyone", role="reader", notify=False)
 
     return ExportedSheet(
         sheet_id=spreadsheet.id,
