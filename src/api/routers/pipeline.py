@@ -216,6 +216,27 @@ def check(workspace_id: str, settings: SettingsDep) -> dict[str, Any]:
     return run_capacity_check(settings, workspace_id)
 
 
+@router.get("/ingest-status")
+def ingest_status(workspace_id: str) -> dict[str, Any]:
+    """Whether this workspace has an ingested applicant list yet.
+
+    The UI gates Check Capacity / Schedule! on this. Both endpoints 404 with
+    "Run ingest first" when `applicants.clean.csv` is absent (as on a
+    freshly created workspace), and firing them on click only to surface
+    that error stacks error toasts for no reason. Cheap — reads one CSV's
+    row count and nothing else.
+    """
+    resolve_workspace(workspace_id)
+    path = ws.applicants_clean_path(workspace_id)
+    if not path.exists():
+        return {"ingested": False, "applicants": 0}
+    try:
+        count = int(len(pd.read_csv(path)))
+    except (pd.errors.EmptyDataError, OSError):
+        count = 0
+    return {"ingested": count > 0, "applicants": count}
+
+
 @router.get("/rejected")
 def list_rejected(workspace_id: str) -> list[dict[str, Any]]:
     """The rejected rows of the latest validation report, for the workspace

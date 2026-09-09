@@ -43,6 +43,11 @@ export default function WorkspacePage({
   const [recovering, setRecovering] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  /** Whether applicants have been ingested for this workspace. `null` = not
+   * known yet (still loading, or the status call failed) — only an explicit
+   * `false` disables Check Capacity / Schedule!, so a status hiccup never
+   * locks the controls. */
+  const [ingested, setIngested] = useState<boolean | null>(null);
 
   const [busy, setBusy] = useState<Action | null>(null);
   const [showImport, setShowImport] = useState(false);
@@ -66,6 +71,16 @@ export default function WorkspacePage({
     const sorted = [...list].sort((a, b) => b.run_id.localeCompare(a.run_id));
     setRuns(sorted);
     return sorted;
+  }, [workspaceId]);
+
+  const loadIngestStatus = useCallback(async () => {
+    try {
+      const status = await api.ingestStatus(workspaceId);
+      setIngested(status.ingested);
+    } catch {
+      // A status hiccup shouldn't lock Check / Schedule — leave it "unknown".
+      setIngested(null);
+    }
   }, [workspaceId]);
 
   const loadRejected = useCallback(async () => {
@@ -97,11 +112,13 @@ export default function WorkspacePage({
       // A capacity table and schedule belong to the workspace they were run for.
       setCapacity(null);
       setSchedule(null);
+      setIngested(null);
       try {
         const [m, sorted] = await Promise.all([
           api.getWorkspace(workspaceId),
           loadRuns(),
           loadRejected(),
+          loadIngestStatus(),
         ]);
         if (cancelled) return;
         setMeta(m);
@@ -117,14 +134,14 @@ export default function WorkspacePage({
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, loadRuns, loadRejected, loadSchedule]);
+  }, [workspaceId, loadRuns, loadRejected, loadSchedule, loadIngestStatus]);
 
   const recover = async (row: RejectedRow) => {
     setRecovering(row.row_number);
     try {
       const res = await api.recover(workspaceId, row.row_number);
       toast.success(res.message);
-      await Promise.all([loadRejected(), loadRuns()]);
+      await Promise.all([loadRejected(), loadRuns(), loadIngestStatus()]);
     } catch (err) {
       toast.fromError(err, "Recover failed.");
     } finally {
@@ -276,7 +293,12 @@ export default function WorkspacePage({
         <Button
           onClick={runCheck}
           loading={busy === "check"}
-          disabled={busy !== null}
+          disabled={busy !== null || ingested === false}
+          title={
+            ingested === false
+              ? "Import applicant data first"
+              : "Run the Capacity Advisor before solving"
+          }
         >
           Check Capacity
         </Button>
@@ -284,7 +306,10 @@ export default function WorkspacePage({
           variant="primary"
           onClick={() => runSolve(false)}
           loading={busy === "solve"}
-          disabled={busy !== null}
+          disabled={busy !== null || ingested === false}
+          title={
+            ingested === false ? "Import applicant data first" : undefined
+          }
         >
           Schedule!
         </Button>
@@ -301,6 +326,12 @@ export default function WorkspacePage({
           Download XLSX
         </Button>
       </div>
+
+      {ingested === false && (
+        <p className="mt-2 text-xs text-neutral-500">
+          Import applicant data to enable Check Capacity and Schedule.
+        </p>
+      )}
 
       {busy === "solve" && (
         <div className="mt-5 flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
@@ -416,6 +447,7 @@ export default function WorkspacePage({
                 `${result.collapsed} collapsed, ${result.warnings} warning(s).`,
             );
             void loadRejected();
+            void loadIngestStatus();
           }}
         />
       )}

@@ -45,6 +45,14 @@ export type Assignment = {
   declared_availability: string;
 };
 
+/** `GET /ingest-status` — has this workspace had applicants ingested yet?
+ * The workspace page gates Check Capacity / Schedule! on it so neither is
+ * fired just to get a "Run ingest first" 404 back. */
+export type IngestStatus = {
+  ingested: boolean;
+  applicants: number;
+};
+
 export type CapacityRow = {
   division: string;
   demand: number;

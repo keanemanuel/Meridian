@@ -4,7 +4,9 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -22,6 +24,13 @@ type Toast = {
    * its result in a new tab, but that call sits after an await and so is
    * routinely popup-blocked; the link is how the user still gets there. */
   link?: { href: string; label: string };
+  /** kind + message + details, so a repeat of the same notification updates
+   * the existing toast instead of stacking a fresh copy. */
+  signature: string;
+  /** How many times this exact notification has fired while still on screen.
+   * Shown as a small "xN" so a recurring error reads as recurring, not as a
+   * pile of identical toasts. */
+  count: number;
 };
 
 export type ToastLink = { href: string; label: string };
@@ -42,25 +51,94 @@ const STYLES: Record<ToastKind, string> = {
   info: "border-neutral-200 bg-white text-neutral-700",
 };
 
+const AUTO_DISMISS_MS = 5000;
+
+/** Identity of a notification for de-duplication. `::` is a fine separator
+ * here — a false match would only ever merge two genuinely identical toasts. */
+function signatureOf(
+  kind: ToastKind,
+  message: string,
+  details?: string[],
+): string {
+  return [kind, message, ...(details ?? [])].join("::");
+}
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  /** Auto-dismiss timers, keyed by signature so a repeat resets the timer of
+   * the toast already on screen rather than leaking a second one. */
+  const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
-  const dismiss = useCallback((id: number) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
+  const clearTimer = useCallback((signature: string) => {
+    const t = timers.current.get(signature);
+    if (t) {
+      clearTimeout(t);
+      timers.current.delete(signature);
+    }
   }, []);
+
+  const dismiss = useCallback(
+    (id: number) => {
+      setToasts((prev) => {
+        const gone = prev.find((t) => t.id === id);
+        if (gone) clearTimer(gone.signature);
+        return prev.filter((t) => t.id !== id);
+      });
+    },
+    [clearTimer],
+  );
+
+  /** (Re)arm the auto-dismiss for a transient toast. Clears any existing
+   * timer for the signature first, so calling it again on a repeat just
+   * pushes the deadline out — and a double-invoke never leaves one dangling. */
+  const armDismiss = useCallback(
+    (id: number, signature: string) => {
+      clearTimer(signature);
+      timers.current.set(
+        signature,
+        setTimeout(() => {
+          timers.current.delete(signature);
+          dismiss(id);
+        }, AUTO_DISMISS_MS),
+      );
+    },
+    [clearTimer, dismiss],
+  );
 
   const push = useCallback(
     (kind: ToastKind, message: string, details?: string[], link?: ToastLink) => {
-      const id = Date.now() + Math.random();
-      setToasts((prev) => [...prev, { id, kind, message, details, link }]);
+      const signature = signatureOf(kind, message, details);
       // Errors stay put — they usually carry a reason worth reading. So does
       // anything carrying a link, which is there to be clicked.
-      if (kind !== "error" && !link) {
-        setTimeout(() => dismiss(id), 5000);
-      }
+      const transient = kind !== "error" && !link;
+
+      setToasts((prev) => {
+        const existing = prev.find((t) => t.signature === signature);
+        if (existing) {
+          // Same notification, still on screen: bump its count, don't stack.
+          if (transient) armDismiss(existing.id, signature);
+          return prev.map((t) =>
+            t.id === existing.id ? { ...t, count: t.count + 1 } : t,
+          );
+        }
+        const id = Date.now() + Math.random();
+        if (transient) armDismiss(id, signature);
+        return [
+          ...prev,
+          { id, kind, message, details, link, signature, count: 1 },
+        ];
+      });
     },
-    [dismiss],
+    [armDismiss],
   );
+
+  useEffect(() => {
+    const pending = timers.current;
+    return () => {
+      pending.forEach((t) => clearTimeout(t));
+      pending.clear();
+    };
+  }, []);
 
   const value = useMemo<ToastContextValue>(
     () => ({
@@ -88,14 +166,21 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             className={`pointer-events-auto rounded border px-4 py-3 text-sm shadow-sm ${STYLES[t.kind]}`}
           >
             <div className="flex items-start gap-3">
-              <p className="flex-1 leading-snug">{t.message}</p>
+              <p className="flex-1 leading-snug">
+                {t.message}
+                {t.count > 1 && (
+                  <span className="ml-1.5 rounded-full bg-black/10 px-1.5 text-xs font-semibold tabular-nums">
+                    &times;{t.count}
+                  </span>
+                )}
+              </p>
               <button
                 type="button"
                 onClick={() => dismiss(t.id)}
-                className="shrink-0 text-xs opacity-60 hover:opacity-100"
-                aria-label="Dismiss"
+                className="-m-1.5 shrink-0 rounded p-1.5 text-xs leading-none opacity-60 transition-opacity hover:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-current"
+                aria-label="Dismiss notification"
               >
-                ✕
+                &times;
               </button>
             </div>
             {t.link && (
@@ -114,7 +199,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                   <li key={i}>{d}</li>
                 ))}
                 {t.details.length > 25 && (
-                  <li>…and {t.details.length - 25} more</li>
+                  <li>&hellip;and {t.details.length - 25} more</li>
                 )}
               </ul>
             )}

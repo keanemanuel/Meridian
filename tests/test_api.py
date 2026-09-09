@@ -313,6 +313,22 @@ def test_check_before_ingest_is_404(client: TestClient, wsname: str) -> None:
     assert "detail" in resp.json()
 
 
+def test_ingest_status_reflects_whether_applicants_exist(client: TestClient, wsname: str) -> None:
+    """The UI gates Check / Schedule on this so it never fires them just to
+    get "Run ingest first" back."""
+    _create_ws(client, wsname)
+    before = client.get(f"/api/workspaces/{wsname}/ingest-status")
+    assert before.status_code == 200
+    assert before.json() == {"ingested": False, "applicants": 0}
+
+    _ingest_fixture(client, wsname)
+    after = client.get(f"/api/workspaces/{wsname}/ingest-status")
+    assert after.status_code == 200
+    body = after.json()
+    assert body["ingested"] is True
+    assert body["applicants"] >= 1
+
+
 def test_check_after_ingest_returns_advisor_table(client: TestClient, wsname: str) -> None:
     _create_ws(client, wsname)
     _ingest_fixture(client, wsname)
