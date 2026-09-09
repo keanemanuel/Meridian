@@ -11,7 +11,7 @@ a printable artefact (CLAUDE.md, "Architecture rule").
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date as Date
 from datetime import time as Time
@@ -60,19 +60,26 @@ class InviteInterview:
 
 @dataclass(frozen=True)
 class InviteRecipient:
-    """One applicant's invite, before templating. Either interview may be
-    missing — that is a C1 violation the audit (FR-64) turns into a hard
-    fail rather than a guess (CLAUDE.md invariant 3)."""
+    """One applicant's invite, before templating.
+
+    `interviews_owed` is 2 for a normal applicant and 1 for a single-choice
+    applicant — one who picked a single role, or the same role twice (E-01b).
+    An interview missing *below* that count is a C1 violation the audit
+    (FR-64) turns into a hard fail rather than a guess (CLAUDE.md invariant 3);
+    a single-choice applicant with their one interview placed is complete.
+    """
 
     applicant_id: str
     full_name: str
     email: str
     interview_1: InviteInterview | None
     interview_2: InviteInterview | None
+    interviews_owed: int = 2
 
     @property
     def is_complete(self) -> bool:
-        return self.interview_1 is not None and self.interview_2 is not None
+        placed = (self.interview_1 is not None) + (self.interview_2 is not None)
+        return self.interview_1 is not None and placed >= self.interviews_owed
 
     @property
     def has_clash(self) -> bool:
@@ -113,11 +120,19 @@ def build_invite_recipients(
     assignments: Sequence[Assignment],
     divisions: DivisionsConfig,
     event: EventConfig,
+    *,
+    single_choice_ids: Collection[str] = (),
 ) -> list[InviteRecipient]:
     """One row per applicant_id present in `assignments`, sorted for
-    determinism (FR-35)."""
+    determinism (FR-35).
+
+    `single_choice_ids` are the applicant ids owed a single interview (from
+    `applicants.clean.csv`'s `single_choice` column). Anyone not listed is
+    assumed owed two, so a genuinely dropped interview still fails the audit.
+    """
     display_by_code = {d.code.value: d.display for d in divisions.divisions}
     day_labels = day_label_map(event)
+    single = set(single_choice_ids)
 
     by_applicant: dict[str, dict[ChoiceIndex, Assignment]] = defaultdict(dict)
     meta: dict[str, tuple[str, str]] = {}
@@ -136,6 +151,7 @@ def build_invite_recipients(
                 email=email,
                 interview_1=_interview_view(choices.get(1), display_by_code, day_labels),
                 interview_2=_interview_view(choices.get(2), display_by_code, day_labels),
+                interviews_owed=1 if applicant_id in single else 2,
             )
         )
     return recipients

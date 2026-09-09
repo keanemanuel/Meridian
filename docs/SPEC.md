@@ -838,9 +838,9 @@ A 20-minute interview inside 30-minute declared blocks means some slots straddle
 
 ### 9.3 Sub-division choice rules (Finding B)
 
-Because same-parent pairs are **valid**, the form is simpler than it would otherwise be. Applicants pick from the flat list of 8 sub-divisions; the only rule is that the two picks must differ.
+Because same-parent pairs are **valid**, the form is simpler than it would otherwise be. Applicants pick from the flat list of 8 sub-divisions. The form still asks them to make the two picks differ, but an applicant who picks the same one twice is read as wanting a single interview for that role, not rejected (E-01b).
 
-1. **Only one prohibition:** the same sub-division cannot be chosen twice. `validate.py` rejects `sub_division_1 == sub_division_2` and lists the applicant in the validation report.
+1. **The same sub-division chosen twice** is read as a single-choice submission: `validate.py` collapses `sub_division_1 == sub_division_2` to one interview (`single_choice = True`, `division_2 = None`), keeps the applicant, and logs a `DUPLICATE_SUBDIVISION` warning to the validation report. It is not rejected.
 2. **Allowed and expected:** Media Marketing + Media Documentation, or Creative + WebMaster. These produce two interviews with two (preferably different) panels of the shared parent division.
 3. **Wording:** label options with their parent for clarity, e.g. `Media Marketing (MedMarDoc)`, `WebMaster (Creative)`, and add a note: *"You may pick two roles within the same division — for example Media Marketing and Media Documentation. You'll be interviewed separately for each. Just don't pick the same role twice."*
 4. **Structure:** two dropdowns, `First choice` and `Second choice`, both listing all 8 sub-divisions. Do not use a single checkbox question — ordered choices carry preference information that is useful later at placement time.
@@ -1006,7 +1006,7 @@ Every one of these should have a test.
 | # | Case | Handling |
 |---|---|---|
 | E-01 | Both choices share a parent division (MedMar + MedDoc, Creative + WebMaster) | **Valid.** Two interviews scheduled under that parent division, preferably with different panels (C8). Model is indexed by choice, not division, so both survive. See §1.2 Finding B. |
-| E-01b | The same sub-division picked twice | **Reject** at validation; report for manual follow-up. |
+| E-01b | The same sub-division picked twice | **Collapse** to a single interview at validation — identical to a single-choice row (`division_2 = None`, `single_choice = True`). The applicant is kept and scheduled once; a `DUPLICATE_SUBDIVISION` **warning** records the collapse. Not a rejection. Only exact duplicates collapse — a same-parent pair of *different* sub-divisions (E-01) stays two interviews. |
 | E-01c | Same-parent pair, but that division has only one panel | C8 auto-relaxes; the applicant sees the same panel twice at different times. Flagged AMBER in the conflict report so the recruiter can brief the panel. |
 | E-02 | Applicant ticks no availability | Reject at validation; contact applicant. |
 | E-03 | Applicant ticks very few blocks and cannot fit two non-overlapping interviews | Solver forces a clash; flagged RED with reason. |

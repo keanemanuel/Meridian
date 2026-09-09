@@ -60,10 +60,39 @@ def test_valid_row_has_no_issues() -> None:
     assert validate_row(_valid_row()) == []
 
 
-def test_duplicate_subdivision_is_rejected() -> None:
+def test_duplicate_subdivision_collapses_to_a_single_interview_not_a_rejection() -> None:
+    """E-01b: the identical sub-division twice is read as a single-choice
+    submission — one interview, not two, and not a rejection."""
     row = _valid_row(sub_division_1="Program", sub_division_2="Program")
     issues = validate_row(row)
-    assert any(i.reason_code == "DUPLICATE_SUBDIVISION" and i.outcome == "REJECTED" for i in issues)
+    assert any(i.reason_code == "DUPLICATE_SUBDIVISION" and i.outcome == "WARNING" for i in issues)
+    assert not any(i.outcome == "REJECTED" for i in issues)
+
+
+def test_duplicate_subdivision_applicant_reaches_clean_list_with_one_interview() -> None:
+    settings = load_settings()
+    grid = build_slot_grid(settings.event)
+    raw = {
+        "Timestamp": "15/08/2026 10:00:00",
+        "Full Name": "Same Twice",
+        "Email Address": "sametwice@example.com",
+        "Phone Number (WhatsApp)": "+62-812-0002",
+        "First Preference": "Program",
+        "Second Preference": "Program",
+        "Preferred Interview Date": "Thursday, 18 September 2025",
+    }
+    result = run_ingest(_InMemorySource([raw]), settings.event, settings.divisions, grid)
+
+    assert [a.email for a in result.applicants] == ["sametwice@example.com"]
+    applicant = result.applicants[0]
+    assert applicant.single_choice is True
+    assert applicant.division_2 is None
+    assert applicant.sub_division_2 == ""
+    assert applicant.sub_division_1 == "Program"
+    assert not any(r.outcome == "REJECTED" for r in result.report)
+    assert any(
+        r.reason_code == "DUPLICATE_SUBDIVISION" and r.outcome == "WARNING" for r in result.report
+    )
 
 
 def test_no_availability_is_a_warning_not_a_rejection() -> None:
@@ -200,6 +229,9 @@ def test_run_ingest_against_fixture() -> None:
     assert {a.email for a in result.applicants} == {
         "ayu@example.com",
         "bagas@example.com",
+        # Citra picked "Program" twice — no longer a rejection, collapsed to a
+        # single-choice applicant with one interview instead (E-01b relaxed).
+        "citra@example.com",
         # Dimas left the availability question blank — no longer a rejection,
         # assumed free for the whole event instead (E-02 relaxed).
         "dimas@example.com",
@@ -207,11 +239,14 @@ def test_run_ingest_against_fixture() -> None:
         "fajar@example.com",
         "hendra@example.com",
     }
-    assert len(result.applicants) == 6
+    assert len(result.applicants) == 7
+
+    citra = next(a for a in result.applicants if a.email == "citra@example.com")
+    assert citra.single_choice is True
+    assert citra.division_2 is None
 
     rejected = {(r.email, r.reason_code) for r in result.report if r.outcome == "REJECTED"}
     assert rejected == {
-        ("citra@example.com", "DUPLICATE_SUBDIVISION"),
         ("gita@example.com", "UNKNOWN_SUBDIVISION"),
         ("indah@example.com", "MISSING_FULL_NAME"),
     }
@@ -221,9 +256,11 @@ def test_run_ingest_against_fixture() -> None:
     assert collapsed[0].email == "eka@example.com"
     assert collapsed[0].reason_code == "DUPLICATE_EMAIL"
 
-    # The only warning is Dimas's assumed-full availability.
     warnings = {(r.email, r.reason_code) for r in result.report if r.outcome == "WARNING"}
-    assert warnings == {("dimas@example.com", "NO_AVAILABILITY")}
+    assert warnings == {
+        ("citra@example.com", "DUPLICATE_SUBDIVISION"),
+        ("dimas@example.com", "NO_AVAILABILITY"),
+    }
 
 
 def test_same_parent_pair_yields_two_interviews_not_one() -> None:
@@ -274,7 +311,7 @@ def test_write_outputs_produces_expected_csv_columns(tmp_path: Path) -> None:
         "submitted_at",
         "notes",
     ]
-    assert len(clean_df) == 6
+    assert len(clean_df) == 7
     assert clean_df["applicant_id"].is_unique
 
     report_df = pd.read_csv(report_path, dtype=str, keep_default_na=False)

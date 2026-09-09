@@ -19,7 +19,7 @@ The fixture's ten rows are:
   5  Elina Kusumo     Thursday, both Media choices (same parent)
   6  Farhan Adhitama  Friday, both Creative choices (same parent)
   7  Amara Halim      Friday, the later submission from row 1's email
-  8  Gita Prawira     Thursday, Liaison twice                        REJECTED
+  8  Gita Prawira     Thursday, Liaison twice → one interview (E-01b)
   9  Haris Nugroho    Thursday
  10  Indira Pratama   Friday
 """
@@ -119,16 +119,23 @@ def test_fixture_covers_every_case_the_real_sheet_produces() -> None:
 
 
 def test_every_valid_registrant_is_accepted(result: IngestResult) -> None:
-    """The only two rows that must not reach the clean list are the duplicate
-    email and the row that picked the same sub-division twice. Anything else
-    rejected here means a real applicant would silently lose their
-    interviews (CLAUDE.md invariant 1)."""
+    """The only row that must not reach the clean list is the superseded
+    duplicate-email submission. The row that picked the same sub-division
+    twice is still accepted — collapsed to a single interview (E-01b), not
+    rejected. Anything else dropped here means a real applicant would
+    silently lose their interviews (CLAUDE.md invariant 1)."""
     outcomes = [(r.row_number, r.outcome, r.reason_code) for r in result.report]
     assert outcomes == [
         (1, "COLLAPSED", "DUPLICATE_EMAIL"),
-        (8, "REJECTED", "DUPLICATE_SUBDIVISION"),
+        (8, "WARNING", "DUPLICATE_SUBDIVISION"),
     ]
-    assert len(result.applicants) == 8
+    assert len(result.applicants) == 9
+
+    gita = next(a for a in result.applicants if a.full_name == "Gita Prawira")
+    assert gita.single_choice is True
+    assert gita.division_2 is None
+    assert gita.sub_division_1 == "Liaison"
+    assert gita.sub_division_2 == ""
 
 
 def test_the_columns_ingest_uses_land_in_the_right_fields(
@@ -165,7 +172,7 @@ def test_all_eight_live_options_appear_somewhere_in_the_clean_data(
     """A guard on the fixture rather than the code: if an option stops being
     exercised here, this file stops protecting it."""
     used = {a.sub_division_1 for a in result.applicants} | {
-        a.sub_division_2 for a in result.applicants
+        a.sub_division_2 for a in result.applicants if a.sub_division_2
     }
     assert used == set(LIVE_SUB_DIVISIONS)
 
@@ -207,22 +214,30 @@ def solved(result: IngestResult, settings: Settings) -> SolveResult:
 def test_the_real_format_solves_with_every_interview_placed(
     result: IngestResult, solved: SolveResult
 ) -> None:
+    # 8 two-choice applicants + Gita, whose "Liaison" twice collapsed to a
+    # single interview (E-01b).
+    expected = sum(1 if a.single_choice else 2 for a in result.applicants)
+    assert expected == 17
     assert solved.status in USABLE_STATUSES
-    assert len(solved.assignments) == 2 * len(result.applicants) == 16
+    assert len(solved.assignments) == expected
     assert solved.clash_count == 0
 
 
-def test_every_applicant_gets_exactly_two_interviews(
+def test_every_applicant_gets_the_interviews_they_asked_for(
     result: IngestResult, solved: SolveResult
 ) -> None:
     """CLAUDE.md invariant 1, checked against the real column layout rather
-    than a hand-built scenario."""
+    than a hand-built scenario: two interviews for a two-choice applicant,
+    one for a single-choice applicant (Gita, E-01b)."""
     by_applicant: dict[str, list[int]] = {}
     for a in solved.assignments:
         by_applicant.setdefault(a.applicant_id, []).append(a.choice_index)
 
     assert set(by_applicant) == {a.applicant_id for a in result.applicants}
-    assert all(sorted(choices) == [1, 2] for choices in by_applicant.values())
+    expected_choices = {
+        a.applicant_id: [1] if a.single_choice else [1, 2] for a in result.applicants
+    }
+    assert {k: sorted(v) for k, v in by_applicant.items()} == expected_choices
 
 
 def test_a_same_parent_pair_stays_two_separate_interviews(

@@ -48,8 +48,9 @@ def audit_invite_recipients(recipients: Sequence[InviteRecipient]) -> list[Audit
                 AuditIssue(
                     r.applicant_id,
                     "MISSING_ASSIGNMENT",
-                    f"{r.applicant_id} ({r.full_name}) is missing one or both interview "
-                    "assignments (C1) — cannot invite until the schedule is complete.",
+                    f"{r.applicant_id} ({r.full_name}) is missing an interview assignment it "
+                    f"is owed ({r.interviews_owed}) (C1) — cannot invite until the schedule "
+                    "is complete.",
                 )
             )
 

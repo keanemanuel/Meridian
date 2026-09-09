@@ -71,7 +71,17 @@ def _load_invite_inputs(workspace_id: str, run_id: str, settings: Settings):
     if not assignments_path.exists():
         raise HTTPException(status_code=404, detail=f"{assignments_path} not found — solve first.")
     assignments = load_assignments(assignments_path)
-    recipients = build_invite_recipients(assignments, settings.divisions, settings.event)
+    # A single-choice applicant (one role, or the same role twice — E-01b) is
+    # owed one interview, not two, so the completeness audit must not flag them.
+    applicants_path = ws.applicants_clean_path(workspace_id)
+    single_choice_ids = (
+        {a.applicant_id for a in load_clean_applicants(applicants_path) if a.single_choice}
+        if applicants_path.exists()
+        else set()
+    )
+    recipients = build_invite_recipients(
+        assignments, settings.divisions, settings.event, single_choice_ids=single_choice_ids
+    )
     issues = audit_invite_recipients(recipients)
     if issues:
         raise HTTPException(

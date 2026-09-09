@@ -959,7 +959,14 @@ def notify_invite(
     assignments = _load_assignments(assignments_path)
     resolved_run_id = run_dir.resolve().name
 
-    recipients = build_invite_recipients(assignments, settings.divisions, settings.event)
+    # A single-choice applicant (one role, or the same role twice — E-01b) is
+    # owed one interview; the completeness audit keys off this count.
+    single_choice_ids = {
+        a.applicant_id for a in _load_clean_applicants(input_path) if a.single_choice
+    }
+    recipients = build_invite_recipients(
+        assignments, settings.divisions, settings.event, single_choice_ids=single_choice_ids
+    )
 
     issues = audit_invite_recipients(recipients)
     if issues:

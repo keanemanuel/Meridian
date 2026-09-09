@@ -17,7 +17,7 @@ from iff_scheduler.domain.grid import SlotGrid
 from iff_scheduler.domain.models import Applicant
 from iff_scheduler.ingest.base import ApplicantSource
 from iff_scheduler.ingest.normalize import ParsedRow, dedupe_by_email, parse_row
-from iff_scheduler.settings import DivisionsConfig, EventConfig
+from iff_scheduler.settings import DivisionsConfig, EventConfig, canonical_sub_division
 
 # Matches the Google Form's own "tick at least 4 blocks" validation (SPEC.md
 # §9.2) — fewer than this doesn't fail ingest, but is worth flagging before
@@ -66,6 +66,22 @@ NON_RECOVERABLE_REASON_CODES = frozenset(
 def is_recoverable(reason_code: str) -> bool:
     """Whether a rejected row can be force-accepted by a human (M-review)."""
     return reason_code not in NON_RECOVERABLE_REASON_CODES
+
+
+def is_exact_duplicate_pair(sub_division_1: str, sub_division_2: str) -> bool:
+    """True when both choices name the *identical* sub-division — e.g. "Program"
+    + "Program", "Media Marketing" + "Media Marketing" (SPEC.md E-01b).
+
+    Case and surrounding whitespace are folded, so "Logistics" + " logistics "
+    still counts. A same-parent pair of *different* sub-divisions
+    (Media Marketing + Media Documentation, Creative + WebMaster) is NOT this:
+    those remain two separate interviews (SPEC.md E-01). Comparison is on the
+    sub-division text, never the parent division code, so same-parent pairs
+    are never collapsed.
+    """
+    a = canonical_sub_division(sub_division_1)
+    b = canonical_sub_division(sub_division_2)
+    return bool(a) and a == b
 
 
 @dataclass
@@ -136,15 +152,24 @@ def validate_row(row: ParsedRow) -> list[ValidationReportRow]:
                 "UNKNOWN_SUBDIVISION",
                 f"'{row.sub_division_2}' is not a known sub-division.",
             )
-        # A same-parent pair — two different sub-divisions under one parent
-        # division (e.g. Media Marketing + Media Documentation) — is valid
-        # (SPEC.md E-01). Only the exact same sub-division picked twice is a
-        # data-entry mistake.
-        if has_1 and has_2 and row.sub_division_1.strip() == row.sub_division_2.strip():
+        # The exact same sub-division picked twice (e.g. "Program" + "Program")
+        # is not a rejection: the applicant clearly wants that one role, so it
+        # collapses to a single interview, exactly as a single-choice row does
+        # (SPEC.md E-01b). A same-parent pair of *different* sub-divisions
+        # (Media Marketing + Media Documentation, Creative + WebMaster) is
+        # untouched — still two separate interviews (SPEC.md E-01).
+        if (
+            has_1
+            and has_2
+            and row.division_1 is not None
+            and row.division_2 is not None
+            and is_exact_duplicate_pair(row.sub_division_1, row.sub_division_2)
+        ):
             add(
-                "REJECTED",
+                "WARNING",
                 "DUPLICATE_SUBDIVISION",
-                "First and second choice are the identical sub-division (SPEC.md E-01b).",
+                "Both choices are the identical sub-division; collapsed to a single "
+                "interview (SPEC.md E-01b).",
             )
 
     if not row.availability_slots:
@@ -228,7 +253,13 @@ def _build_applicant(row: ParsedRow, applicant_id: str, all_slot_ids: list[str])
     # Normalise a single-choice row so the one real choice is always choice 1
     # — the solver keys spread/balance/C8 off `division_1`, so an applicant
     # whose only pick landed in the "second choice" column still schedules.
-    if row.sub_division_1.strip() and row.sub_division_2.strip():
+    #
+    # The identical sub-division picked twice ("Program" + "Program") is
+    # treated exactly like a single-choice row: one interview, not two
+    # (SPEC.md E-01b). A same-parent pair of different sub-divisions is left
+    # as a two-choice applicant (SPEC.md E-01).
+    both_filled = bool(row.sub_division_1.strip()) and bool(row.sub_division_2.strip())
+    if both_filled and not is_exact_duplicate_pair(row.sub_division_1, row.sub_division_2):
         sub_1, sub_2 = row.sub_division_1, row.sub_division_2
         div_1, div_2 = row.division_1, row.division_2
         single = False

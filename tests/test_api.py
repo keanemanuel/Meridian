@@ -198,25 +198,26 @@ def test_rejected_tab_lists_rows_and_recover_moves_one_to_clean(client: TestClie
     rejected = client.get("/api/workspaces/beta-test/rejected")
     assert rejected.status_code == 200
     rows = rejected.json()
+    # "Program" twice (Citra) no longer lands here — it collapses to a single
+    # interview at ingest (E-01b) rather than being rejected.
     assert {r["reason_code"] for r in rows} == {
-        "DUPLICATE_SUBDIVISION",
         "UNKNOWN_SUBDIVISION",
         "MISSING_FULL_NAME",
     }
-    dup = next(r for r in rows if r["reason_code"] == "DUPLICATE_SUBDIVISION")
-    assert dup["csv_row"] == dup["row_number"] + 1
-    assert dup["recoverable"] is True
+    recoverable = next(r for r in rows if r["reason_code"] == "MISSING_FULL_NAME")
+    assert recoverable["csv_row"] == recoverable["row_number"] + 1
+    assert recoverable["recoverable"] is True
     # An unmappable sub-division has no division to schedule against.
     unknown = next(r for r in rows if r["reason_code"] == "UNKNOWN_SUBDIVISION")
     assert unknown["recoverable"] is False
 
-    recovered = client.post(f"/api/workspaces/beta-test/recover/{dup['row_number']}")
+    recovered = client.post(f"/api/workspaces/beta-test/recover/{recoverable['row_number']}")
     assert recovered.status_code == 200, recovered.text
     assert recovered.json()["applicants"] == before + 1
     assert "Re-run Schedule" in recovered.json()["message"]
 
     still_rejected = client.get("/api/workspaces/beta-test/rejected").json()
-    assert dup["row_number"] not in {r["row_number"] for r in still_rejected}
+    assert recoverable["row_number"] not in {r["row_number"] for r in still_rejected}
 
 
 def test_recover_refuses_a_non_recoverable_row(client: TestClient) -> None:
