@@ -73,9 +73,7 @@ def _room_days_by_id(rooms: RoomsConfig, grid: SlotGrid) -> dict[str, set[Date]]
     """Each room's available event dates. An empty `days` in config means the
     room is open every day (FR-20)."""
     all_dates = {slot.date for slot in grid.slots}
-    return {
-        r.id: (set(r.days) if r.days else set(all_dates)) for r in rooms.rooms
-    }
+    return {r.id: (set(r.days) if r.days else set(all_dates)) for r in rooms.rooms}
 
 
 def resolve_panels(panels: PanelsConfig, rooms: RoomsConfig, grid: SlotGrid) -> list[Panel]:

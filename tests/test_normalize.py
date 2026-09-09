@@ -10,12 +10,14 @@ from iff_scheduler.ingest.normalize import (
     ParsedRow,
     blocks_to_slot_ids,
     dedupe_by_email,
+    fold_header,
     map_sub_division,
     merge_windows,
     parse_availability_cell,
     parse_preferred_dates,
     parse_row,
     parse_timestamp,
+    resolve_columns,
 )
 from iff_scheduler.settings import DayConfig, DivisionEntry, DivisionsConfig, EventConfig
 
@@ -257,3 +259,87 @@ def test_dedupe_by_email_missing_timestamp_loses_tiebreak_to_row_order() -> None
     kept, collapsed = dedupe_by_email([no_ts, with_ts])
     assert kept == [with_ts]
     assert collapsed == [no_ts]
+
+
+# ---- real IFF form: header aliasing and sub-division mapping ----
+
+
+def test_fold_header_drops_trailing_parenthetical_and_case() -> None:
+    assert fold_header("Phone Number (WhatsApp)") == "phone number"
+    assert fold_header("Current Location (e.g.: CBD, etc)") == "current location"
+    assert fold_header("  Email   Address ") == "email address"
+
+
+def test_resolve_columns_ignores_the_form_columns_ingest_does_not_use() -> None:
+    """Extra questions and trailing filler like "Column 1" must not affect the
+    fields ingest rules on — adding a question to the form cannot empty the
+    schedule."""
+    raw = {
+        "Timestamp": "12/09/2025 14:20:59",
+        "Full Name": "Jane Doe",
+        "University": "Monash",
+        "Major": "Business",
+        "State of Degree": "Year 1 Semester 2",
+        "Student ID": "36021679",
+        "Proof of Student Enrolment": "https://drive.example/proof",
+        "Phone Number (WhatsApp)": "0421824484",
+        "Email Address": "jane@example.com",
+        "Current Location (e.g.: CBD, etc)": "18 Leicester Street",
+        "Social Media Accounts (Optional)": "@jane",
+        "First Preference": "Logistics",
+        "Second Preference": "Creative and Decor (Design and Decor)",
+        "Preferred Interview Date": "Thursday, 18 September 2025, 18.00 - 21.30 AEST",
+        "Why do you want to join IFF?": "essay",
+        "CV / Resume": "https://drive.example/cv",
+        "Google Drive Link": "",
+        "Required Files": "files",
+        "Email Confirmation": "TRUE",
+        "Column 1": "",
+    }
+    cell = resolve_columns(raw)
+    assert cell["Email Address"] == "jane@example.com"
+    assert cell["Phone Number (WhatsApp)"] == "0421824484"
+    assert cell["First Preference"] == "Logistics"
+    assert cell["Accessibility / scheduling notes"] == ""
+
+
+def test_map_sub_division_folds_case_and_whitespace_but_not_meaning() -> None:
+    mapping = {"Finance and Booth": DivisionCode.FNB}
+    assert map_sub_division("  finance and  booth ", mapping) is DivisionCode.FNB
+    assert map_sub_division("Finance", mapping) is None
+    assert map_sub_division("", mapping) is None
+
+
+def test_live_form_sub_divisions_all_map_to_a_parent_division() -> None:
+    """Every option the live form offers must resolve, or valid registrants are
+    rejected as UNKNOWN_SUBDIVISION."""
+    from iff_scheduler.settings import load_settings
+
+    mapping = load_settings().divisions.canonical_sub_division_mapping
+    expected = {
+        "Logistics": DivisionCode.LOGISTICS,
+        "Creative and Decor (Design and Decor)": DivisionCode.CREATIVE,
+        "Creative and Decor (WebMaster)": DivisionCode.CREATIVE,
+        "Media Marketing and Documentation (Documentation)": DivisionCode.MEDMARDOC,
+        "Media Marketing and Documentation (Media Marketing)": DivisionCode.MEDMARDOC,
+        "Finance and Booth": DivisionCode.FNB,
+        "Program": DivisionCode.PROGRAM,
+        "Liaison": DivisionCode.LIAISON,
+    }
+    assert {name: map_sub_division(name, mapping) for name in expected} == expected
+
+
+def test_parse_timestamp_reads_the_live_sheets_day_first_locale() -> None:
+    assert parse_timestamp("12/09/2025 14:20:59") == datetime(2025, 9, 12, 14, 20, 59)
+    # Unambiguous month-first values still parse: 15 is not a month.
+    assert parse_timestamp("8/15/2026 10:00:00") == datetime(2026, 8, 15, 10, 0)
+
+
+def test_preferred_date_ignores_the_forms_calendar_year_and_time_text() -> None:
+    """The form says 2025 while the event is configured for 2026; only the
+    weekday name is read (CLAUDE.md invariant 3 — nothing is guessed beyond it)."""
+    event = _two_day_event()
+    thursday = parse_preferred_dates("Thursday, 18 September 2025, 18.00 - 21.30 AEST", event)
+    friday = parse_preferred_dates("Friday, 19 September 2025, 18.00 - 21.30 AEST", event)
+    assert list(thursday) == [date(2026, 9, 17)]
+    assert list(friday) == [date(2026, 9, 18)]

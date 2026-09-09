@@ -12,12 +12,31 @@ divisions:
   - code: PROGRAM
     display: "Program"
 
+# Every string the applicant can actually pick in "First Preference" /
+# "Second Preference" on the live IFF form, plus the shorter labels earlier
+# exports used. Lookup is case- and whitespace-insensitive (see
+# `DivisionsConfig.canonical_sub_division_mapping`) but never fuzzy: a value
+# that is not listed here is rejected as UNKNOWN_SUBDIVISION rather than
+# guessed at (CLAUDE.md invariant 3).
+#
+# Note the two Creative and the two Media entries map to one parent each.
+# That is deliberate: an applicant may pick both, and the scheduling unit is
+# the choice, not the division (CLAUDE.md invariant 2).
 sub_division_mapping:
+  # ---- live IFF form values ----
+  "Logistics":                                            LOGISTICS
+  "Creative and Decor (Design and Decor)":                 CREATIVE
+  "Creative and Decor (WebMaster)":                        CREATIVE
+  "Media Marketing and Documentation (Documentation)":     MEDMARDOC
+  "Media Marketing and Documentation (Media Marketing)":   MEDMARDOC
+  "Finance and Booth":                                     FNB
+  "Program":                                               PROGRAM
+  "Liaison":                                               LIAISON
+
+  # ---- shorter labels kept for older exports and fixtures ----
   "Media Marketing":     MEDMARDOC
   "Media Documentation": MEDMARDOC
   "Creative":            CREATIVE
+  "Design and Decor":    CREATIVE
   "WebMaster":           CREATIVE
-  "Logistics":           LOGISTICS
-  "Liaison":             LIAISON
   "Finance & Booth":     FNB
-  "Program":             PROGRAM

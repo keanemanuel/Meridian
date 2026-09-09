@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from iff_scheduler.domain.enums import DivisionCode
 
@@ -66,6 +66,17 @@ class DivisionEntry(BaseModel):
     display: str
 
 
+def canonical_sub_division(raw: str) -> str:
+    """Fold a sub-division label to the form used for mapping lookups.
+
+    Case, surrounding space and runs of internal whitespace are ignored, so
+    "  finance and booth" and "Finance and  Booth" both resolve. Nothing else
+    is touched: this is normalisation, not fuzzy matching, so an unlisted
+    value still fails loudly (FR-03, CLAUDE.md invariant 3).
+    """
+    return " ".join((raw or "").split()).lower()
+
+
 class DivisionsConfig(BaseModel):
     """config/divisions.yaml — parent divisions and the sub-division mapping (FR-03)."""
 
@@ -73,6 +84,34 @@ class DivisionsConfig(BaseModel):
 
     divisions: list[DivisionEntry]
     sub_division_mapping: dict[str, DivisionCode]
+
+    @property
+    def canonical_sub_division_mapping(self) -> dict[str, DivisionCode]:
+        """`sub_division_mapping` re-keyed by `canonical_sub_division`.
+
+        Google Forms preserves the option text it was authored with, including
+        double spaces and stray capitals; matching on the raw string alone
+        rejected valid registrants whose answer differed only in whitespace.
+        """
+        return {
+            canonical_sub_division(name): code for name, code in self.sub_division_mapping.items()
+        }
+
+    @model_validator(mode="after")
+    def _mapping_has_no_canonical_collisions(self) -> DivisionsConfig:
+        """Two keys that fold to the same canonical form but point at different
+        divisions would make the lookup order-dependent. Fail at load time
+        (CLAUDE.md: "fail loudly on malformed config")."""
+        seen: dict[str, DivisionCode] = {}
+        for name, code in self.sub_division_mapping.items():
+            key = canonical_sub_division(name)
+            if key in seen and seen[key] != code:
+                raise ValueError(
+                    f"sub_division_mapping: '{name}' collides with an earlier entry "
+                    f"that maps to {seen[key].value}, not {code.value}."
+                )
+            seen[key] = code
+        return self
 
 
 class RoomEntry(BaseModel):

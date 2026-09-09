@@ -30,7 +30,7 @@ from typing import Literal
 
 from iff_scheduler.domain.enums import DivisionCode
 from iff_scheduler.domain.grid import SlotGrid
-from iff_scheduler.settings import DivisionsConfig, EventConfig
+from iff_scheduler.settings import DivisionsConfig, EventConfig, canonical_sub_division
 
 COLUMN_TIMESTAMP = "Timestamp"
 COLUMN_EMAIL = "Email Address"
@@ -43,6 +43,80 @@ COLUMN_PREFERRED_DATE = "Preferred Interview Date"
 # The real form has no free-text scheduling-notes field; kept so an augmented
 # export that adds one still flows through (`.get` returns None otherwise).
 COLUMN_NOTES = "Accessibility / scheduling notes"
+
+# Headers the ingest actually needs, each with the spellings seen in real
+# exports. Everything else the form emits — University, Major, State of
+# Degree, Proof of Student Enrolment, "Current Location (e.g.: CBD, etc)",
+# Social Media Accounts, the essay, CV / Google Drive links, Required Files,
+# Email Confirmation, and trailing filler like "Column 1" — is read and
+# ignored. Unknown columns must never cause a rejection: a committee member
+# adding a question to the form should not empty the schedule.
+#
+# Matching is on the folded header (lower-cased, whitespace collapsed, and
+# any trailing "(...)" hint dropped), so "Current Location (e.g.: CBD, etc)"
+# with its embedded comma, or "Email address", still resolve.
+COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    COLUMN_TIMESTAMP: ("timestamp", "submitted at", "submission time"),
+    COLUMN_EMAIL: ("email address", "email", "e-mail address", "email addresses"),
+    COLUMN_FULL_NAME: ("full name", "name", "nama"),
+    COLUMN_PHONE: ("phone number", "phone", "whatsapp", "whatsapp number", "contact number"),
+    COLUMN_STUDENT_ID: ("student id", "student number"),
+    COLUMN_SUBDIVISION_1: ("first preference", "1st preference", "first choice"),
+    COLUMN_SUBDIVISION_2: ("second preference", "2nd preference", "second choice"),
+    COLUMN_PREFERRED_DATE: (
+        "preferred interview date",
+        "preferred interview dates",
+        "interview date",
+        "availability",
+    ),
+    COLUMN_NOTES: (
+        "accessibility / scheduling notes",
+        "accessibility notes",
+        "scheduling notes",
+        "notes",
+    ),
+}
+
+_PARENTHETICAL_SUFFIX = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+def fold_header(raw: str) -> str:
+    """Fold a CSV header to its comparison key.
+
+    Lower-cases, collapses whitespace and drops one trailing parenthetical
+    hint, so "Phone Number (WhatsApp)" folds to "phone number" and
+    "Current Location (e.g.: CBD, etc)" to "current location".
+    """
+    collapsed = " ".join((raw or "").split())
+    return _PARENTHETICAL_SUFFIX.sub("", collapsed).strip().lower()
+
+
+def resolve_columns(raw: Mapping[str, str]) -> dict[str, str]:
+    """Map each logical column name to this row's value, via COLUMN_ALIASES.
+
+    An exact header match always wins; the folded aliases are the fallback.
+    A column the export does not have simply maps to "" — it is not an error,
+    because only the handful of fields `validate.py` rules on are required.
+    """
+    folded: dict[str, str] = {}
+    for header, value in raw.items():
+        key = fold_header(str(header))
+        # First header wins, so a duplicated column (Google Forms appends a
+        # numeric suffix, which folds away) cannot blank an earlier answer.
+        folded.setdefault(key, value)
+        folded.setdefault(" ".join(str(header).split()).lower(), value)
+
+    resolved: dict[str, str] = {}
+    for column, aliases in COLUMN_ALIASES.items():
+        if column in raw:
+            resolved[column] = raw[column]
+            continue
+        resolved[column] = next(
+            (folded[alias] for alias in aliases if folded.get(alias)),
+            "",
+        )
+    return resolved
+
 
 _WEEKDAYS = (
     "monday",
@@ -92,9 +166,7 @@ def parse_availability_cell(raw: str) -> list[tuple[Time, Time]]:
     return windows
 
 
-def parse_preferred_dates(
-    raw: str, event: EventConfig
-) -> dict[Date, list[tuple[Time, Time]]]:
+def parse_preferred_dates(raw: str, event: EventConfig) -> dict[Date, list[tuple[Time, Time]]]:
     """Turn a "Preferred Interview Date" cell into per-day availability windows.
 
     Cells look like "Thursday, 18 September 2025" (a single value, or several
@@ -172,19 +244,37 @@ def blocks_to_slot_ids(
 
 
 def map_sub_division(raw: str, mapping: Mapping[str, DivisionCode]) -> DivisionCode | None:
-    """Exact-match a sub-division name to its parent division. No fuzzy matching —
-    an unrecognised name is a validation failure, not a guess (FR-03)."""
-    return mapping.get((raw or "").strip())
+    """Match a sub-division name to its parent division (FR-03).
+
+    Case and whitespace are folded — the form's own option text is not always
+    byte-identical to the config's — but nothing is guessed beyond that: an
+    unrecognised name returns None and `validate.py` rejects it.
+
+    Accepts either the raw `sub_division_mapping` or the canonical one from
+    `DivisionsConfig.canonical_sub_division_mapping`; both are folded here.
+    """
+    key = canonical_sub_division(raw)
+    if not key:
+        return None
+    folded = {canonical_sub_division(name): code for name, code in mapping.items()}
+    return folded.get(key)
 
 
 # Google Forms writes its own submission timestamp in the sheet's locale, not
-# ISO 8601 — commonly M/D/YYYY with a 24- or 12-hour clock. Try ISO first, then
-# these; anything else is left as None for validate.py to reject (E, invariant 3).
+# ISO 8601. The live IFF sheet is day-first (12/09/2025 is 12 September), so
+# that is tried before the US month-first ordering; an unambiguous value such
+# as 8/15/2026 falls through to month-first on its own. ISO is tried first of
+# all. Anything unparsable stays None — the timestamp only orders duplicate
+# submissions, so validate.py warns rather than rejecting the applicant.
 _TIMESTAMP_FORMATS = (
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y %H:%M",
     "%m/%d/%Y %H:%M:%S",
     "%m/%d/%Y %H:%M",
-    "%d/%m/%Y %H:%M:%S",
     "%Y-%m-%d %H:%M:%S",
+    "%Y/%m/%d %H:%M:%S",
+    "%d/%m/%Y",
+    "%Y-%m-%d",
 )
 
 
@@ -211,26 +301,29 @@ def parse_row(
     divisions: DivisionsConfig,
     grid: SlotGrid,
 ) -> ParsedRow:
-    sub_division_1 = (raw.get(COLUMN_SUBDIVISION_1) or "").strip()
-    sub_division_2 = (raw.get(COLUMN_SUBDIVISION_2) or "").strip()
+    cell = resolve_columns(raw)
+    mapping = divisions.canonical_sub_division_mapping
 
-    availability_by_day = parse_preferred_dates(raw.get(COLUMN_PREFERRED_DATE) or "", event)
+    sub_division_1 = cell[COLUMN_SUBDIVISION_1].strip()
+    sub_division_2 = cell[COLUMN_SUBDIVISION_2].strip()
+
+    availability_by_day = parse_preferred_dates(cell[COLUMN_PREFERRED_DATE], event)
 
     return ParsedRow(
         row_number=row_number,
-        email=(raw.get(COLUMN_EMAIL) or "").strip().lower(),
-        full_name=(raw.get(COLUMN_FULL_NAME) or "").strip(),
-        phone=(raw.get(COLUMN_PHONE) or "").strip(),
-        student_id=(raw.get(COLUMN_STUDENT_ID) or "").strip(),
+        email=cell[COLUMN_EMAIL].strip().lower(),
+        full_name=cell[COLUMN_FULL_NAME].strip(),
+        phone=cell[COLUMN_PHONE].strip(),
+        student_id=cell[COLUMN_STUDENT_ID].strip(),
         sub_division_1=sub_division_1,
         sub_division_2=sub_division_2,
-        division_1=map_sub_division(sub_division_1, divisions.sub_division_mapping),
-        division_2=map_sub_division(sub_division_2, divisions.sub_division_mapping),
+        division_1=map_sub_division(sub_division_1, mapping),
+        division_2=map_sub_division(sub_division_2, mapping),
         availability_slots=blocks_to_slot_ids(
             availability_by_day, grid, event.availability_matching
         ),
-        submitted_at=parse_timestamp(raw.get(COLUMN_TIMESTAMP) or ""),
-        notes=(raw.get(COLUMN_NOTES) or "").strip() or None,
+        submitted_at=parse_timestamp(cell[COLUMN_TIMESTAMP]),
+        notes=cell[COLUMN_NOTES].strip() or None,
     )
 
 

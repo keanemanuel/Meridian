@@ -11,10 +11,26 @@ from iff_scheduler.domain.enums import DivisionCode
 from iff_scheduler.domain.grid import build_slot_grid
 from iff_scheduler.ingest.csv_source import CsvApplicantSource
 from iff_scheduler.ingest.normalize import ParsedRow
-from iff_scheduler.ingest.validate import run_ingest, validate_row, write_outputs
+from iff_scheduler.ingest.validate import (
+    UNKNOWN_SUBMITTED_AT,
+    run_ingest,
+    validate_row,
+    write_outputs,
+)
 from iff_scheduler.settings import load_settings
 
 FIXTURE = Path(__file__).parent / "fixtures" / "applicants_raw.csv"
+
+
+class _InMemorySource:
+    """ApplicantSource over hand-written rows, for cases a fixture file would
+    only obscure."""
+
+    def __init__(self, rows: list[dict[str, str]]) -> None:
+        self._rows = rows
+
+    def read_raw(self) -> pd.DataFrame:
+        return pd.DataFrame(self._rows, dtype=str)
 
 
 def _valid_row(**overrides: object) -> ParsedRow:
@@ -84,9 +100,30 @@ def test_invalid_email_is_rejected() -> None:
     assert any(i.reason_code == "INVALID_EMAIL" for i in issues)
 
 
-def test_missing_timestamp_is_rejected() -> None:
+def test_missing_timestamp_warns_but_does_not_reject() -> None:
+    """The timestamp only orders duplicate submissions, so an unreadable one
+    must not cost a real registrant their interviews (CLAUDE.md invariant 1)."""
     issues = validate_row(_valid_row(submitted_at=None))
-    assert any(i.reason_code == "INVALID_TIMESTAMP" for i in issues)
+    assert [i.reason_code for i in issues if i.outcome == "REJECTED"] == []
+    assert any(i.reason_code == "MISSING_TIMESTAMP" and i.outcome == "WARNING" for i in issues)
+
+
+def test_applicant_with_unreadable_timestamp_still_reaches_the_clean_list() -> None:
+    settings = load_settings()
+    grid = build_slot_grid(settings.event)
+    raw = {
+        "Timestamp": "",
+        "Full Name": "Undated Applicant",
+        "Email Address": "undated@example.com",
+        "Phone Number (WhatsApp)": "+62-812-9999",
+        "First Preference": "Logistics",
+        "Second Preference": "Program",
+        "Preferred Interview Date": "Thursday, 18 September 2025",
+    }
+    result = run_ingest(_InMemorySource([raw]), settings.event, settings.divisions, grid)
+
+    assert [a.email for a in result.applicants] == ["undated@example.com"]
+    assert result.applicants[0].submitted_at == UNKNOWN_SUBMITTED_AT
 
 
 # ---- end-to-end against the fixture CSV ----

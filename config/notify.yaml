@@ -5,7 +5,11 @@
 sender_name: ""             # e.g. "IFF Recruitment Committee"
 sender_email: ""             # e.g. "recruitment@iff.example"
 reply_to: ""                  # e.g. "recruitment@iff.example"
-throttle_seconds: 1.0         # pause between sends, to respect provider quotas
+# Pause between sends. At 2s that is ~150 emails/hour, so a full 300-email
+# round (120 invites + results) takes about two hours and stays far inside the
+# Gmail API's per-day send quota: ~500/day on a consumer account, 2000/day on
+# Workspace. Both ceilings are per 24 hours, so 300/day has ample headroom.
+throttle_seconds: 2.0
 
 templates:
   invite_html: "templates/email/invite.html.j2"

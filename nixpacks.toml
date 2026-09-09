@@ -1,0 +1,16 @@
+# Railway build plan. Without an explicit [start] block Railway's Nixpacks
+# detection was not picking up the Procfile / railway.json start command and
+# failed the deploy with "No start command detected".
+#
+# The install phase mirrors the Nixpacks Python default (create /opt/venv,
+# then pip install) rather than a bare `pip install -r requirements.txt`:
+# Nixpacks puts /opt/venv/bin on PATH for every later phase, so skipping the
+# venv leaves `uvicorn` off the PATH at start time.
+[phases.install]
+cmds = [
+  "python -m venv --copies /opt/venv",
+  ". /opt/venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt",
+]
+
+[start]
+cmd = "cd /app/src && uvicorn api.main:app --host 0.0.0.0 --port $PORT"

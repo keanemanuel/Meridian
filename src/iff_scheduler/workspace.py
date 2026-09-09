@@ -13,6 +13,7 @@ which stay pure (CLAUDE.md, "Architecture rule").
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -21,7 +22,23 @@ from pydantic import BaseModel, ConfigDict
 
 DEFAULT_WORKSPACE = "default"
 
-WORKSPACES_ROOT = Path("data/workspaces")
+
+def _workspaces_root() -> Path:
+    """Resolve `data/workspaces` without depending on the process CWD.
+
+    IFFSCHED_DATA_DIR wins when set (a mounted volume in a deploy); otherwise
+    the repo's own `data/` directory, located from this file rather than from
+    `Path.cwd()`. The Railway start command runs uvicorn from `/app/src`, so a
+    CWD-relative default would silently move every workspace's runs and
+    ledgers to a second, empty tree.
+    """
+    override = os.environ.get("IFFSCHED_DATA_DIR")
+    if override:
+        return Path(override) / "workspaces"
+    return Path(__file__).resolve().parents[2] / "data" / "workspaces"
+
+
+WORKSPACES_ROOT = _workspaces_root()
 WORKSPACES_FILE = WORKSPACES_ROOT / "workspaces.json"
 
 _SHEET_URL_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9_-]+)")

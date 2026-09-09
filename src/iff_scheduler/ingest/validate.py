@@ -6,6 +6,7 @@ validation -> clean Applicant list + report.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
 
@@ -70,7 +71,16 @@ def validate_row(row: ParsedRow) -> list[ValidationReportRow]:
         add("REJECTED", "MISSING_FULL_NAME", "Full name is blank.")
 
     if row.submitted_at is None:
-        add("REJECTED", "INVALID_TIMESTAMP", "Submission timestamp is missing or unparsable.")
+        # The timestamp only orders duplicate submissions (FR-05). A blank or
+        # unparsable one is not grounds to drop a real registrant, so it warns
+        # and falls back to UNKNOWN_SUBMITTED_AT, which loses every dedupe tie
+        # to a row that does carry a real timestamp.
+        add(
+            "WARNING",
+            "MISSING_TIMESTAMP",
+            "Submission timestamp is missing or unparsable; this row loses any "
+            "duplicate-email tie-break against a dated submission.",
+        )
 
     if not row.sub_division_1 or not row.sub_division_2:
         add("REJECTED", "MISSING_SUBDIVISION", "One or both sub-division choices are blank.")
@@ -140,10 +150,16 @@ def _duplicate_of_existing_row(row: ParsedRow) -> ValidationReportRow:
     )
 
 
+# Stand-in for a submission whose timestamp could not be read. Deliberately
+# the earliest representable datetime, matching the dedupe tie-break in
+# `dedupe_by_email`, and obvious enough in applicants.clean.csv that nobody
+# mistakes it for a real submission time (CLAUDE.md invariant 3).
+UNKNOWN_SUBMITTED_AT = datetime.min
+
+
 def _build_applicant(row: ParsedRow, applicant_id: str) -> Applicant:
     assert row.division_1 is not None
     assert row.division_2 is not None
-    assert row.submitted_at is not None
     return Applicant(
         applicant_id=applicant_id,
         full_name=row.full_name,
@@ -155,7 +171,7 @@ def _build_applicant(row: ParsedRow, applicant_id: str) -> Applicant:
         division_1=row.division_1,
         division_2=row.division_2,
         availability_slots=row.availability_slots,
-        submitted_at=row.submitted_at,
+        submitted_at=row.submitted_at or UNKNOWN_SUBMITTED_AT,
         notes=row.notes,
     )
 

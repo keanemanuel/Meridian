@@ -4,10 +4,10 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "uvicorn api.main:app --host 0.0.0.0 --port $PORT --app-dir src",
+    "startCommand": "cd /app/src && uvicorn api.main:app --host 0.0.0.0 --port $PORT",
     "healthcheckPath": "/api/health",
-    "healthcheckTimeout": 100,
+    "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 3
+    "restartPolicyMaxRetries": 10
   }
 }
