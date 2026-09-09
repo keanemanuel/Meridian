@@ -11,6 +11,8 @@ import type {
   InvitePreview,
   PatchAssignmentResult,
   PublishResult,
+  RecoverResult,
+  RejectedRow,
   ResultPreview,
   RunSummary,
   SolveResult,
@@ -254,6 +256,16 @@ export const api = {
 
   check: (id: string) =>
     request<CapacityCheck>(`/workspaces/${seg(id)}/check`, {
+      method: "POST",
+    }),
+
+  /** Rejected rows of the latest validation report (Rejected tab). */
+  listRejected: (id: string) =>
+    request<RejectedRow[]>(`/workspaces/${seg(id)}/rejected`),
+
+  /** Force a recoverable rejected row into the clean list and re-run ingest. */
+  recover: (id: string, rowNumber: number) =>
+    request<RecoverResult>(`/workspaces/${seg(id)}/recover/${rowNumber}`, {
       method: "POST",
     }),
 

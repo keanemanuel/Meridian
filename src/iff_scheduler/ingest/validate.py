@@ -33,11 +33,39 @@ class ValidationReportRow(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     row_number: int
+    # The row's position in the source CSV/Sheet as a human opening the file
+    # sees it: header is line 1, so the first applicant is `csv_row` 2. Lets a
+    # committee member jump straight to the offending line to fix it by hand.
+    csv_row: int
     email: str
     full_name: str
+    sub_division_1: str
+    sub_division_2: str
     outcome: Outcome
     reason_code: str
     message: str
+
+
+# Rejection reasons a human review cannot safely wave through, so the
+# "Recover" action in the UI is disabled for them:
+#   * a missing/invalid email is genuinely uncontactable — there is no way to
+#     send this person their schedule (CLAUDE.md invariant 3);
+#   * an unknown or wholly-missing sub-division has no parent division to
+#     schedule against, and the pipeline never guesses one.
+NON_RECOVERABLE_REASON_CODES = frozenset(
+    {
+        "MISSING_EMAIL",
+        "INVALID_EMAIL",
+        "UNKNOWN_SUBDIVISION",
+        "MISSING_SUBDIVISION",
+        "DUPLICATE_OF_EXISTING_APPLICANT",
+    }
+)
+
+
+def is_recoverable(reason_code: str) -> bool:
+    """Whether a rejected row can be force-accepted by a human (M-review)."""
+    return reason_code not in NON_RECOVERABLE_REASON_CODES
 
 
 @dataclass
@@ -54,14 +82,19 @@ def validate_row(row: ParsedRow) -> list[ValidationReportRow]:
         issues.append(
             ValidationReportRow(
                 row_number=row.row_number,
+                csv_row=row.row_number + 1,
                 email=row.email,
                 full_name=row.full_name,
+                sub_division_1=row.sub_division_1,
+                sub_division_2=row.sub_division_2,
                 outcome=outcome,
                 reason_code=code,
                 message=message,
             )
         )
 
+    # A missing or malformed email is uncontactable — still a hard rejection,
+    # because there is no address to send the schedule to.
     if not row.email:
         add("REJECTED", "MISSING_EMAIL", "Email address is blank.")
     elif "@" not in row.email or row.email.startswith("@") or row.email.endswith("@"):
@@ -82,33 +115,46 @@ def validate_row(row: ParsedRow) -> list[ValidationReportRow]:
             "duplicate-email tie-break against a dated submission.",
         )
 
-    if not row.sub_division_1 or not row.sub_division_2:
-        add("REJECTED", "MISSING_SUBDIVISION", "One or both sub-division choices are blank.")
+    # Sub-division choices. Be maximally accepting: exactly one choice filled
+    # is a single-choice applicant (one interview, `single_choice=True` in the
+    # clean CSV), not a rejection. Only a row with *both* blank has nothing to
+    # schedule at all.
+    has_1 = bool(row.sub_division_1.strip())
+    has_2 = bool(row.sub_division_2.strip())
+    if not has_1 and not has_2:
+        add("REJECTED", "MISSING_SUBDIVISION", "Both sub-division choices are blank.")
     else:
-        if row.division_1 is None:
+        if has_1 and row.division_1 is None:
             add(
                 "REJECTED",
                 "UNKNOWN_SUBDIVISION",
                 f"'{row.sub_division_1}' is not a known sub-division.",
             )
-        if row.division_2 is None:
+        if has_2 and row.division_2 is None:
             add(
                 "REJECTED",
                 "UNKNOWN_SUBDIVISION",
                 f"'{row.sub_division_2}' is not a known sub-division.",
             )
-        if row.sub_division_1.strip().lower() == row.sub_division_2.strip().lower():
+        # A same-parent pair — two different sub-divisions under one parent
+        # division (e.g. Media Marketing + Media Documentation) — is valid
+        # (SPEC.md E-01). Only the exact same sub-division picked twice is a
+        # data-entry mistake.
+        if has_1 and has_2 and row.sub_division_1.strip() == row.sub_division_2.strip():
             add(
                 "REJECTED",
                 "DUPLICATE_SUBDIVISION",
-                "First and second choice sub-division must be distinct (SPEC.md E-01b).",
+                "First and second choice are the identical sub-division (SPEC.md E-01b).",
             )
 
     if not row.availability_slots:
+        # E-02 relaxed: rather than dropping an applicant who left the
+        # availability question blank, assume they are free for the whole
+        # event and flag the assumption (it is filled in by run_ingest).
         add(
-            "REJECTED",
+            "WARNING",
             "NO_AVAILABILITY",
-            "No declared availability overlaps the event slot grid (SPEC.md E-02).",
+            "No availability declared — assumed full event availability.",
         )
     elif len(row.availability_slots) < MIN_AVAILABILITY_SLOTS_WARNING:
         add(
@@ -124,12 +170,30 @@ def validate_row(row: ParsedRow) -> list[ValidationReportRow]:
 def _collapsed_report_row(row: ParsedRow, kept_row: ParsedRow) -> ValidationReportRow:
     return ValidationReportRow(
         row_number=row.row_number,
+        csv_row=row.row_number + 1,
         email=row.email,
         full_name=row.full_name,
+        sub_division_1=row.sub_division_1,
+        sub_division_2=row.sub_division_2,
         outcome="COLLAPSED",
         reason_code="DUPLICATE_EMAIL",
         message=f"Superseded by a later submission from the same email at row "
         f"{kept_row.row_number} (SPEC.md E-04).",
+    )
+
+
+def _recovered_report_row(row: ParsedRow, reason_codes: list[str]) -> ValidationReportRow:
+    """A row a human chose to force past its rejection (M-review "Recover")."""
+    return ValidationReportRow(
+        row_number=row.row_number,
+        csv_row=row.row_number + 1,
+        email=row.email,
+        full_name=row.full_name,
+        sub_division_1=row.sub_division_1,
+        sub_division_2=row.sub_division_2,
+        outcome="WARNING",
+        reason_code="RECOVERED",
+        message="Manually recovered despite: " + ", ".join(sorted(set(reason_codes))) + ".",
     )
 
 
@@ -141,8 +205,11 @@ def _duplicate_of_existing_row(row: ParsedRow) -> ValidationReportRow:
     row for the same applicant would be a guess about which one is current."""
     return ValidationReportRow(
         row_number=row.row_number,
+        csv_row=row.row_number + 1,
         email=row.email,
         full_name=row.full_name,
+        sub_division_1=row.sub_division_1,
+        sub_division_2=row.sub_division_2,
         outcome="REJECTED",
         reason_code="DUPLICATE_OF_EXISTING_APPLICANT",
         message=f"'{row.email}' already has a clean applicant record from a prior ingest run. "
@@ -157,20 +224,41 @@ def _duplicate_of_existing_row(row: ParsedRow) -> ValidationReportRow:
 UNKNOWN_SUBMITTED_AT = datetime.min
 
 
-def _build_applicant(row: ParsedRow, applicant_id: str) -> Applicant:
-    assert row.division_1 is not None
-    assert row.division_2 is not None
+def _build_applicant(row: ParsedRow, applicant_id: str, all_slot_ids: list[str]) -> Applicant:
+    # Normalise a single-choice row so the one real choice is always choice 1
+    # — the solver keys spread/balance/C8 off `division_1`, so an applicant
+    # whose only pick landed in the "second choice" column still schedules.
+    if row.sub_division_1.strip() and row.sub_division_2.strip():
+        sub_1, sub_2 = row.sub_division_1, row.sub_division_2
+        div_1, div_2 = row.division_1, row.division_2
+        single = False
+    elif row.sub_division_1.strip():
+        sub_1, sub_2 = row.sub_division_1, ""
+        div_1, div_2 = row.division_1, None
+        single = True
+    else:
+        sub_1, sub_2 = row.sub_division_2, ""
+        div_1, div_2 = row.division_2, None
+        single = True
+
+    assert div_1 is not None
+
+    # E-02 relaxed (see validate_row): a blank availability answer means
+    # "assume free for the whole event", flagged as a NO_AVAILABILITY warning.
+    availability = row.availability_slots or list(all_slot_ids)
+
     return Applicant(
         applicant_id=applicant_id,
         full_name=row.full_name,
         email=row.email,
         phone=row.phone,
         student_id=row.student_id,
-        sub_division_1=row.sub_division_1,
-        sub_division_2=row.sub_division_2,
-        division_1=row.division_1,
-        division_2=row.division_2,
-        availability_slots=row.availability_slots,
+        sub_division_1=sub_1,
+        sub_division_2=sub_2,
+        division_1=div_1,
+        division_2=div_2,
+        single_choice=single,
+        availability_slots=availability,
         submitted_at=row.submitted_at or UNKNOWN_SUBMITTED_AT,
         notes=row.notes,
     )
@@ -185,13 +273,20 @@ def run_ingest(
     row_number_offset: int = 0,
     applicant_id_offset: int = 0,
     known_emails: frozenset[str] = frozenset(),
+    force_accept_rows: frozenset[int] = frozenset(),
 ) -> IngestResult:
     """`row_number_offset` and `applicant_id_offset` let an incremental sheets
     batch (M10) continue the row-number and applicant-ID sequence of an
     existing applicants.clean.csv rather than restarting at 1 each run.
     `known_emails` are emails already committed from a prior run — see
-    `_duplicate_of_existing_row`. All three default to a no-op for the plain
-    single-shot CSV path."""
+    `_duplicate_of_existing_row`.
+
+    `force_accept_rows` is the set of `row_number`s a human chose to recover
+    from the validation report: a recoverable rejection (`is_recoverable`) on
+    one of these rows is downgraded to a `RECOVERED` warning and the applicant
+    is built anyway. A non-recoverable rejection still blocks.
+
+    All default to a no-op for the plain single-shot CSV path."""
     raw_df = source.read_raw()
     raw_rows = cast("list[dict[str, str]]", raw_df.to_dict(orient="records"))
     parsed = [
@@ -209,16 +304,34 @@ def run_ingest(
         if row.email in kept_by_email
     ]
 
+    all_slot_ids = [slot.slot_id for slot in grid.slots]
+
     applicants: list[Applicant] = []
     for row in kept:
         issues = validate_row(row)
         if row.email and row.email in known_emails:
             issues.append(_duplicate_of_existing_row(row))
-        report.extend(issues)
-        if any(issue.outcome == "REJECTED" for issue in issues):
+
+        rejected = [i for i in issues if i.outcome == "REJECTED"]
+        forced = row.row_number in force_accept_rows
+        blocking = (
+            [i for i in rejected if not is_recoverable(i.reason_code)] if forced else rejected
+        )
+        if blocking:
+            # Still rejected — keep the full set of issues in the report.
+            report.extend(issues)
             continue
+
+        report.extend(i for i in issues if i.outcome != "REJECTED")
+        if forced and rejected:
+            report.append(_recovered_report_row(row, [i.reason_code for i in rejected]))
+
         applicants.append(
-            _build_applicant(row, applicant_id=f"A{applicant_id_offset + len(applicants) + 1:03d}")
+            _build_applicant(
+                row,
+                applicant_id=f"A{applicant_id_offset + len(applicants) + 1:03d}",
+                all_slot_ids=all_slot_ids,
+            )
         )
 
     report.sort(key=lambda r: r.row_number)
@@ -235,12 +348,23 @@ CLEAN_COLUMNS = [
     "sub_division_2",
     "division_1",
     "division_2",
+    "single_choice",
     "availability_slots",
     "submitted_at",
     "notes",
 ]
 
-REPORT_COLUMNS = ["row_number", "email", "full_name", "outcome", "reason_code", "message"]
+REPORT_COLUMNS = [
+    "row_number",
+    "csv_row",
+    "email",
+    "full_name",
+    "sub_division_1",
+    "sub_division_2",
+    "outcome",
+    "reason_code",
+    "message",
+]
 
 
 def _clean_rows(applicants: list[Applicant]) -> list[dict[str, str]]:
@@ -254,7 +378,8 @@ def _clean_rows(applicants: list[Applicant]) -> list[dict[str, str]]:
             "sub_division_1": a.sub_division_1,
             "sub_division_2": a.sub_division_2,
             "division_1": a.division_1.value,
-            "division_2": a.division_2.value,
+            "division_2": a.division_2.value if a.division_2 is not None else "",
+            "single_choice": "True" if a.single_choice else "False",
             "availability_slots": "|".join(a.availability_slots),
             "submitted_at": a.submitted_at.isoformat(),
             "notes": a.notes or "",

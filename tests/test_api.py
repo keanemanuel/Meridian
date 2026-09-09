@@ -190,6 +190,44 @@ def test_ingest_csv_upload(client: TestClient) -> None:
     assert "report" in body
 
 
+def test_rejected_tab_lists_rows_and_recover_moves_one_to_clean(client: TestClient) -> None:
+    _create_ws(client)
+    ingested = _ingest_fixture(client)
+    before = ingested.json()["applicants"]
+
+    rejected = client.get("/api/workspaces/beta-test/rejected")
+    assert rejected.status_code == 200
+    rows = rejected.json()
+    assert {r["reason_code"] for r in rows} == {
+        "DUPLICATE_SUBDIVISION",
+        "UNKNOWN_SUBDIVISION",
+        "MISSING_FULL_NAME",
+    }
+    dup = next(r for r in rows if r["reason_code"] == "DUPLICATE_SUBDIVISION")
+    assert dup["csv_row"] == dup["row_number"] + 1
+    assert dup["recoverable"] is True
+    # An unmappable sub-division has no division to schedule against.
+    unknown = next(r for r in rows if r["reason_code"] == "UNKNOWN_SUBDIVISION")
+    assert unknown["recoverable"] is False
+
+    recovered = client.post(f"/api/workspaces/beta-test/recover/{dup['row_number']}")
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["applicants"] == before + 1
+    assert "Re-run Schedule" in recovered.json()["message"]
+
+    still_rejected = client.get("/api/workspaces/beta-test/rejected").json()
+    assert dup["row_number"] not in {r["row_number"] for r in still_rejected}
+
+
+def test_recover_refuses_a_non_recoverable_row(client: TestClient) -> None:
+    _create_ws(client)
+    _ingest_fixture(client)
+    rows = client.get("/api/workspaces/beta-test/rejected").json()
+    unknown = next(r for r in rows if r["reason_code"] == "UNKNOWN_SUBDIVISION")
+    resp = client.post(f"/api/workspaces/beta-test/recover/{unknown['row_number']}")
+    assert resp.status_code == 409
+
+
 def test_check_before_ingest_is_404(client: TestClient) -> None:
     _create_ws(client)
     resp = client.post("/api/workspaces/beta-test/check")

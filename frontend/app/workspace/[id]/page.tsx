@@ -13,12 +13,14 @@ import { formatRunId } from "@/lib/schedule";
 import type {
   Assignment,
   CapacityCheck,
+  RejectedRow,
   RunSummary,
   SolveResult,
   WorkspaceMeta,
 } from "@/lib/types";
 
 type Action = "import" | "check" | "solve" | "download";
+type Tab = "runs" | "rejected";
 
 /** Only the ID is stored; rebuild a usable link to the Sheet from it. */
 function sheetUrlFromId(sheetId: string): string {
@@ -35,6 +37,10 @@ export default function WorkspacePage({
 
   const [meta, setMeta] = useState<WorkspaceMeta | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [rejected, setRejected] = useState<RejectedRow[]>([]);
+  const [tab, setTab] = useState<Tab>("runs");
+  /** row_number currently being recovered, so its button shows a spinner. */
+  const [recovering, setRecovering] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -62,6 +68,15 @@ export default function WorkspacePage({
     return sorted;
   }, [workspaceId]);
 
+  const loadRejected = useCallback(async () => {
+    try {
+      setRejected(await api.listRejected(workspaceId));
+    } catch {
+      // No validation report yet (nothing imported) is not an error here.
+      setRejected([]);
+    }
+  }, [workspaceId]);
+
   const loadSchedule = useCallback(
     async (runId: string) => {
       try {
@@ -86,6 +101,7 @@ export default function WorkspacePage({
         const [m, sorted] = await Promise.all([
           api.getWorkspace(workspaceId),
           loadRuns(),
+          loadRejected(),
         ]);
         if (cancelled) return;
         setMeta(m);
@@ -101,7 +117,20 @@ export default function WorkspacePage({
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, loadRuns, loadSchedule]);
+  }, [workspaceId, loadRuns, loadRejected, loadSchedule]);
+
+  const recover = async (row: RejectedRow) => {
+    setRecovering(row.row_number);
+    try {
+      const res = await api.recover(workspaceId, row.row_number);
+      toast.success(res.message);
+      await Promise.all([loadRejected(), loadRuns()]);
+    } catch (err) {
+      toast.fromError(err, "Recover failed.");
+    } finally {
+      setRecovering(null);
+    }
+  };
 
   const runCheck = async () => {
     setBusy("check");
@@ -290,35 +319,60 @@ export default function WorkspacePage({
       {capacity && <CapacityTable check={capacity} />}
 
       <section className="mt-10">
-        <h2 className="mb-3 text-sm font-semibold text-neutral-900">
-          Run history
-        </h2>
-        {runs.length === 0 ? (
-          <EmptyState
-            title="No runs yet"
-            hint="Import applicants, check capacity, then press Schedule! to produce the first timetable."
+        <div className="mb-3 flex items-center gap-1 border-b border-neutral-200">
+          <TabButton active={tab === "runs"} onClick={() => setTab("runs")}>
+            Run history
+          </TabButton>
+          <TabButton
+            active={tab === "rejected"}
+            onClick={() => setTab("rejected")}
+          >
+            Rejected
+            {rejected.length > 0 && (
+              <span className="ml-1.5 rounded-full bg-red-100 px-1.5 text-xs font-semibold text-red-700 tabular-nums">
+                {rejected.length}
+              </span>
+            )}
+          </TabButton>
+        </div>
+
+        {tab === "runs" &&
+          (runs.length === 0 ? (
+            <EmptyState
+              title="No runs yet"
+              hint="Import applicants, check capacity, then press Schedule! to produce the first timetable."
+            />
+          ) : (
+            <ul className="divide-y divide-neutral-200 overflow-hidden rounded-lg border border-neutral-200 bg-white">
+              {runs.map((run, i) => (
+                <li key={run.run_id}>
+                  <Link
+                    href={runHref(run.run_id)}
+                    className="flex items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-neutral-50"
+                  >
+                    <span className="flex-1 font-medium text-neutral-800">
+                      {formatRunId(run.run_id)}
+                    </span>
+                    {i === 0 && <Badge tone="green">latest</Badge>}
+                    {!run.has_assignments && (
+                      <Badge tone="amber">no assignments</Badge>
+                    )}
+                    <span className="font-mono text-xs text-neutral-400">
+                      {run.run_id}
+                    </span>
+                    <span className="text-neutral-300">›</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          ))}
+
+        {tab === "rejected" && (
+          <RejectedTable
+            rows={rejected}
+            recovering={recovering}
+            onRecover={recover}
           />
-        ) : (
-          <ul className="divide-y divide-neutral-200 overflow-hidden rounded-lg border border-neutral-200 bg-white">
-            {runs.map((run, i) => (
-              <li key={run.run_id}>
-                <Link
-                  href={runHref(run.run_id)}
-                  className="flex items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-neutral-50"
-                >
-                  <span className="flex-1 font-medium text-neutral-800">
-                    {formatRunId(run.run_id)}
-                  </span>
-                  {i === 0 && <Badge tone="green">latest</Badge>}
-                  {!run.has_assignments && <Badge tone="amber">no assignments</Badge>}
-                  <span className="font-mono text-xs text-neutral-400">
-                    {run.run_id}
-                  </span>
-                  <span className="text-neutral-300">›</span>
-                </Link>
-              </li>
-            ))}
-          </ul>
         )}
       </section>
 
@@ -349,12 +403,13 @@ export default function WorkspacePage({
           sheetId={meta.sheet_id}
           onSheetLinked={(updated) => setMeta(updated)}
           onClose={() => setShowImport(false)}
-          onDone={(result) =>
+          onDone={(result) => {
             toast.success(
               `Imported ${result.applicants} applicant(s): ${result.rejected} rejected, ` +
                 `${result.collapsed} collapsed, ${result.warnings} warning(s).`,
-            )
-          }
+            );
+            void loadRejected();
+          }}
         />
       )}
 
@@ -456,6 +511,129 @@ function EditSheetModal({
         </div>
       </form>
     </Modal>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`-mb-px flex items-center border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+        active
+          ? "border-neutral-900 text-neutral-900"
+          : "border-transparent text-neutral-500 hover:text-neutral-800"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function RejectedTable({
+  rows,
+  recovering,
+  onRecover,
+}: {
+  rows: RejectedRow[];
+  recovering: number | null;
+  onRecover: (row: RejectedRow) => void;
+}) {
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        title="Nothing rejected"
+        hint="Every imported row passed validation, or no data has been imported yet."
+      />
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white">
+      <table className="w-full text-sm">
+        <thead className="bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500">
+          <tr>
+            {[
+              "CSV Row",
+              "Name",
+              "Email",
+              "Sub-div 1",
+              "Sub-div 2",
+              "Reason",
+              "Recover",
+            ].map((h) => (
+              <th key={h} className="px-4 py-2 text-left font-medium">
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-neutral-100">
+          {rows.map((row) => (
+            <tr key={row.row_number}>
+              <td className="px-4 py-2 font-mono text-xs tabular-nums text-neutral-500">
+                {row.csv_row}
+              </td>
+              <td className="px-4 py-2 font-medium text-neutral-800">
+                {row.full_name || <span className="text-neutral-400">—</span>}
+              </td>
+              <td className="px-4 py-2 text-neutral-700">
+                {row.email || <span className="text-neutral-400">—</span>}
+              </td>
+              <td className="px-4 py-2 text-neutral-700">
+                {row.sub_division_1 || (
+                  <span className="text-neutral-400">—</span>
+                )}
+              </td>
+              <td className="px-4 py-2 text-neutral-700">
+                {row.sub_division_2 || (
+                  <span className="text-neutral-400">—</span>
+                )}
+              </td>
+              <td className="px-4 py-2">
+                <span
+                  className="font-medium text-red-600"
+                  title={row.message}
+                >
+                  {row.reason_code}
+                </span>
+              </td>
+              <td className="px-4 py-2">
+                {row.recoverable ? (
+                  <Button
+                    onClick={() => onRecover(row)}
+                    loading={recovering === row.row_number}
+                    disabled={recovering !== null}
+                  >
+                    Recover
+                  </Button>
+                ) : (
+                  <span
+                    className="text-xs text-neutral-400"
+                    title={
+                      row.reason_code === "MISSING_EMAIL" ||
+                      row.reason_code === "INVALID_EMAIL"
+                        ? "No way to contact this applicant."
+                        : "This row has no division to schedule against."
+                    }
+                  >
+                    Cannot recover
+                  </span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

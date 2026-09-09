@@ -5,8 +5,10 @@ command; the heavy lifting stays in `iff_scheduler` and `api.services`.
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any
 
+import pandas as pd
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -43,7 +45,12 @@ from iff_scheduler.ingest.sheets_source import (
     run_incremental_sheets_ingest,
     write_watermark,
 )
-from iff_scheduler.ingest.validate import append_outputs, run_ingest, write_outputs
+from iff_scheduler.ingest.validate import (
+    append_outputs,
+    is_recoverable,
+    run_ingest,
+    write_outputs,
+)
 from iff_scheduler.scheduling.base import resolve_panels, resolve_rooms
 from iff_scheduler.scheduling.postprocess import build_conflicts
 from iff_scheduler.settings import Settings
@@ -61,6 +68,60 @@ def _ingest_summary(applicants: list[Any], report: list[Any]) -> dict[str, Any]:
         "warnings": sum(1 for r in report if r.outcome == "WARNING"),
         "report": [r.model_dump(mode="json") for r in report],
     }
+
+
+# `row_number`s a human chose to force past a recoverable rejection, kept next
+# to the interim outputs so every re-ingest of the same CSV re-applies them.
+_RECOVERED_ROWS_FILE = "recovered_rows.json"
+
+
+def _recovered_rows_path(workspace_id: str):  # type: ignore[no-untyped-def]
+    return ws.interim_dir(workspace_id) / _RECOVERED_ROWS_FILE
+
+
+def _load_recovered_rows(workspace_id: str) -> set[int]:
+    path = _recovered_rows_path(workspace_id)
+    if not path.exists():
+        return set()
+    try:
+        return {int(x) for x in json.loads(path.read_text(encoding="utf-8"))}
+    except (ValueError, json.JSONDecodeError):
+        return set()
+
+
+def _save_recovered_rows(workspace_id: str, rows: set[int]) -> None:
+    path = _recovered_rows_path(workspace_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(sorted(rows)), encoding="utf-8")
+
+
+def _rejected_from_report(report_path) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
+    """Rejected rows of `validation_report.csv`, shaped for the UI's Rejected
+    tab. Tolerant of an older report written before `csv_row` / the
+    sub-division columns existed."""
+    if not report_path.exists():
+        return []
+    df = pd.read_csv(report_path, dtype=str, keep_default_na=False)
+    out: list[dict[str, Any]] = []
+    for r in df.to_dict(orient="records"):
+        if r.get("outcome") != "REJECTED":
+            continue
+        row_number = int(r["row_number"])
+        code = r.get("reason_code", "")
+        out.append(
+            {
+                "row_number": row_number,
+                "csv_row": int(r["csv_row"]) if r.get("csv_row") else row_number + 1,
+                "full_name": r.get("full_name", ""),
+                "email": r.get("email", ""),
+                "sub_division_1": r.get("sub_division_1", ""),
+                "sub_division_2": r.get("sub_division_2", ""),
+                "reason_code": code,
+                "message": r.get("message", ""),
+                "recoverable": is_recoverable(code),
+            }
+        )
+    return out
 
 
 @router.post("/ingest")
@@ -92,6 +153,10 @@ async def ingest(
         raw_dir.mkdir(parents=True, exist_ok=True)
         raw_path = raw_dir / "upload.csv"
         raw_path.write_bytes(await file.read())
+
+        # A fresh import starts with a clean slate — any rows recovered against
+        # the previous upload no longer apply.
+        _recovered_rows_path(workspace_id).unlink(missing_ok=True)
 
         result = run_ingest(
             source=CsvApplicantSource(path=raw_path),
@@ -149,6 +214,70 @@ async def ingest(
 def check(workspace_id: str, settings: SettingsDep) -> dict[str, Any]:
     resolve_workspace(workspace_id)
     return run_capacity_check(settings, workspace_id)
+
+
+@router.get("/rejected")
+def list_rejected(workspace_id: str) -> list[dict[str, Any]]:
+    """The rejected rows of the latest validation report, for the workspace
+    page's Rejected tab. `recoverable` says whether the "Recover" action
+    applies (a missing/invalid email or an unmappable sub-division cannot be
+    waved through)."""
+    resolve_workspace(workspace_id)
+    return _rejected_from_report(ws.validation_report_path(workspace_id))
+
+
+@router.post("/recover/{row_number}")
+def recover(workspace_id: str, row_number: int, settings: SettingsDep) -> dict[str, Any]:
+    """Force a recoverable rejected row into the clean applicant list and
+    re-run ingest over the stored CSV upload. The committee still has to
+    re-run Schedule! for the recovered applicant to be placed."""
+    resolve_workspace(workspace_id)
+
+    raw_path = ws.raw_dir(workspace_id) / "upload.csv"
+    if not raw_path.exists():
+        raise HTTPException(
+            status_code=409,
+            detail="Recover is only available for CSV imports. Re-import the CSV, then recover.",
+        )
+
+    report_path = ws.validation_report_path(workspace_id)
+    match = next(
+        (r for r in _rejected_from_report(report_path) if r["row_number"] == row_number),
+        None,
+    )
+    if match is None:
+        raise HTTPException(
+            status_code=404, detail=f"Row {row_number} is not in the rejected list."
+        )
+    if not match["recoverable"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Row {row_number} cannot be recovered ({match['reason_code']}).",
+        )
+
+    recovered = _load_recovered_rows(workspace_id)
+    recovered.add(row_number)
+
+    grid = build_slot_grid(settings.event)
+    interim = ws.interim_dir(workspace_id)
+    result = run_ingest(
+        source=CsvApplicantSource(path=raw_path),
+        event=settings.event,
+        divisions=settings.divisions,
+        grid=grid,
+        force_accept_rows=frozenset(recovered),
+    )
+    write_outputs(
+        result,
+        clean_path=interim / "applicants.clean.csv",
+        report_path=report_path,
+    )
+    _save_recovered_rows(workspace_id, recovered)
+
+    summary = _ingest_summary(result.applicants, result.report)
+    summary["recovered_row"] = row_number
+    summary["message"] = "Applicant recovered. Re-run Schedule! to include them."
+    return summary
 
 
 class SolveBody(BaseModel):

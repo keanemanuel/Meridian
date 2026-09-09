@@ -73,7 +73,7 @@ def c8_applies(applicant: Applicant, by_division: dict[DivisionCode, list[Panel]
     infeasible (E-01c) — and, crucially, it is not *scored* either, so a
     single-panel division is not penalised for something it cannot avoid.
     """
-    if applicant.division_1 != applicant.division_2:
+    if applicant.division_2 is None or applicant.division_1 != applicant.division_2:
         return False
     return len(by_division.get(applicant.division_1, [])) >= 2
 

@@ -84,6 +84,28 @@ export type IngestResult = {
   new_rows?: number;
 };
 
+/** `GET /rejected` — one row per rejected applicant in the latest validation
+ * report, for the workspace page's Rejected tab. */
+export type RejectedRow = {
+  /** Internal 1-based data-row index — what `POST /recover/{row_number}` takes. */
+  row_number: number;
+  /** Row number as shown in the source CSV/Sheet (header is line 1). */
+  csv_row: number;
+  full_name: string;
+  email: string;
+  sub_division_1: string;
+  sub_division_2: string;
+  reason_code: string;
+  message: string;
+  /** False for a missing/invalid email or an unmappable sub-division. */
+  recoverable: boolean;
+};
+
+export type RecoverResult = IngestResult & {
+  recovered_row: number;
+  message: string;
+};
+
 export type PublishResult = {
   run_id: string;
   output_dir: string;

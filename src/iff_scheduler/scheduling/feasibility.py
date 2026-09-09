@@ -70,13 +70,15 @@ def _panel_active_slot_ids(
 
 
 def _demand_by_division(applicants: list[Applicant]) -> Counter[DivisionCode]:
-    """Each applicant contributes one interview to each of their two choices'
+    """Each applicant contributes one interview to each of their choices'
     parent divisions — including twice to the same division for a same-parent
-    pair (SPEC.md §1.2 Finding B, E-01)."""
+    pair (SPEC.md §1.2 Finding B, E-01), or just once for a single-choice
+    applicant (`division_2 is None`)."""
     demand: Counter[DivisionCode] = Counter()
     for applicant in applicants:
         demand[applicant.division_1] += 1
-        demand[applicant.division_2] += 1
+        if applicant.division_2 is not None:
+            demand[applicant.division_2] += 1
     return demand
 
 

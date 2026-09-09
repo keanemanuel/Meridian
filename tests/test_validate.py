@@ -66,10 +66,71 @@ def test_duplicate_subdivision_is_rejected() -> None:
     assert any(i.reason_code == "DUPLICATE_SUBDIVISION" and i.outcome == "REJECTED" for i in issues)
 
 
-def test_no_availability_is_rejected() -> None:
+def test_no_availability_is_a_warning_not_a_rejection() -> None:
+    """E-02 relaxed: a blank availability answer is assumed to mean "free for
+    the whole event" and flagged, not dropped."""
     row = _valid_row(availability_slots=[])
     issues = validate_row(row)
-    assert any(i.reason_code == "NO_AVAILABILITY" and i.outcome == "REJECTED" for i in issues)
+    assert any(i.reason_code == "NO_AVAILABILITY" and i.outcome == "WARNING" for i in issues)
+    assert not any(i.outcome == "REJECTED" for i in issues)
+
+
+def test_no_availability_applicant_reaches_clean_list_with_full_availability() -> None:
+    settings = load_settings()
+    grid = build_slot_grid(settings.event)
+    raw = {
+        "Timestamp": "15/08/2026 10:00:00",
+        "Full Name": "No Availability",
+        "Email Address": "noavail@example.com",
+        "Phone Number (WhatsApp)": "+62-812-0000",
+        "First Preference": "Logistics",
+        "Second Preference": "Program",
+        "Preferred Interview Date": "",
+    }
+    result = run_ingest(_InMemorySource([raw]), settings.event, settings.divisions, grid)
+
+    assert [a.email for a in result.applicants] == ["noavail@example.com"]
+    assert result.applicants[0].availability_slots == [s.slot_id for s in grid.slots]
+    assert any(r.reason_code == "NO_AVAILABILITY" and r.outcome == "WARNING" for r in result.report)
+
+
+def test_single_choice_row_is_accepted_with_one_interview() -> None:
+    settings = load_settings()
+    grid = build_slot_grid(settings.event)
+    raw = {
+        "Timestamp": "15/08/2026 10:00:00",
+        "Full Name": "Single Choice",
+        "Email Address": "single@example.com",
+        "Phone Number (WhatsApp)": "+62-812-0001",
+        "First Preference": "Logistics",
+        "Second Preference": "",
+        "Preferred Interview Date": "Thursday, 18 September 2025",
+    }
+    result = run_ingest(_InMemorySource([raw]), settings.event, settings.divisions, grid)
+
+    assert [a.email for a in result.applicants] == ["single@example.com"]
+    applicant = result.applicants[0]
+    assert applicant.single_choice is True
+    assert applicant.division_2 is None
+    assert applicant.sub_division_2 == ""
+    assert not any(r.outcome == "REJECTED" for r in result.report)
+
+
+def test_both_choices_blank_is_still_rejected() -> None:
+    row = _valid_row(sub_division_1="", sub_division_2="", division_1=None, division_2=None)
+    issues = validate_row(row)
+    assert any(i.reason_code == "MISSING_SUBDIVISION" and i.outcome == "REJECTED" for i in issues)
+
+
+def test_same_parent_different_subdivisions_is_not_a_duplicate() -> None:
+    row = _valid_row(
+        sub_division_1="Media Marketing",
+        sub_division_2="Media Documentation",
+        division_1=DivisionCode.MEDMARDOC,
+        division_2=DivisionCode.MEDMARDOC,
+    )
+    issues = validate_row(row)
+    assert not any(i.reason_code == "DUPLICATE_SUBDIVISION" for i in issues)
 
 
 def test_sparse_availability_is_a_warning_not_a_rejection() -> None:
@@ -139,16 +200,18 @@ def test_run_ingest_against_fixture() -> None:
     assert {a.email for a in result.applicants} == {
         "ayu@example.com",
         "bagas@example.com",
+        # Dimas left the availability question blank — no longer a rejection,
+        # assumed free for the whole event instead (E-02 relaxed).
+        "dimas@example.com",
         "eka@example.com",
         "fajar@example.com",
         "hendra@example.com",
     }
-    assert len(result.applicants) == 5
+    assert len(result.applicants) == 6
 
     rejected = {(r.email, r.reason_code) for r in result.report if r.outcome == "REJECTED"}
     assert rejected == {
         ("citra@example.com", "DUPLICATE_SUBDIVISION"),
-        ("dimas@example.com", "NO_AVAILABILITY"),
         ("gita@example.com", "UNKNOWN_SUBDIVISION"),
         ("indah@example.com", "MISSING_FULL_NAME"),
     }
@@ -158,11 +221,9 @@ def test_run_ingest_against_fixture() -> None:
     assert collapsed[0].email == "eka@example.com"
     assert collapsed[0].reason_code == "DUPLICATE_EMAIL"
 
-    # The live form captures availability a whole day at a time (a picked day
-    # is every slot that day), so SPARSE_AVAILABILITY is unreachable from a
-    # real submission — no warnings expected.
-    warnings = [r for r in result.report if r.outcome == "WARNING"]
-    assert warnings == []
+    # The only warning is Dimas's assumed-full availability.
+    warnings = {(r.email, r.reason_code) for r in result.report if r.outcome == "WARNING"}
+    assert warnings == {("dimas@example.com", "NO_AVAILABILITY")}
 
 
 def test_same_parent_pair_yields_two_interviews_not_one() -> None:
@@ -208,22 +269,25 @@ def test_write_outputs_produces_expected_csv_columns(tmp_path: Path) -> None:
         "sub_division_2",
         "division_1",
         "division_2",
+        "single_choice",
         "availability_slots",
         "submitted_at",
         "notes",
     ]
-    assert len(clean_df) == 5
+    assert len(clean_df) == 6
     assert clean_df["applicant_id"].is_unique
 
     report_df = pd.read_csv(report_path, dtype=str, keep_default_na=False)
     assert list(report_df.columns) == [
         "row_number",
+        "csv_row",
         "email",
         "full_name",
+        "sub_division_1",
+        "sub_division_2",
         "outcome",
         "reason_code",
         "message",
     ]
-    # 4 rejections + 1 collapsed duplicate (no sparse-availability warning
-    # now that availability is captured per whole day).
+    # 3 rejections + 1 collapsed duplicate + 1 assumed-full-availability warning.
     assert len(report_df) == 5

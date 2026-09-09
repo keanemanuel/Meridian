@@ -53,11 +53,14 @@ class _Choice:
 
 
 def _choices(applicants: Sequence[Applicant]) -> list[_Choice]:
-    """Both choices always exist, whether or not they share a parent division (C1)."""
+    """One `_Choice` per interview the applicant is owed: two for a normal
+    applicant (whether or not the choices share a parent division, C1), one
+    for a single-choice applicant who picked only one role."""
     out: list[_Choice] = []
     for applicant in applicants:
         out.append(_Choice(applicant, 1, applicant.sub_division_1, applicant.division_1))
-        out.append(_Choice(applicant, 2, applicant.sub_division_2, applicant.division_2))
+        if not applicant.single_choice and applicant.division_2 is not None:
+            out.append(_Choice(applicant, 2, applicant.sub_division_2, applicant.division_2))
     return out
 
 
@@ -382,19 +385,24 @@ class CpSatSolver:
                 terms.append(weights.repeat_panel * repeat)
 
         # W_SPREAD — dead time between an applicant's two interviews (FR-36).
+        # A single-choice applicant has no second interview, so there is no
+        # gap to penalise (the `not placed` break also covers this).
         last_index = len(problem.slots) - 1
         for applicant in problem.applicants:
             positions = []
             for choice_index in (1, 2):
-                placed = [
-                    var
-                    for panel in by_division.get(
-                        applicant.division_1 if choice_index == 1 else applicant.division_2, []
-                    )
-                    for var in vars_by_choice_panel.get(
-                        (applicant.applicant_id, choice_index, panel.id), []
-                    )
-                ]
+                division = applicant.division_1 if choice_index == 1 else applicant.division_2
+                placed = (
+                    [
+                        var
+                        for panel in by_division.get(division, [])
+                        for var in vars_by_choice_panel.get(
+                            (applicant.applicant_id, choice_index, panel.id), []
+                        )
+                    ]
+                    if division is not None
+                    else []
+                )
                 if not placed:
                     break
                 position = model.new_int_var(

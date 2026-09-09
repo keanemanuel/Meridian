@@ -177,6 +177,11 @@ def validate_problem(problem: SolveProblem) -> None:
                 "active then (C7)."
             )
         wanted = applicant.division_1 if lock.choice_index == 1 else applicant.division_2
+        if wanted is None:
+            raise ValueError(
+                f"Lock pins {lock.applicant_id}/choice {lock.choice_index}, but that "
+                "applicant is single-choice and has no second interview."
+            )
         if locked_panel.division != wanted:
             raise ValueError(
                 f"Lock pins {lock.applicant_id}/choice {lock.choice_index} "

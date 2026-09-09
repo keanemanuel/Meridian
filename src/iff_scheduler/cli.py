@@ -302,6 +302,11 @@ def _load_clean_applicants(path: Path) -> list[Applicant]:
     df = pd.read_csv(path, dtype=str, keep_default_na=False, na_filter=False)
     applicants = []
     for row in df.to_dict(orient="records"):
+        division_2_raw = str(row.get("division_2", "")).strip()
+        single_choice = (
+            str(row.get("single_choice", "")).strip().lower() in {"true", "1", "yes"}
+            or not division_2_raw
+        )
         applicants.append(
             Applicant(
                 applicant_id=row["applicant_id"],
@@ -310,9 +315,10 @@ def _load_clean_applicants(path: Path) -> list[Applicant]:
                 phone=row["phone"],
                 student_id=row.get("student_id", ""),
                 sub_division_1=row["sub_division_1"],
-                sub_division_2=row["sub_division_2"],
+                sub_division_2=row.get("sub_division_2", "") or "",
                 division_1=DivisionCode(row["division_1"]),
-                division_2=DivisionCode(row["division_2"]),
+                division_2=DivisionCode(division_2_raw) if division_2_raw else None,
+                single_choice=single_choice,
                 availability_slots=[s for s in row["availability_slots"].split("|") if s],
                 submitted_at=datetime.fromisoformat(row["submitted_at"]),
                 notes=row["notes"] or None,

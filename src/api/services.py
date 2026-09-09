@@ -178,7 +178,7 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
         "status": result.status,
         "phase": result.phase,
         "interviews_placed": len(result.assignments),
-        "interviews_required": 2 * len(applicants),
+        "interviews_required": int(metrics["interviews_required"]),
         "clashes": result.clash_count,
         "locked": int(metrics["locked"]),
         "objective_value": result.objective_value,

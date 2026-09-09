@@ -72,9 +72,13 @@ class Applicant(BaseModel):
     phone: str
     student_id: str = ""
     sub_division_1: str
-    sub_division_2: str
+    # Blank for a single-choice applicant (see `single_choice`).
+    sub_division_2: str = ""
     division_1: DivisionCode
-    division_2: DivisionCode
+    # `None` for a single-choice applicant — they picked only one role and get
+    # one interview, not two. Every other applicant has both.
+    division_2: DivisionCode | None = None
+    single_choice: bool = False
     availability_slots: list[str]
     submitted_at: datetime
     notes: str | None = None

@@ -57,15 +57,17 @@ def build_conflicts(
         theirs = per_applicant.get(applicant.applicant_id, [])
 
         # Unfilled requirement — a C1 violation, which should be impossible on a
-        # feasible solve, so it is reported loudly rather than assumed away.
-        if len(theirs) != 2:
+        # feasible solve, so it is reported loudly rather than assumed away. A
+        # single-choice applicant is owed one interview, not two.
+        expected = 1 if applicant.single_choice else 2
+        if len(theirs) != expected:
             conflicts.append(
                 Conflict(
                     applicant_id=applicant.applicant_id,
                     severity=Severity.RED,
                     type="UNFILLED",
                     message=(
-                        f"{len(theirs)} interview(s) scheduled, expected 2 "
+                        f"{len(theirs)} interview(s) scheduled, expected {expected} "
                         "(FR-30 is a hard guarantee)."
                     ),
                 )
@@ -89,7 +91,10 @@ def build_conflicts(
                 )
 
         # E-01c: a same-parent pair whose division has only one panel sees that
-        # panel twice. Legal, but the recruiter should brief the panel.
+        # panel twice. Legal, but the recruiter should brief the panel. Only
+        # applies when there are two interviews to compare.
+        if len(theirs) != 2:
+            continue
         first, second = sorted(theirs, key=lambda a: a.choice_index)
         if first.panel_id == second.panel_id:
             panel_count = len(by_division.get(applicant.division_1, []))
@@ -159,11 +164,15 @@ def compute_metrics(result: SolveResult, problem: SolveProblem) -> dict[str, Any
         "objective_value": result.objective_value,
         "objective_breakdown": breakdown.as_dict(),
         "applicants": len(problem.applicants),
-        "interviews_required": 2 * len(problem.applicants),
+        "interviews_required": sum(1 if a.single_choice else 2 for a in problem.applicants),
         "interviews_placed": len(result.assignments),
         "clashes": result.clash_count,
         "locked": sum(1 for a in result.assignments if a.is_locked),
-        "same_parent_pairs": sum(1 for a in problem.applicants if a.division_1 == a.division_2),
+        "same_parent_pairs": sum(
+            1
+            for a in problem.applicants
+            if a.division_2 is not None and a.division_1 == a.division_2
+        ),
         "slots": len(problem.slots),
         "panels": len(problem.panels),
         "per_division_interviews": dict(sorted(per_division.items())),
