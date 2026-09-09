@@ -167,11 +167,7 @@ def patch_workspace_name(workspace_id: str, body: WorkspaceRename) -> WorkspaceM
         return rename_workspace(workspace_id, body.name)
     except ValueError as exc:
         message = str(exc)
-        code = (
-            status.HTTP_404_NOT_FOUND
-            if "not found" in message
-            else status.HTTP_409_CONFLICT
-        )
+        code = status.HTTP_404_NOT_FOUND if "not found" in message else status.HTTP_409_CONFLICT
         raise HTTPException(status_code=code, detail=message) from exc
 
 

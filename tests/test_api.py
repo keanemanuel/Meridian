@@ -5,9 +5,10 @@ routing, status codes, the {detail: ...} error shape, and that a run
 produced through HTTP is the same shape the CLI writes. The scheduling logic
 itself is covered by the `iff_scheduler` test suite.
 
-Isolation: every test chdirs into a tmp dir, so `data/workspaces/...` (all
-relative paths in `iff_scheduler.workspace`) lands under tmp and never
-touches the real repo data.
+Isolation: every test points IFFSCHED_DATA_DIR at a tmp dir, so every path
+in `iff_scheduler.workspace` lands under tmp and never touches the real repo
+data. (It also chdirs, which keeps any remaining relative path in the same
+place.)
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ FIXTURE_CSV = Path(__file__).parent / "fixtures" / "applicants_raw.csv"
 
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setenv("IFFSCHED_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.chdir(tmp_path)
     return TestClient(app)
 
@@ -303,3 +305,100 @@ def test_notify_result_preview_without_scores_is_404(client: TestClient) -> None
     resp = client.post(f"/api/workspaces/beta-test/runs/{run_id}/notify/result/preview")
     assert resp.status_code == 404
     assert "scores" in resp.json()["detail"].lower()
+
+
+# --------------------------------------------------------------- rename / delete
+
+
+def test_rename_workspace_moves_its_data_with_it(client: TestClient) -> None:
+    _create_ws(client, "before")
+    _ingest_fixture(client, "before")
+
+    renamed = client.patch("/api/workspaces/before", json={"name": "after"})
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "after"
+
+    assert client.get("/api/workspaces/before").status_code == 404
+    assert client.get("/api/workspaces/after").status_code == 200
+    # The applicants moved too, so the pipeline still works under the new name.
+    assert client.post("/api/workspaces/after/check").status_code == 200
+
+
+def test_rename_onto_an_existing_name_is_a_409(client: TestClient) -> None:
+    _create_ws(client, "one")
+    _create_ws(client, "two")
+    clash = client.patch("/api/workspaces/one", json={"name": "two"})
+    assert clash.status_code == 409
+    assert "already exists" in clash.json()["detail"]
+
+
+def test_rename_unknown_workspace_is_a_404(client: TestClient) -> None:
+    missing = client.patch("/api/workspaces/nope", json={"name": "whatever"})
+    assert missing.status_code == 404
+
+
+def test_live_submission_workspaces_cannot_be_deleted(client: TestClient) -> None:
+    """The UI hides the button; the rule is enforced here so it cannot be
+    clicked past from outside the UI."""
+    _create_ws(client, "IFF 2026", group="IFF Submissions")
+    refused = client.delete("/api/workspaces/IFF 2026")
+    assert refused.status_code == 403
+    assert refused.json()["detail"] == "Live submission workspaces cannot be deleted."
+    assert client.get("/api/workspaces/IFF 2026").status_code == 200
+
+
+def test_a_live_submission_workspace_can_still_be_renamed(client: TestClient) -> None:
+    _create_ws(client, "IFF 2026", group="IFF Submissions")
+    renamed = client.patch("/api/workspaces/IFF 2026", json={"name": "IFF 2027"})
+    assert renamed.status_code == 200
+    assert renamed.json()["group"] == "IFF Submissions"
+
+
+# --------------------------------------------------------------- sheets export
+
+
+def test_export_without_service_account_credentials_is_a_409(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_FILE", raising=False)
+    _create_ws(client)
+    _ingest_fixture(client)
+    client.post("/api/workspaces/beta-test/solve")
+
+    refused = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+    assert refused.status_code == 409
+    assert "GOOGLE_SERVICE_ACCOUNT_FILE" in refused.json()["detail"]
+
+
+def test_export_builds_a_shared_sheet_from_the_latest_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end over HTTP with gspread faked out: the point is that the run
+    resolves, the tabs come out per day, and the Sheet URL comes back."""
+    from tests.test_sheets_export import _FakeClient
+
+    fake = _FakeClient()
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_FILE", "/dev/null")
+    monkeypatch.setattr("api.routers.export.open_export_client", lambda _path: fake)
+
+    _create_ws(client)
+    _ingest_fixture(client)
+    solved = client.post("/api/workspaces/beta-test/solve")
+    assert solved.status_code == 200
+
+    exported = client.post("/api/workspaces/beta-test/runs/latest/export/sheets")
+    assert exported.status_code == 200
+    body = exported.json()
+    assert body["sheet_url"] == "https://docs.google.com/spreadsheets/d/sheet-123"
+    assert body["tabs"]
+    assert body["rows_written"] > 0
+    assert fake.created[0].shares == [(None, "anyone", "reader")]
+
+
+def test_export_of_an_unknown_run_is_a_404(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_FILE", "/dev/null")
+    _create_ws(client)
+    missing = client.post("/api/workspaces/beta-test/runs/2020-01-01T00-00-00/export/sheets")
+    assert missing.status_code == 404

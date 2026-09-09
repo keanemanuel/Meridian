@@ -93,3 +93,36 @@ def resolve_run_dir(workspace_id: str, run_id: str) -> Path:
             detail=f"Run '{run_id}' not found for workspace '{workspace_id}'.",
         )
     return run_dir
+
+
+def run_dir_if_present(workspace_id: str, run_id: str) -> Path | None:
+    """The run's directory when it is on this machine's disk, else None.
+
+    In Supabase mode the run directory is a local artefact, not the record: a
+    run solved before a redeploy (Railway's filesystem is ephemeral) or on a
+    different instance has its rows in Postgres and no directory here.
+    Requiring the directory there turned every such run into a 404 the moment
+    it was opened, edited or re-solved.
+    """
+    resolve_workspace(workspace_id)
+    run_dir = ws.runs_dir(workspace_id) / run_id
+    return run_dir if run_dir.exists() else None
+
+
+def ensure_run_exists(workspace_id: str, run_id: str) -> str:
+    """404 unless the run exists in whichever store is live, and return its
+    resolved label ('latest' resolved to the real one)."""
+    if supabase_enabled():
+        from iff_scheduler.db import run_repo
+
+        row = run_repo.get_run(workspace_pk(workspace_id), run_id)
+        if row is not None:
+            return str(row["run_label"])
+
+    run_dir = run_dir_if_present(workspace_id, run_id)
+    if run_dir is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Run '{run_id}' not found for workspace '{workspace_id}'.",
+        )
+    return run_dir.resolve().name

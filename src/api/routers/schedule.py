@@ -21,7 +21,13 @@ from api.cli_helpers import (
     load_locks,
     write_locks,
 )
-from api.dependencies import get_settings, resolve_run_dir, resolve_run_pk
+from api.dependencies import (
+    ensure_run_exists,
+    get_settings,
+    resolve_run_dir,
+    resolve_run_pk,
+    run_dir_if_present,
+)
 from api.services import execute_solve
 from iff_scheduler import workspace as ws
 from iff_scheduler.db import supabase_enabled
@@ -72,9 +78,19 @@ def patch_assignment(
     body: AssignmentEdit,
     settings: SettingsDep,
 ) -> dict[str, Any]:
-    run_dir = resolve_run_dir(workspace_id, run_id)
-    path = run_dir / "assignments.csv"
-    if not path.exists():
+    db_mode = supabase_enabled()
+    # The run directory is an artefact, not the record. In Supabase mode a run
+    # persisted before a redeploy has no directory on this instance, and
+    # insisting on one made every edit to it a 404.
+    run_dir = (
+        run_dir_if_present(workspace_id, run_id)
+        if db_mode
+        else resolve_run_dir(workspace_id, run_id)
+    )
+    if db_mode:
+        ensure_run_exists(workspace_id, run_id)
+    path = (run_dir / "assignments.csv") if run_dir is not None else None
+    if not db_mode and (path is None or not path.exists()):
         raise HTTPException(status_code=404, detail=f"{path} not found — solve first.")
 
     grid = build_slot_grid(settings.event)
@@ -88,13 +104,13 @@ def patch_assignment(
     if body.slot_id not in slots_by_id:
         raise HTTPException(status_code=422, detail=f"Slot '{body.slot_id}' is not on the grid.")
 
-    db_mode = supabase_enabled()
     if db_mode:
         from iff_scheduler.db import assignment_repo
 
         run_pk = resolve_run_pk(workspace_id, run_id)
         assignments = assignment_repo.list_assignments(run_pk)
     else:
+        assert path is not None
         assignments = load_assignments(path)
     target = next((a for a in assignments if _assignment_id(a) == assignment_id), None)
     if target is None:
@@ -146,7 +162,7 @@ def patch_assignment(
             },
         )
 
-    if path.exists():
+    if path is not None and path.exists():
         assignments_frame(edited_list).to_csv(path, index=False)
     if db_mode:
         from iff_scheduler.db import assignment_repo
@@ -193,6 +209,6 @@ def resolve(
     body: ResolveBody | None = None,
 ) -> dict[str, Any]:
     """Re-solve honouring every lock (C6). Writes a fresh run directory."""
-    resolve_run_dir(workspace_id, run_id)
+    ensure_run_exists(workspace_id, run_id)
     body = body or ResolveBody()
     return execute_solve(settings, workspace_id, skip_check=body.skip_check)

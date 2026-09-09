@@ -17,6 +17,7 @@ from api.dependencies import (
     get_settings,
     resolve_run_dir,
     resolve_workspace,
+    run_dir_if_present,
     workspace_pk,
 )
 from api.services import execute_solve, read_run_metrics, run_capacity_check
@@ -234,10 +235,13 @@ def list_runs(workspace_id: str) -> list[dict[str, Any]]:
     if supabase_enabled():
         from iff_scheduler.db import run_repo
 
+        # `has_assignments` comes from the run's own metrics rather than being
+        # hard-coded True: a run that solved but persisted nothing would
+        # otherwise be offered in the history and then open empty.
         return [
             {
                 "run_id": row["run_label"],
-                "has_assignments": True,
+                "has_assignments": int((row.get("metrics") or {}).get("interviews_placed", 0)) > 0,
                 "created_at": row.get("created_at") or row["run_label"],
             }
             for row in run_repo.list_runs(workspace_pk(workspace_id))
@@ -266,6 +270,12 @@ def get_run(workspace_id: str, run_id: str) -> dict[str, Any]:
 
         row = run_repo.get_run(workspace_pk(workspace_id), run_id)
         if row is None:
+            # A run written while the DB was unreachable still has its
+            # directory on disk; fall back to it rather than 404ing on a run
+            # the history list happily shows.
+            local = run_dir_if_present(workspace_id, run_id)
+            if local is not None:
+                return read_run_metrics(local)
             raise HTTPException(
                 status_code=404,
                 detail=f"Run '{run_id}' not found for workspace '{workspace_id}'.",
