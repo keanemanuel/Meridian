@@ -22,6 +22,7 @@ from iff_scheduler.domain.enums import DivisionCode
 from iff_scheduler.domain.grid import SlotGrid
 from iff_scheduler.domain.models import Applicant
 from iff_scheduler.settings import (
+    ROOM_CONCURRENCY_CEILING,
     ActiveWindow,
     EventConfig,
     PanelEntry,
@@ -430,11 +431,12 @@ def autoscale_panels(
         return settings, notes
 
     augmented = settings.model_copy(update={"panels": PanelsConfig(panels=panels)})
+    augmented, balance_messages = balance_panel_rooms(augmented, grid)
     messages = [
         f"Auto-scaled {division.value}: added {count} panel(s)"
         for division, count in sorted(added.items(), key=lambda kv: kv[0].value)
     ]
-    return augmented, messages + notes
+    return augmented, messages + notes + balance_messages
 
 
 def _event_day_labels(event: EventConfig) -> dict[Date, str]:
@@ -619,13 +621,11 @@ def rebalance_panels(
     current, consolidation_messages = consolidate_panels(
         current, applicants, grid, threshold=threshold, max_rounds=max_rounds
     )
-    return current, messages + consolidation_messages
-
-
-# Most interviews an even split may leave on one panel before that panel is
-# "near-empty" and worth folding into a sibling (Part 2). One or two interviews
-# tie up an interviewer set a sibling panel of the same division could absorb.
-CONSOLIDATE_MAX_INTERVIEWS = 2
+    # Finally even out the panel COUNT per room so the load-balancer's
+    # sequential room-fill doesn't leave one room at the ceiling while another
+    # holds a single baseline panel.
+    current, balance_messages = balance_panel_rooms(current, grid)
+    return current, messages + consolidation_messages + balance_messages
 
 
 def _is_scaled_panel(panel: PanelEntry) -> bool:
@@ -653,17 +653,21 @@ def consolidate_panels(
     threshold: float = REBALANCE_THRESHOLD,
     max_rounds: int = 64,
 ) -> tuple[Settings, list[str]]:
-    """Fold a near-empty load-balanced panel back into its same-division
+    """Fold a redundant load-balanced panel back into its same-division
     siblings *before* the solve (Part 2).
 
-    After `rebalance_panels`/`autoscale_panels` have grown a division/day, an
-    even split of that evening's load can still leave one panel carrying only
-    1-2 interviews while a sibling panel of the same division that evening (a
-    different room, per the room-exclusivity rule) still has slack. When the
-    siblings can absorb that load and stay at or under `threshold` utilisation,
-    drop the small panel — freeing its room for another division — keeping the
-    lower-numbered rooms. Only panels the load-balancer added (`origin ==
-    "balanced"`) are ever removed; a committed baseline panel is never touched.
+    After `rebalance_panels`/`autoscale_panels` have grown a division/day, a
+    load-balanced panel is redundant whenever **every other same-division panel
+    that evening, taken together across all rooms**, can still absorb the whole
+    evening's demand at or under `threshold` utilisation. The check is global:
+    it does not care how an even split would look or which specific pair of
+    panels sit together — a panel the solve would leave with one interview
+    while a sibling in another room has spare capacity is exactly this case.
+    When a panel is redundant, drop it — freeing its room for another division
+    — removing the one in the highest-numbered room so the load-balancer's
+    sequential room-fill keeps the low ones. Only panels the load-balancer
+    added (`origin == "balanced"`) are ever removed; a committed baseline panel
+    is never touched.
 
     Purely a soft optimisation: when no clean merge exists the panel stays, so
     no hard constraint (the room ceiling from Part 1, room-exclusivity,
@@ -695,9 +699,8 @@ def consolidate_panels(
             n = counts_dd[(division, day)]
             if n < 2 or need <= 0:
                 continue
-            per_panel = need / n
-            if per_panel > CONSOLIDATE_MAX_INTERVIEWS:
-                continue  # nobody is near-empty on an even split
+            # Every same-division balanced panel that evening, across every
+            # room — the pool a redundant panel's load can fold into.
             removable = [
                 p
                 for p in panels
@@ -713,8 +716,8 @@ def consolidate_panels(
                 (division, day), 0
             )
             if cap_after <= 0 or need / cap_after > threshold:
-                continue  # siblings can't absorb it under the threshold — leave it
-            victim, chosen = candidate, (division, day, n, per_panel)
+                continue  # the remaining panels genuinely need this one — leave it
+            victim, chosen = candidate, (division, day, n, need / n)
             break
 
         if victim is None or chosen is None:
@@ -731,3 +734,110 @@ def consolidate_panels(
     if not messages:
         return settings, []
     return settings.model_copy(update={"panels": PanelsConfig(panels=panels)}), messages
+
+
+# Target band for panels sharing a room on one evening. 240 interviews / 24
+# slots ~ 10-12 concurrent panels over 6-ish rooms lands each room at 3-4;
+# the balancing pass aims here but never forces a room past the hard ceiling.
+_ROOM_PANEL_TARGET_LOW = 3
+_ROOM_PANEL_TARGET_HIGH = 4
+
+
+def balance_panel_rooms(
+    settings: Settings,
+    grid: SlotGrid,
+    *,
+    max_moves: int = 256,
+) -> tuple[Settings, list[str]]:
+    """Even out the *number of panels per room* on each evening.
+
+    `_pick_panel_room` fills rooms in config order, so a division that splits
+    several times stacks the first few rooms to the ceiling while a room whose
+    only panel is a lonely baseline (e.g. CREATIVE / LIAISON in a room booked
+    both evenings) is never touched — 5 panels in one room, 1-2 in the next.
+
+    This pass repeatedly moves a single load-balanced panel (`origin ==
+    "balanced"` — a committed baseline panel never moves) from the fullest room
+    that evening into the emptiest, until no room is at least two panels
+    heavier than another it could shed onto. Every move is checked against the
+    hard constraints and is skipped if it would break one:
+
+    * the room ceiling — `min(max_concurrent_panels, ROOM_CONCURRENCY_CEILING)`;
+    * room-exclusivity — a division never runs two panels in one room on a day;
+    * room availability — the target room must be open that evening and list
+      the division.
+
+    A moved panel has its `active_windows` pinned to that evening so a panel
+    that lands in a room booked both evenings still runs on one day only. The
+    panel *set* is unchanged — this only relabels rooms — so capacity and
+    feasibility are untouched. Returns the (possibly unchanged) settings and a
+    one-line summary when anything moved.
+    """
+    rooms = settings.rooms
+    room_dates = _room_dates(rooms, grid)
+    event_dates = {d.date for d in settings.event.days}
+
+    panels: list[PanelEntry] = list(settings.panels.panels)
+    moves = 0
+
+    for day in sorted(event_dates):
+        open_rooms = [r for r in rooms.rooms if day in room_dates.get(r.id, event_dates)]
+        if len(open_rooms) < 2:
+            continue
+        ceiling = {r.id: min(r.max_concurrent_panels, ROOM_CONCURRENCY_CEILING) for r in open_rooms}
+        hosts = {r.id: set(r.divisions) for r in open_rooms}
+
+        while moves < max_moves:
+            running = [
+                i
+                for i, p in enumerate(panels)
+                if _panel_runs_on_day(p, day, room_dates, event_dates)
+            ]
+            by_room: dict[str, list[int]] = defaultdict(list)
+            for i in running:
+                by_room[panels[i].room].append(i)
+            counts = {r.id: len(by_room.get(r.id, [])) for r in open_rooms}
+
+            applied = False
+            for donor in sorted(open_rooms, key=lambda r: -counts[r.id]):
+                for recipient in sorted(open_rooms, key=lambda r: counts[r.id]):
+                    if recipient.id == donor.id:
+                        continue
+                    if counts[donor.id] - counts[recipient.id] < 2:
+                        continue
+                    if counts[recipient.id] + 1 > ceiling[recipient.id]:
+                        continue
+                    here = {panels[j].division for j in by_room.get(recipient.id, [])}
+                    pick = next(
+                        (
+                            j
+                            for j in by_room.get(donor.id, [])
+                            if panels[j].origin == "balanced"
+                            and panels[j].division not in here
+                            and panels[j].division in hosts[recipient.id]
+                        ),
+                        None,
+                    )
+                    if pick is None:
+                        continue
+                    panels[pick] = panels[pick].model_copy(
+                        update={
+                            "room": recipient.id,
+                            "active_windows": [_day_window(settings.event, day)],
+                        }
+                    )
+                    moves += 1
+                    applied = True
+                    break
+                if applied:
+                    break
+            if not applied:
+                break
+
+    if moves == 0:
+        return settings, []
+    return settings.model_copy(update={"panels": PanelsConfig(panels=panels)}), [
+        f"Balanced panel rooms: moved {moves} load-balanced panel(s) so each room "
+        f"holds ~{_ROOM_PANEL_TARGET_LOW}-{_ROOM_PANEL_TARGET_HIGH} panels per evening "
+        "instead of stacking the first rooms to the ceiling."
+    ]

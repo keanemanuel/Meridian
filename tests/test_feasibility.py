@@ -16,6 +16,7 @@ from iff_scheduler.domain.models import Applicant
 from iff_scheduler.scheduling.feasibility import (
     REBALANCE_THRESHOLD,
     autoscale_panels,
+    balance_panel_rooms,
     compute_capacity_advisor,
     consolidate_panels,
     is_feasible,
@@ -352,10 +353,12 @@ def test_rebalance_splits_before_panels_pack_past_the_threshold() -> None:
 
     scaled, messages = rebalance_panels(settings, applicants, grid)
 
-    assert messages, "expected at least one rebalance split"
-    assert all(m.startswith("Rebalanced CREATIVE") for m in messages)
-    parsed = [_rebalance_msg.match(m) for m in messages]
-    assert all(p is not None for p in parsed), messages
+    # `rebalance_panels` also appends a "Balanced panel rooms" line; the split
+    # log is the subset that matches the rebalance format.
+    split_messages = [m for m in messages if _rebalance_msg.match(m)]
+    assert split_messages, "expected at least one rebalance split"
+    assert all(m.startswith("Rebalanced CREATIVE") for m in split_messages)
+    parsed = [_rebalance_msg.match(m) for m in split_messages]
     steps = [(int(p.group(1)), int(p.group(2)), int(p.group(3))) for p in parsed]
     for before, after, each in steps:
         assert after == before + 1  # one panel at a time, per evening
@@ -364,7 +367,7 @@ def test_rebalance_splits_before_panels_pack_past_the_threshold() -> None:
     # Each evening's panel count climbs 1 -> 2 -> 3 ..., never skipping.
     for day_label in ("Thu", "Fri"):
         befores = [
-            b for (b, _a, _e), m in zip(steps, messages, strict=True) if f"({day_label})" in m
+            b for (b, _a, _e), m in zip(steps, split_messages, strict=True) if f"({day_label})" in m
         ]
         assert befores == list(range(1, 1 + len(befores)))
 
@@ -537,3 +540,100 @@ def test_consolidate_never_removes_a_committed_baseline_panel() -> None:
     assert messages == []
     assert consolidated is base
     assert any(p.id == "FNB-A1" for p in consolidated.panels.panels)
+
+
+def test_consolidate_folds_a_panel_an_even_split_would_not_flag_as_near_empty() -> None:
+    """A balanced panel whose same-division panels — across every room — can
+    still absorb the whole evening under the threshold is folded even when an
+    even split across the panels looks comfortably balanced (3+ interviews
+    each). The trigger is global spare capacity, not the per-panel headcount an
+    even split implies."""
+    base = load_settings()
+    grid = build_slot_grid(base.event)
+    thu = base.event.days[0].date
+    thu_slots = [s.slot_id for s in grid.slots if s.date == thu]
+    n_thu = len(thu_slots)
+
+    panels = list(base.panels.panels) + [
+        PanelEntry(
+            id="FNB-A2",
+            division=DivisionCode.FNB,
+            room="3013",
+            active_windows=[ActiveWindow(date=thu, start=time(18, 30), end=time(21, 30))],
+            origin="balanced",
+        )
+    ]
+    settings = base.model_copy(update={"panels": PanelsConfig(panels=panels)})
+
+    # Demand one interview short of a single full-day panel at the threshold:
+    # an even split across the two panels is ~3 each — well past the old
+    # "1-2 interviews" near-empty bar — yet FNB-A1 alone still sits under it.
+    demand = int(n_thu * REBALANCE_THRESHOLD) - 1
+    applicants = [
+        _applicant(f"F{i}", DivisionCode.FNB, DivisionCode.PROGRAM, thu_slots)
+        for i in range(demand)
+    ]
+
+    consolidated, messages = consolidate_panels(settings, applicants, grid)
+
+    assert any(m.startswith("Consolidated FNB (Thu)") for m in messages)
+    assert not any(p.id == "FNB-A2" for p in consolidated.panels.panels)
+    assert any(p.id == "FNB-A1" for p in consolidated.panels.panels)
+
+
+# ---- per-room panel-count balancing ----
+
+
+def _panels_per_room_on_day(settings, day: date) -> dict[str, int]:
+    all_dates = {d.date for d in settings.event.days}
+    room_days = {r.id: (set(r.days) if r.days else set(all_dates)) for r in settings.rooms.rooms}
+    counts: Counter[str] = Counter()
+    for p in settings.panels.panels:
+        days = room_days.get(p.room, set(all_dates))
+        if p.active_windows:
+            days = days & {w.date for w in p.active_windows}
+        if day in days & all_dates:
+            counts[p.room] += 1
+    return dict(counts)
+
+
+def test_balance_panel_rooms_evens_out_a_stacked_evening() -> None:
+    """`_pick_panel_room`'s sequential fill can pile several load-balanced
+    panels into the first room while a room whose only panel is a lone baseline
+    is left alone. The balancing pass moves the movable ones out until no room
+    is 2+ panels heavier than another, never breaching the ceiling or
+    room-exclusivity, and never relocating a committed baseline panel."""
+    base = load_settings()
+    grid = build_slot_grid(base.event)
+    thu = base.event.days[0].date
+    win = [ActiveWindow(date=thu, start=time(18, 30), end=time(21, 30))]
+
+    stacked = list(base.panels.panels) + [
+        PanelEntry(id=pid, division=div, room="2016", active_windows=win, origin="balanced")
+        for pid, div in [
+            ("FNB-A2", DivisionCode.FNB),
+            ("LOGISTICS-A2", DivisionCode.LOGISTICS),
+            ("MEDMARDOC-A2", DivisionCode.MEDMARDOC),
+            ("LIAISON-A2", DivisionCode.LIAISON),
+        ]
+    ]
+    settings = base.model_copy(update={"panels": PanelsConfig(panels=stacked)})
+    assert _panels_per_room_on_day(settings, thu)["2016"] == 5
+
+    balanced, messages = balance_panel_rooms(settings, grid)
+
+    counts = _panels_per_room_on_day(balanced, thu)
+    assert max(counts.values()) - min(counts.values()) <= 1
+    assert max(counts.values()) <= ROOM_CONCURRENCY_CEILING
+    assert _same_division_room_day_collisions(balanced) == []
+    assert any(m.startswith("Balanced panel rooms") for m in messages)
+
+    baseline_room = {p.id: p.room for p in base.panels.panels}
+    for p in balanced.panels.panels:
+        if p.origin == "config":
+            assert p.room == baseline_room[p.id]
+
+    # Idempotent: a second pass over an already-even set moves nothing.
+    again, again_messages = balance_panel_rooms(balanced, grid)
+    assert again is balanced
+    assert again_messages == []
