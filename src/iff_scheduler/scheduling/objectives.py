@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date as Date
 
 from iff_scheduler.domain.enums import DivisionCode
 from iff_scheduler.domain.models import Applicant, Assignment, Panel, Slot
@@ -168,14 +169,14 @@ def score_schedule(
     clashes = 0
     lateness = 0
     per_applicant: dict[str, list[Assignment]] = defaultdict(list)
-    load: dict[str, int] = {panel.id: 0 for panel in panels}
+    load: dict[tuple[str, Date], int] = defaultdict(int)
 
     for assignment in assignments:
         if assignment.slot_id not in availability.get(assignment.applicant_id, set()):
             clashes += 1
         lateness += slot_index[assignment.slot_id]
         per_applicant[assignment.applicant_id].append(assignment)
-        load[assignment.panel_id] = load.get(assignment.panel_id, 0) + 1
+        load[(assignment.panel_id, assignment.date)] += 1
 
     repeat_panels = 0
     spread_slots = 0
@@ -198,12 +199,26 @@ def score_schedule(
         if first.panel_id == second.panel_id and c8_applies(applicant, by_division):
             repeat_panels += 1
 
+    # W_BALANCE — per (division, day) load spread across the division's panels
+    # that run that evening; mirrors solver_cpsat._build_objective exactly. A
+    # panel with no active slot on a day is left out of that day's group, so a
+    # single-evening overflow panel is never charged for its empty evening.
+    event_dates = sorted({slot.date for slot in slots})
+    slot_date = {slot.slot_id: slot.date for slot in slots}
+    panel_active_dates: dict[str, set[Date]] = {
+        panel.id: {slot_date[sid] for sid in panel.active_slot_ids if sid in slot_date}
+        for panel in panels
+    }
     balance_spread = 0
     for division_panels in by_division.values():
         if len(division_panels) < 2:
             continue
-        loads = [load[panel.id] for panel in division_panels]
-        balance_spread += max(loads) - min(loads)
+        for day in event_dates:
+            running = [p for p in division_panels if day in panel_active_dates[p.id]]
+            if len(running) < 2:
+                continue
+            loads = [load.get((panel.id, day), 0) for panel in running]
+            balance_spread += max(loads) - min(loads)
 
     return ObjectiveBreakdown(
         clashes=clashes,

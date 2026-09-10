@@ -139,7 +139,7 @@ class CpSatSolver:
         vars_by_choice_day: dict[tuple[str, ChoiceIndex, Date], list[cp_model.IntVar]] = (
             defaultdict(list)
         )
-        vars_by_panel: dict[str, list[cp_model.IntVar]] = defaultdict(list)
+        vars_by_panel_day: dict[tuple[str, Date], list[cp_model.IntVar]] = defaultdict(list)
 
         for choice in choices:
             applicant_id = choice.applicant.applicant_id
@@ -161,7 +161,7 @@ class CpSatSolver:
                     vars_by_applicant_slot[(applicant_id, slot.slot_id)].append(var)
                     vars_by_choice_panel[(applicant_id, choice.choice_index, panel.id)].append(var)
                     vars_by_choice_day[(applicant_id, choice.choice_index, slot.date)].append(var)
-                    vars_by_panel[panel.id].append(var)
+                    vars_by_panel_day[(panel.id, slot.date)].append(var)
 
         # C1 — completeness (FR-30). A choice with no candidate placement makes
         # the instance infeasible; say which one rather than letting CP-SAT
@@ -251,7 +251,7 @@ class CpSatSolver:
             by_division=by_division,
             vars_by_choice_panel=vars_by_choice_panel,
             vars_by_choice_day=vars_by_choice_day,
-            vars_by_panel=vars_by_panel,
+            vars_by_panel_day=vars_by_panel_day,
             slots_by_id=slots_by_id,
             score_subdivision_switch=allow_clashes,
             score_same_day_gap=allow_clashes,
@@ -360,7 +360,7 @@ class CpSatSolver:
         by_division: dict[DivisionCode, list[Panel]],
         vars_by_choice_panel: dict[tuple[str, ChoiceIndex, str], list[cp_model.IntVar]],
         vars_by_choice_day: dict[tuple[str, ChoiceIndex, Date], list[cp_model.IntVar]],
-        vars_by_panel: dict[str, list[cp_model.IntVar]],
+        vars_by_panel_day: dict[tuple[str, Date], list[cp_model.IntVar]],
         slots_by_id: dict[str, Slot],
         score_subdivision_switch: bool = True,
         score_same_day_gap: bool = True,
@@ -546,20 +546,50 @@ class CpSatSolver:
         if worst_same_day_gap is not None:
             terms.append(weights.same_day_gap * worst_same_day_gap)
 
-        # W_BALANCE — spread of load across panels of the same division (FR-37).
-        for division_panels in by_division.values():
+        # W_BALANCE — even applicant load across a division's panels, evaluated
+        # **per event day** over the panels that actually run that evening (FR-37).
+        # The earlier whole-event max−min let one panel run heavy on Thursday and
+        # light on Friday while a sibling did the reverse and still score zero,
+        # leaving an interviewer sitting an almost-empty room for a whole evening
+        # (e.g. one Friday Liaison panel at 10 interviews, its twin at 1). Charging
+        # the spread per (division, day) targets that idle-panel waste directly and
+        # is never weaker than the old term (triangle inequality over the days).
+        # Still soft and low-priority: an evening whose applicants can only reach
+        # one panel's slots just pins that day's spread — the term then stops
+        # discriminating but never forces a clash or a cross-day split to shrink
+        # it. A panel with no active slot on a day is left out of that day's group
+        # so a single-evening overflow panel is not charged for its empty evening.
+        panel_active_dates: dict[str, set[Date]] = {
+            panel.id: {
+                slots_by_id[slot_id].date
+                for slot_id in panel.active_slot_ids
+                if slot_id in slots_by_id
+            }
+            for panel in problem.panels
+        }
+        for division, division_panels in by_division.items():
             if len(division_panels) < 2:
                 continue
-            loads = []
-            for panel in division_panels:
-                load = model.new_int_var(0, len(choices), f"load_{panel.id}")
-                model.add(load == sum(vars_by_panel.get(panel.id, [])))
-                loads.append(load)
-            highest = model.new_int_var(0, len(choices), f"maxload_{division_panels[0].division}")
-            lowest = model.new_int_var(0, len(choices), f"minload_{division_panels[0].division}")
-            model.add_max_equality(highest, loads)
-            model.add_min_equality(lowest, loads)
-            terms.append(weights.balance * (highest - lowest))
+            for day in event_dates:
+                running = [p for p in division_panels if day in panel_active_dates[p.id]]
+                if len(running) < 2:
+                    continue
+                loads = []
+                for panel in running:
+                    load = model.new_int_var(
+                        0, len(choices), f"load_{panel.id}_{day.isoformat()}"
+                    )
+                    model.add(load == sum(vars_by_panel_day.get((panel.id, day), [])))
+                    loads.append(load)
+                highest = model.new_int_var(
+                    0, len(choices), f"maxload_{division.value}_{day.isoformat()}"
+                )
+                lowest = model.new_int_var(
+                    0, len(choices), f"minload_{division.value}_{day.isoformat()}"
+                )
+                model.add_max_equality(highest, loads)
+                model.add_min_equality(lowest, loads)
+                terms.append(weights.balance * (highest - lowest))
 
         # W_SUBDIVISION_SWITCH — keep each sub-division of a shared-panel
         # division in a contiguous block on a panel's day, so the same
