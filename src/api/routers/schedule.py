@@ -10,6 +10,7 @@ if it is legal, the touched choice is written to
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -34,6 +35,7 @@ from api.services import execute_solve
 from iff_scheduler import workspace as ws
 from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.availability import summarise_availability
+from iff_scheduler.domain.enums import DivisionCode
 from iff_scheduler.domain.grid import SlotGrid, build_slot_grid
 from iff_scheduler.domain.models import Assignment, Panel
 from iff_scheduler.review.edit_validator import validate_edits
@@ -54,6 +56,60 @@ def _serialise(a: Assignment) -> dict[str, Any]:
     return {"assignment_id": _assignment_id(a), **a.model_dump(mode="json")}
 
 
+# --------------------------------------------------------- manual panels
+#
+# A recruiter can add an empty panel to a room from the Rooms tab (a division
+# with no interviews yet, ready for drag-and-drop). It has no assignments, so
+# nothing in the run's own data records it — it lives in this small artefact
+# beside `assignments.csv`, one entry per manually-added panel:
+#   [{"id": "PROGRAM-A2", "division": "PROGRAM", "room": "2016"}]
+# `_run_panels` folds it into the panel set every move is validated against, so
+# an interview can be dragged onto it; a re-solve starts from committed config
+# again and does not carry empty manual panels forward (by design — the
+# automated solve never produces a room this shape).
+
+
+def _manual_panels_path(run_dir: Path) -> Path:
+    return run_dir / "manual_panels.json"
+
+
+def _load_manual_panels(run_dir: Path | None) -> list[dict[str, str]]:
+    if run_dir is None:
+        return []
+    path = _manual_panels_path(run_dir)
+    if not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return list(data) if isinstance(data, list) else []
+
+
+def _write_manual_panels(run_dir: Path, entries: list[dict[str, str]]) -> None:
+    _manual_panels_path(run_dir).write_text(
+        json.dumps(entries, indent=2), encoding="utf-8"
+    )
+
+
+def _room_day_letter(settings: Settings, grid: SlotGrid, room_id: str) -> str:
+    """"A" for the first event day, "B" for the second — matching the canonical
+    `[DIVISION]-[DAY][N]` panel-id format (settings.PanelEntry). A room open on
+    more than one day takes the letter of its earliest."""
+    ordered = sorted({slot.date for slot in grid.slots})
+    room = next((r for r in settings.rooms.rooms if r.id == room_id), None)
+    day = min(room.days) if room and room.days else (ordered[0] if ordered else None)
+    idx = ordered.index(day) if day in ordered else 0
+    return chr(ord("A") + idx)
+
+
+def _next_manual_panel_id(
+    division: str, letter: str, existing_ids: set[str]
+) -> str:
+    """Next free `[DIVISION]-[DAY][N]` for this division on that day."""
+    n = 1
+    while f"{division}-{letter}{n}" in existing_ids:
+        n += 1
+    return f"{division}-{letter}{n}"
+
+
 def _run_panels(
     settings: Settings,
     grid: SlotGrid,
@@ -61,6 +117,7 @@ def _run_panels(
     assignments: list[Assignment],
     run_dir: Path | None,
     run_metrics: dict[str, Any] | None,
+    manual_panels: list[dict[str, str]] | None = None,
 ) -> list[Panel]:
     """The panel set a manual edit to this run must be validated against.
 
@@ -109,6 +166,23 @@ def _run_panels(
     known = {p.id for p in panels}
     all_dates = {slot.date for slot in grid.slots}
     room_days = {r.id: (set(r.days) if r.days else set(all_dates)) for r in settings.rooms.rooms}
+
+    # Manually-added empty panels (Rooms tab). Active for every grid slot on the
+    # day(s) its room is open — same resolution a load-balanced panel gets.
+    for entry in manual_panels or []:
+        if entry["id"] in known:
+            continue
+        allowed = room_days.get(entry["room"], set(all_dates))
+        panels.append(
+            Panel(
+                id=entry["id"],
+                division=DivisionCode(entry["division"]),
+                room=entry["room"],
+                active_slot_ids=[s.slot_id for s in grid.slots if s.date in allowed],
+            )
+        )
+        known.add(entry["id"])
+
     missing: dict[str, dict[str, Any]] = {}
     for a in assignments:
         if a.panel_id in known:
@@ -238,7 +312,12 @@ def patch_assignment(
         row = run_repo.get_run(workspace_pk(workspace_id), run_id)
         run_metrics = (row or {}).get("metrics") or None
     panels = _run_panels(
-        settings, grid, assignments=assignments, run_dir=run_dir, run_metrics=run_metrics
+        settings,
+        grid,
+        assignments=assignments,
+        run_dir=run_dir,
+        run_metrics=run_metrics,
+        manual_panels=_load_manual_panels(run_dir),
     )
     rooms = resolve_rooms(settings.rooms, grid)
     panels_by_id = {p.id: p for p in panels}
@@ -282,7 +361,13 @@ def patch_assignment(
     )
     edited_list = [edited if a is target else a for a in assignments]
 
-    violations = validate_edits(edited_list, panels, rooms, grid.slots)
+    # A manual move acts on an explicit recruiter instruction, so the C4
+    # "4-panel cap" is not enforced here — the recruiter may deliberately
+    # overload a room (e.g. drag an interview onto a panel they just added as a
+    # 5th in that room). Every other edit check still applies.
+    violations = validate_edits(
+        edited_list, panels, rooms, grid.slots, enforce_room_capacity=False
+    )
     if violations:
         raise HTTPException(
             status_code=400,
@@ -329,6 +414,164 @@ def patch_assignment(
         "locked": True,
         "total_locks": len(merged),
     }
+
+
+# --------------------------------------------------------- panel management
+#
+# Per-room manual panel control for the Rooms tab (FR-40..FR-42). Add an empty
+# panel for a division that has none in a room; delete one only while its
+# schedule is still empty. The 4-panel cap (C4) is not enforced on an add — a
+# recruiter may deliberately run a 5th panel in a room.
+
+
+def _load_run_assignments(
+    workspace_id: str, run_id: str
+) -> tuple[list[Assignment], Path | None]:
+    """This run's assignments plus its directory (``None`` in DB mode when the
+    run predates this instance) — the shared preamble of every panel route."""
+    db_mode = supabase_enabled()
+    run_dir = (
+        run_dir_if_present(workspace_id, run_id)
+        if db_mode
+        else resolve_run_dir(workspace_id, run_id)
+    )
+    if db_mode:
+        ensure_run_exists(workspace_id, run_id)
+        from iff_scheduler.db import assignment_repo
+
+        return assignment_repo.list_assignments(resolve_run_pk(workspace_id, run_id)), run_dir
+    path = run_dir / "assignments.csv" if run_dir is not None else None
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail=f"{path} not found — solve first.")
+    return load_assignments(path), run_dir
+
+
+def _panel_rows(settings: Settings, workspace_id: str, run_id: str) -> list[dict[str, Any]]:
+    """Every panel this run carries — solver panels plus manually-added empty
+    ones — with its interview count and whether the recruiter may delete it
+    (manual and still empty)."""
+    assignments, run_dir = _load_run_assignments(workspace_id, run_id)
+    grid = build_slot_grid(settings.event)
+    manual = _load_manual_panels(run_dir)
+    manual_ids = {e["id"] for e in manual}
+    panels = _run_panels(
+        settings,
+        grid,
+        assignments=assignments,
+        run_dir=run_dir,
+        run_metrics=None,
+        manual_panels=manual,
+    )
+    counts = Counter(a.panel_id for a in assignments)
+    rows = [
+        {
+            "panel_id": p.id,
+            "division": p.division.value,
+            "room": p.room,
+            "interview_count": counts.get(p.id, 0),
+            "manual": p.id in manual_ids,
+            "deletable": p.id in manual_ids and counts.get(p.id, 0) == 0,
+        }
+        for p in panels
+    ]
+    rows.sort(key=lambda r: (str(r["room"]), str(r["panel_id"])))
+    return rows
+
+
+@router.get("/panels")
+def list_panels(workspace_id: str, run_id: str, settings: SettingsDep) -> dict[str, Any]:
+    return {
+        "panels": _panel_rows(settings, workspace_id, run_id),
+        "divisions": [d.code.value for d in settings.divisions.divisions],
+    }
+
+
+class PanelCreate(BaseModel):
+    division: str
+    room: str
+
+
+@router.post("/panels")
+def create_panel(
+    workspace_id: str, run_id: str, body: PanelCreate, settings: SettingsDep
+) -> dict[str, Any]:
+    assignments, run_dir = _load_run_assignments(workspace_id, run_id)
+    if run_dir is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This run has no directory on this instance, so a panel cannot be added to it.",
+        )
+
+    try:
+        division = DivisionCode(body.division)
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail=f"Unknown division '{body.division}'."
+        ) from None
+    room = next((r for r in settings.rooms.rooms if r.id == body.room), None)
+    if room is None:
+        raise HTTPException(status_code=422, detail=f"Unknown room '{body.room}'.")
+    if division not in room.divisions:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Room '{room.id}' is not configured for {division.value}.",
+        )
+
+    rows = _panel_rows(settings, workspace_id, run_id)
+    if any(r["division"] == division.value and r["room"] == room.id for r in rows):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{division.value} already has a panel in room {room.id} — a room cannot "
+                "run two panels of the same division (room-exclusivity)."
+            ),
+        )
+
+    grid = build_slot_grid(settings.event)
+    letter = _room_day_letter(settings, grid, room.id)
+    existing_ids = {r["panel_id"] for r in rows}
+    new_id = _next_manual_panel_id(division.value, letter, existing_ids)
+
+    manual = _load_manual_panels(run_dir)
+    manual.append({"id": new_id, "division": division.value, "room": room.id})
+    _write_manual_panels(run_dir, manual)
+
+    return {
+        "panel": {"panel_id": new_id, "division": division.value, "room": room.id},
+        "panels": _panel_rows(settings, workspace_id, run_id),
+    }
+
+
+@router.delete("/panels/{panel_id}")
+def delete_panel(
+    workspace_id: str, run_id: str, panel_id: str, settings: SettingsDep
+) -> dict[str, Any]:
+    assignments, run_dir = _load_run_assignments(workspace_id, run_id)
+    if run_dir is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This run has no directory on this instance, so its panels cannot be edited.",
+        )
+    manual = _load_manual_panels(run_dir)
+    if not any(e["id"] == panel_id for e in manual):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"'{panel_id}' is not a manually-added panel. A solver panel disappears on "
+                "its own once every interview is moved off it."
+            ),
+        )
+    booked = sum(1 for a in assignments if a.panel_id == panel_id)
+    if booked:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Panel '{panel_id}' still has {booked} interview(s). Move them out before "
+                "deleting it."
+            ),
+        )
+    _write_manual_panels(run_dir, [e for e in manual if e["id"] != panel_id])
+    return {"deleted": panel_id, "panels": _panel_rows(settings, workspace_id, run_id)}
 
 
 class ResolveBody(BaseModel):

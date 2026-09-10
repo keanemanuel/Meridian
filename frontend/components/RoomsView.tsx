@@ -11,7 +11,7 @@ import {
   type SlotAxis,
   slotAxis,
 } from "@/lib/schedule";
-import type { Assignment } from "@/lib/types";
+import type { Assignment, RoomPanel } from "@/lib/types";
 import { EmptyState, SearchBar } from "./ui";
 
 /** One card per room, for a single day at a time (FR-32).
@@ -36,10 +36,21 @@ import { EmptyState, SearchBar } from "./ui";
  */
 export function RoomsView({
   assignments,
+  panels = [],
+  divisions = [],
   onSelect,
+  onAddPanel,
+  onDeletePanel,
 }: {
   assignments: Assignment[];
+  /** Every panel in the run (solver + manually added), for the per-room panel
+   * badges and the "add panel" dropdown's disabled state. */
+  panels?: RoomPanel[];
+  /** All division codes — the "+" dropdown lists these. */
+  divisions?: string[];
   onSelect: (a: Assignment) => void;
+  onAddPanel?: (division: string, room: string) => void;
+  onDeletePanel?: (panelId: string) => void;
 }) {
   const days = useMemo(() => dayAxis(assignments), [assignments]);
   const [rawDay, setRawDay] = useState(0);
@@ -59,9 +70,15 @@ export function RoomsView({
   const dayIndex = Math.min(rawDay, days.length - 1);
   const date = days[dayIndex];
   const onDay = assignments.filter((a) => a.date === date);
-  const rooms = [...new Set(onDay.map((a) => a.room))].sort((x, y) =>
-    x.localeCompare(y, undefined, { numeric: true }),
-  );
+  // Rooms with an interview today, plus any room that now holds only a
+  // manually-added (possibly empty) panel — so a room a recruiter just added a
+  // panel to still gets a card to drag into.
+  const rooms = [
+    ...new Set([
+      ...onDay.map((a) => a.room),
+      ...panels.filter((p) => p.manual).map((p) => p.room),
+    ]),
+  ].sort((x, y) => x.localeCompare(y, undefined, { numeric: true }));
 
   /** The full slot axis for the chosen day, spanning every room. Each room
    * card renders one row per entry here regardless of which division is
@@ -109,9 +126,13 @@ export function RoomsView({
               room={room}
               summary={summaryByRoom.get(room)}
               assignments={onDay.filter((a) => a.room === room)}
+              roomPanels={panels.filter((p) => p.room === room)}
+              allDivisions={divisions}
               slots={daySlots}
               query={query}
               onSelect={onSelect}
+              onAddPanel={onAddPanel}
+              onDeletePanel={onDeletePanel}
             />
           ))}
         </div>
@@ -130,24 +151,52 @@ function RoomCard({
   room,
   summary,
   assignments,
+  roomPanels,
+  allDivisions,
   slots,
   query,
   onSelect,
+  onAddPanel,
+  onDeletePanel,
 }: {
   room: string;
   summary: RoomSummary | undefined;
   assignments: Assignment[];
+  /** Every panel this run has in this room (solver + manually added). */
+  roomPanels: RoomPanel[];
+  /** All division codes, for the "add panel" dropdown. */
+  allDivisions: string[];
   /** The whole day's slot axis, shared by every card. Rows are drawn for all
    * of these, not just the slots the active division happens to fill. */
   slots: SlotAxis[];
   query: string;
   onSelect: (a: Assignment) => void;
+  onAddPanel?: (division: string, room: string) => void;
+  onDeletePanel?: (panelId: string) => void;
 }) {
-  const panels = summary?.panels ?? [
-    ...new Set(assignments.map((a) => a.panel_id)),
-  ];
   const interviewCount = summary?.interviewCount ?? assignments.length;
   const clashes = summary?.clashes ?? 0;
+
+  /** Panel badges for the header. Prefer the run's real panel list (carries
+   * `manual` / `deletable`); fall back to the ids seen in assignments/summary
+   * when the panel fetch has not landed. */
+  const badgePanels: RoomPanel[] = useMemo(() => {
+    if (roomPanels.length > 0) {
+      return [...roomPanels].sort((x, y) =>
+        x.panel_id.localeCompare(y.panel_id, undefined, { numeric: true }),
+      );
+    }
+    const ids =
+      summary?.panels ?? [...new Set(assignments.map((a) => a.panel_id))];
+    return ids.map((id) => ({
+      panel_id: id,
+      division: "",
+      room,
+      interview_count: 1,
+      manual: false,
+      deletable: false,
+    }));
+  }, [roomPanels, summary, assignments, room]);
 
   /** Chips come from the run-wide summary (most interviews first) so they stay
    * stable as the day changes; fall back to this day's own divisions if there
@@ -203,17 +252,55 @@ function RoomCard({
 
   return (
     <section className="overflow-hidden rounded-lg border border-neutral-200 bg-white">
-      <header className="flex items-baseline justify-between border-b border-neutral-200 px-4 py-2.5">
-        <div>
+      <header className="flex items-start justify-between border-b border-neutral-200 px-4 py-2.5">
+        <div className="min-w-0">
           <h3 className="text-sm font-semibold text-neutral-900">
             Room {room}
           </h3>
-          <p className="text-xs text-neutral-400">
-            {panels.length} panel{panels.length === 1 ? "" : "s"}:{" "}
-            {panels.join(", ")}
-          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-1">
+            {badgePanels.length === 0 ? (
+              <span className="text-xs text-neutral-400">no panels</span>
+            ) : (
+              badgePanels.map((p) => (
+                <span
+                  key={p.panel_id}
+                  title={
+                    p.manual && !p.deletable
+                      ? `${p.interview_count} interview(s) — move them out before this panel can be deleted`
+                      : p.manual
+                        ? "Manually added — empty, safe to delete"
+                        : undefined
+                  }
+                  className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium ${
+                    p.manual
+                      ? "border-sky-200 bg-sky-50 text-sky-700"
+                      : "border-neutral-200 bg-neutral-100 text-neutral-600"
+                  }`}
+                >
+                  {p.panel_id}
+                  {p.deletable && onDeletePanel && (
+                    <button
+                      type="button"
+                      onClick={() => onDeletePanel(p.panel_id)}
+                      aria-label={`Delete empty panel ${p.panel_id}`}
+                      className="-mr-0.5 leading-none text-sky-400 transition-colors hover:text-red-600"
+                    >
+                      ×
+                    </button>
+                  )}
+                </span>
+              ))
+            )}
+            {onAddPanel && allDivisions.length > 0 && (
+              <AddPanelMenu
+                divisions={allDivisions}
+                usedDivisions={new Set(roomPanels.map((p) => p.division))}
+                onAdd={(division) => onAddPanel(division, room)}
+              />
+            )}
+          </div>
         </div>
-        <p className="shrink-0 text-xs text-neutral-500">
+        <p className="shrink-0 pl-2 text-xs text-neutral-500">
           {interviewCount} interview{interviewCount === 1 ? "" : "s"}
           {clashes > 0 && (
             <span className="ml-1 text-red-600">· {clashes} clash</span>
@@ -394,6 +481,82 @@ function ScheduleCell({
         </button>
       ))}
     </>
+  );
+}
+
+/** The "+" on a room card. Opens a dropdown of every division; one already
+ * running a panel in this room is greyed out and unselectable, since a room
+ * cannot host two panels of the same division (room-exclusivity). Picking an
+ * available division creates a new empty panel for it in this room. */
+function AddPanelMenu({
+  divisions,
+  usedDivisions,
+  onAdd,
+}: {
+  divisions: string[];
+  usedDivisions: Set<string>;
+  onAdd: (division: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Add a panel to this room"
+        className="inline-flex h-[22px] w-[22px] items-center justify-center rounded border border-dashed border-neutral-300 text-sm leading-none text-neutral-500 transition-colors hover:border-neutral-400 hover:bg-neutral-50 hover:text-neutral-800"
+      >
+        +
+      </button>
+      {open && (
+        <>
+          {/* click-away layer */}
+          <button
+            type="button"
+            aria-hidden
+            tabIndex={-1}
+            onClick={() => setOpen(false)}
+            className="fixed inset-0 z-10 cursor-default"
+          />
+          <ul
+            role="menu"
+            className="absolute left-0 z-20 mt-1 max-h-64 w-44 overflow-y-auto rounded-md border border-neutral-200 bg-white py-1 shadow-lg"
+          >
+            {divisions.map((d) => {
+              const used = usedDivisions.has(d);
+              return (
+                <li key={d} role="none">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={used}
+                    onClick={() => {
+                      onAdd(d);
+                      setOpen(false);
+                    }}
+                    title={
+                      used
+                        ? "This division already has a panel in this room"
+                        : undefined
+                    }
+                    className={`block w-full px-3 py-1.5 text-left text-xs ${
+                      used
+                        ? "cursor-not-allowed text-neutral-300"
+                        : "text-neutral-700 hover:bg-neutral-100"
+                    }`}
+                  >
+                    {d}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+    </div>
   );
 }
 

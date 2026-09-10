@@ -15,6 +15,8 @@ import type {
   RecoverResult,
   RejectedRow,
   ResultPreview,
+  RoomPanel,
+  RunPanels,
   RunSummary,
   SolveResult,
   WorkspaceMeta,
@@ -312,6 +314,26 @@ export const api = {
     request<PatchAssignmentResult>(
       `/workspaces/${seg(id)}/runs/${seg(runId)}/assignments/${seg(assignmentId)}`,
       { method: "PATCH", body: JSON.stringify({ panel_id: panelId, slot_id: slotId }) },
+    ),
+
+  /** Every panel in a run (solver + manually-added) plus the division list
+   * for the Rooms tab's "add panel" dropdown. */
+  listPanels: (id: string, runId: string) =>
+    request<RunPanels>(`/workspaces/${seg(id)}/runs/${seg(runId)}/panels`),
+
+  /** Add an empty panel for `division` to `room` (Rooms tab). Room-exclusivity
+   * still applies: 409 if that division already runs in that room. */
+  createPanel: (id: string, runId: string, division: string, room: string) =>
+    request<{ panel: RoomPanel; panels: RoomPanel[] }>(
+      `/workspaces/${seg(id)}/runs/${seg(runId)}/panels`,
+      json({ division, room }),
+    ),
+
+  /** Remove a manually-added panel. 409 unless its schedule is empty. */
+  deletePanel: (id: string, runId: string, panelId: string) =>
+    request<{ deleted: string; panels: RoomPanel[] }>(
+      `/workspaces/${seg(id)}/runs/${seg(runId)}/panels/${seg(panelId)}`,
+      { method: "DELETE" },
     ),
 
   /** Re-solve honouring every lock (C6). Writes a fresh run. */

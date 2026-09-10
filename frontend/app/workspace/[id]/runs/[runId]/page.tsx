@@ -14,7 +14,7 @@ import { useToast } from "@/components/Toast";
 import { Badge, Button, Spinner } from "@/components/ui";
 import { ApiError, api, saveBlob } from "@/lib/api";
 import { formatRunId, formatTime, interviewBreakdown } from "@/lib/schedule";
-import type { Assignment } from "@/lib/types";
+import type { Assignment, RoomPanel } from "@/lib/types";
 
 const TABS = [
   { id: "room", label: "View" },
@@ -50,6 +50,8 @@ export default function RunPage({
 
   const [tab, setTab] = useState<TabId>("room");
   const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [panels, setPanels] = useState<RoomPanel[]>([]);
+  const [divisions, setDivisions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -66,12 +68,48 @@ export default function RunPage({
     try {
       setAssignments(await api.getAssignments(workspaceId, runId));
       setLoadError(null);
+      try {
+        const p = await api.listPanels(workspaceId, runId);
+        setPanels(p.panels);
+        setDivisions(p.divisions);
+      } catch {
+        // The panel list is a Rooms-tab nicety — a failure here must not
+        // blank the whole run page.
+      }
     } catch (err) {
       setLoadError((err as Error).message);
     } finally {
       setLoading(false);
     }
   }, [workspaceId, runId]);
+
+  const addPanel = useCallback(
+    async (division: string, room: string) => {
+      try {
+        const res = await api.createPanel(workspaceId, runId, division, room);
+        setPanels(res.panels);
+        toast.success(
+          `Added ${res.panel.panel_id} to room ${room}. It is empty — drag interviews in.`,
+        );
+      } catch (err) {
+        toast.fromError(err, "That panel could not be added.");
+      }
+    },
+    [workspaceId, runId, toast],
+  );
+
+  const removePanel = useCallback(
+    async (panelId: string) => {
+      try {
+        const res = await api.deletePanel(workspaceId, runId, panelId);
+        setPanels(res.panels);
+        toast.success(`Removed panel ${panelId}.`);
+      } catch (err) {
+        toast.fromError(err, "That panel could not be removed.");
+      }
+    },
+    [workspaceId, runId, toast],
+  );
 
   useEffect(() => {
     void (async () => {
@@ -285,7 +323,14 @@ export default function RunPage({
               )}
               {tab === "panels" && <PanelsView assignments={assignments} />}
               {tab === "rooms" && (
-                <RoomsView assignments={assignments} onSelect={setSelected} />
+                <RoomsView
+                  assignments={assignments}
+                  panels={panels}
+                  divisions={divisions}
+                  onSelect={setSelected}
+                  onAddPanel={addPanel}
+                  onDeletePanel={removePanel}
+                />
               )}
             </>
           )}

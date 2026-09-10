@@ -150,3 +150,22 @@ export type PatchAssignmentResult = {
   locked: boolean;
   total_locks: number;
 };
+
+/** One panel in a run — a solver panel or a manually-added empty one
+ * (`GET /runs/{runId}/panels`). */
+export type RoomPanel = {
+  panel_id: string;
+  division: string;
+  room: string;
+  interview_count: number;
+  /** Added by hand from the Rooms tab, not by the solver. */
+  manual: boolean;
+  /** Manual and still empty — the recruiter may remove it. */
+  deletable: boolean;
+};
+
+export type RunPanels = {
+  panels: RoomPanel[];
+  /** Every division code, for the "add panel" dropdown. */
+  divisions: string[];
+};

@@ -34,6 +34,8 @@ def validate_edits(
     panels: Sequence[Panel],
     rooms: Sequence[Room],
     slots: Sequence[Slot],
+    *,
+    enforce_room_capacity: bool = True,
 ) -> list[EditViolation]:
     """Return every violation found; empty means the edit is legal.
 
@@ -41,6 +43,16 @@ def validate_edits(
     clear message" (FR-42) looks like for its context (CLI output, a report
     row, ...). Order is deterministic (FR-35): grid/reference checks first,
     then double-booking, in the order SPEC.md §11 lists them.
+
+    `enforce_room_capacity` is the one relaxable check. A room's
+    `max_concurrent_panels` (the "4-panel cap", C4) is a HARD ceiling for the
+    automated solve, but a recruiter may deliberately overload a room when
+    hand-adjusting a schedule — adding a 5th panel via the Rooms tab, or
+    dragging a panel into an already-full room. Callers acting on an explicit
+    manual instruction pass ``enforce_room_capacity=False`` so a
+    ROOM_OVER_CAPACITY state is allowed through; every other check (double
+    booking, panel busy, division mismatch, off-grid slot, unknown room) still
+    applies.
     """
     violations: list[EditViolation] = []
     panels_by_id = {panel.id: panel for panel in panels}
@@ -143,7 +155,7 @@ def validate_edits(
                 )
             )
             continue
-        if len(panel_ids) > room.max_concurrent_panels:
+        if enforce_room_capacity and len(panel_ids) > room.max_concurrent_panels:
             violations.append(
                 EditViolation(
                     "",

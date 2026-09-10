@@ -282,6 +282,48 @@ def test_validate_edits_rejects_room_over_capacity() -> None:
     assert "1" in hit.message  # max_concurrent_panels quoted in the message
 
 
+def test_validate_edits_room_over_capacity_is_waivable_for_manual_edits() -> None:
+    """The `max_concurrent_panels` ceiling (C4) is hard for the automated
+    solve, but a recruiter may deliberately overload a room by hand — adding a
+    5th panel from the Rooms tab, or dragging one into a full room.
+    `enforce_room_capacity=False` lets that one state through while every
+    other edit check still applies."""
+    slots = make_slots(2)
+    rooms = [make_room("R1", [DivisionCode.CREATIVE, DivisionCode.LOGISTICS], capacity=1)]
+    creative = make_panel("CREATIVE-A", DivisionCode.CREATIVE, "R1", slots)
+    logistics = make_panel("LOGISTICS-A", DivisionCode.LOGISTICS, "R1", slots)
+    panels = [creative, logistics]
+    assignments = [
+        make_assignment("A1", 1, DivisionCode.CREATIVE, creative, slots[0]),
+        make_assignment("A2", 1, DivisionCode.LOGISTICS, logistics, slots[0]),
+    ]
+
+    assert validate_edits(assignments, panels, rooms, slots, enforce_room_capacity=False) == []
+    # unchanged default still catches it
+    codes = {v.code for v in validate_edits(assignments, panels, rooms, slots)}
+    assert "ROOM_OVER_CAPACITY" in codes
+
+
+def test_validate_edits_still_catches_other_violations_when_capacity_waived() -> None:
+    """Waiving the room cap must not waive double-booking (C3)."""
+    slots = make_slots(2)
+    rooms = [make_room("R1", [DivisionCode.CREATIVE, DivisionCode.LOGISTICS])]
+    creative = make_panel("CREATIVE-A", DivisionCode.CREATIVE, "R1", slots)
+    logistics = make_panel("LOGISTICS-A", DivisionCode.LOGISTICS, "R1", slots)
+    assignments = [
+        make_assignment("A1", 1, DivisionCode.CREATIVE, creative, slots[0]),
+        make_assignment("A1", 2, DivisionCode.LOGISTICS, logistics, slots[0]),
+    ]
+
+    codes = {
+        v.code
+        for v in validate_edits(
+            assignments, [creative, logistics], rooms, slots, enforce_room_capacity=False
+        )
+    }
+    assert "DOUBLE_BOOKED_APPLICANT" in codes
+
+
 def test_validate_edits_rejects_slot_outside_grid() -> None:
     """A recruiter typo'd a slot id that isn't on the event grid at all."""
     slots = make_slots(2)

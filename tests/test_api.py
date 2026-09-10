@@ -433,6 +433,119 @@ def test_patch_assignment_locks_and_survives_resolve(client: TestClient, wsname:
     assert resolved.json()["locked"] >= 1
 
 
+# --------------------------------------------------- Rooms tab panel management
+
+
+def _solved_run(client: TestClient, wsname: str) -> str:
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    return client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
+        "run_id"
+    ]
+
+
+def _free_division_and_room(client: TestClient, wsname: str, run_id: str) -> tuple[str, str]:
+    """A (division, room) pair that has no panel yet — so `POST /panels`
+    accepts it — favouring a division that already has interviews somewhere so
+    a later move onto the new panel is legal."""
+    body = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/panels").json()
+    rooms = sorted({p["room"] for p in body["panels"]})
+    used = {(p["division"], p["room"]) for p in body["panels"]}
+    placed = {p["division"] for p in body["panels"]}
+    for room in rooms:
+        for division in sorted(placed) + [d for d in body["divisions"] if d not in placed]:
+            if (division, room) not in used:
+                return division, room
+    raise AssertionError("no free division/room pair in this run")
+
+
+def test_add_panel_creates_an_empty_deletable_panel(client: TestClient, wsname: str) -> None:
+    run_id = _solved_run(client, wsname)
+    division, room = _free_division_and_room(client, wsname, run_id)
+
+    resp = client.post(
+        f"/api/workspaces/{wsname}/runs/{run_id}/panels",
+        json={"division": division, "room": room},
+    )
+    assert resp.status_code == 200, resp.text
+    new_id = resp.json()["panel"]["panel_id"]
+
+    panels = {p["panel_id"]: p for p in resp.json()["panels"]}
+    assert new_id in panels
+    assert panels[new_id]["interview_count"] == 0
+    assert panels[new_id]["manual"] is True
+    assert panels[new_id]["deletable"] is True
+    assert panels[new_id]["room"] == room
+    assert panels[new_id]["division"] == division
+
+    # survives a re-fetch
+    again = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/panels").json()
+    assert new_id in {p["panel_id"] for p in again["panels"]}
+
+
+def test_add_panel_rejects_a_division_already_in_that_room(
+    client: TestClient, wsname: str
+) -> None:
+    run_id = _solved_run(client, wsname)
+    existing = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/panels").json()["panels"][0]
+
+    resp = client.post(
+        f"/api/workspaces/{wsname}/runs/{run_id}/panels",
+        json={"division": existing["division"], "room": existing["room"]},
+    )
+    assert resp.status_code == 409
+    assert "room-exclusivity" in resp.json()["detail"]
+
+
+def test_delete_empty_manual_panel_removes_it(client: TestClient, wsname: str) -> None:
+    run_id = _solved_run(client, wsname)
+    division, room = _free_division_and_room(client, wsname, run_id)
+    new_id = client.post(
+        f"/api/workspaces/{wsname}/runs/{run_id}/panels",
+        json={"division": division, "room": room},
+    ).json()["panel"]["panel_id"]
+
+    resp = client.delete(f"/api/workspaces/{wsname}/runs/{run_id}/panels/{new_id}")
+    assert resp.status_code == 200, resp.text
+    assert new_id not in {p["panel_id"] for p in resp.json()["panels"]}
+
+
+def test_delete_panel_with_interviews_is_refused(client: TestClient, wsname: str) -> None:
+    run_id = _solved_run(client, wsname)
+    division, room = _free_division_and_room(client, wsname, run_id)
+    new_id = client.post(
+        f"/api/workspaces/{wsname}/runs/{run_id}/panels",
+        json={"division": division, "room": room},
+    ).json()["panel"]["panel_id"]
+
+    rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    mover = next(r for r in rows if r["division"] == division)
+    moved = client.patch(
+        f"/api/workspaces/{wsname}/runs/{run_id}/assignments/{mover['assignment_id']}",
+        json={"panel_id": new_id, "slot_id": mover["slot_id"]},
+    )
+    assert moved.status_code == 200, moved.text
+
+    panels = {p["panel_id"]: p for p in client.get(
+        f"/api/workspaces/{wsname}/runs/{run_id}/panels"
+    ).json()["panels"]}
+    assert panels[new_id]["interview_count"] == 1
+    assert panels[new_id]["deletable"] is False
+
+    resp = client.delete(f"/api/workspaces/{wsname}/runs/{run_id}/panels/{new_id}")
+    assert resp.status_code == 409
+    assert "still has 1 interview" in resp.json()["detail"]
+
+
+def test_delete_rejects_a_non_manual_panel(client: TestClient, wsname: str) -> None:
+    run_id = _solved_run(client, wsname)
+    solver_panel = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/panels").json()["panels"][0][
+        "panel_id"
+    ]
+    resp = client.delete(f"/api/workspaces/{wsname}/runs/{run_id}/panels/{solver_panel}")
+    assert resp.status_code == 404
+
+
 _THU_SLOTS = [
     "2026-09-17_1830",
     "2026-09-17_1850",
