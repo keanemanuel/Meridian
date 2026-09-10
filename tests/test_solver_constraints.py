@@ -346,6 +346,31 @@ def test_c4_refuses_when_room_capacity_cannot_hold_the_demand() -> None:
     assert result.assignments == []
 
 
+def test_c4_never_places_more_than_four_concurrent_panels_in_a_room() -> None:
+    """Part 1: `max_concurrent_panels: 4` is a HARD ceiling. Six panels share
+    one room and demand could fill all six in a slot; the solver must keep any
+    single (room, slot) at 4 interviews or fewer, never 5."""
+    slots = make_slots(8)
+    rooms = [make_room("R1", [DivisionCode.CREATIVE, DivisionCode.LOGISTICS], capacity=4)]
+    panels = [make_panel(f"CREATIVE-{i}", DivisionCode.CREATIVE, "R1", slots) for i in range(3)] + [
+        make_panel(f"LOGISTICS-{i}", DivisionCode.LOGISTICS, "R1", slots) for i in range(3)
+    ]
+    applicants = [
+        make_applicant(f"A{i}", DivisionCode.CREATIVE, DivisionCode.LOGISTICS, slots)
+        for i in range(6)
+    ]
+
+    result = solve(make_problem(applicants, panels, rooms, slots))
+
+    assert result.status in USABLE_STATUSES
+    assert len(result.assignments) == 12
+    per_room_slot: Counter[tuple[str, str]] = Counter()
+    for assignment in result.assignments:
+        per_room_slot[(assignment.room, assignment.slot_id)] += 1
+    assert per_room_slot
+    assert max(per_room_slot.values()) <= 4
+
+
 # ------------------------------------------------------ C5  minimum gap
 
 

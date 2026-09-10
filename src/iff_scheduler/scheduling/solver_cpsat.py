@@ -199,7 +199,10 @@ class CpSatSolver:
             if len(applicant_slot_vars) > 1:
                 model.add_at_most_one(applicant_slot_vars)
 
-        # C4 — room concurrency (FR-24).
+        # C4 — room concurrency (FR-24). `max_concurrent_panels` is a HARD
+        # ceiling (config caps it at 4, ROOM_CONCURRENCY_CEILING): the sum of
+        # interviews a room runs in any one slot is constrained <= that value,
+        # never relaxed, so no solved schedule can exceed it.
         panels_in_room: dict[str, list[Panel]] = defaultdict(list)
         for panel in problem.panels:
             panels_in_room[panel.room].append(panel)

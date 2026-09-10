@@ -577,8 +577,124 @@ def rebalance_panels(
             f"{before}→{before + 1} panels, ~{round(need / (before + 1))} applicants each"
         )
 
-    if not added:
-        return settings, messages
+    current = (
+        settings
+        if not added
+        else settings.model_copy(update={"panels": PanelsConfig(panels=panels)})
+    )
+    # Merge any panel this split (or an earlier one) left near-empty back into
+    # its same-division siblings before falling through to `autoscale_panels`.
+    current, consolidation_messages = consolidate_panels(
+        current, applicants, grid, threshold=threshold, max_rounds=max_rounds
+    )
+    return current, messages + consolidation_messages
 
-    augmented = settings.model_copy(update={"panels": PanelsConfig(panels=panels)})
-    return augmented, messages
+
+# Most interviews an even split may leave on one panel before that panel is
+# "near-empty" and worth folding into a sibling (Part 2). One or two interviews
+# tie up an interviewer set a sibling panel of the same division could absorb.
+CONSOLIDATE_MAX_INTERVIEWS = 2
+
+
+def _is_scaled_panel(panel: PanelEntry) -> bool:
+    """A panel the load-balancer added (`*-BAL-*` / `*-AUTO-*`), not a committed
+    baseline panel. Only these are ever removed by consolidation."""
+    return f"-{BALANCE_PANEL_TAG}-" in panel.id or f"-{AUTO_PANEL_TAG}-" in panel.id
+
+
+def _room_config_index(rooms: RoomsConfig, room_id: str) -> int:
+    """Position of `room_id` in rooms.yaml order. The load-balancer fills
+    Room 1, Room 2, ...; consolidation removes from the far end so the
+    lower-numbered rooms are the ones kept (Part 2, req. 4)."""
+    for index, room in enumerate(rooms.rooms):
+        if room.id == room_id:
+            return index
+    return len(rooms.rooms)
+
+
+def consolidate_panels(
+    settings: Settings,
+    applicants: list[Applicant],
+    grid: SlotGrid,
+    *,
+    threshold: float = REBALANCE_THRESHOLD,
+    max_rounds: int = 64,
+) -> tuple[Settings, list[str]]:
+    """Fold a near-empty load-balanced panel back into its same-division
+    siblings *before* the solve (Part 2).
+
+    After `rebalance_panels`/`autoscale_panels` have grown a division/day, an
+    even split of that evening's load can still leave one panel carrying only
+    1-2 interviews while a sibling panel of the same division that evening (a
+    different room, per the room-exclusivity rule) still has slack. When the
+    siblings can absorb that load and stay at or under `threshold` utilisation,
+    drop the small panel — freeing its room for another division — keeping the
+    lower-numbered rooms. Only panels the load-balancer added (`*-BAL-*` /
+    `*-AUTO-*`) are ever removed; a committed baseline panel is never touched.
+
+    Purely a soft optimisation: when no clean merge exists the panel stays, so
+    no hard constraint (the room ceiling from Part 1, room-exclusivity,
+    applicant availability) is ever put at risk, and the unchanged `settings`
+    object is returned as-is. `autoscale_panels` still runs afterwards as the
+    INFEASIBLE backstop, so an over-eager merge cannot strand a division.
+
+    Returns the (possibly unchanged) settings and one log line per merge.
+    """
+    rooms = settings.rooms
+    labels = _event_day_labels(settings.event)
+    room_dates = _room_dates(rooms, grid)
+    event_dates = {d.date for d in settings.event.days}
+    demand = _demand_by_division_day(applicants, grid)
+
+    panels: list[PanelEntry] = list(settings.panels.panels)
+    messages: list[str] = []
+
+    for _ in range(max_rounds):
+        counts_dd: Counter[tuple[DivisionCode, Date]] = Counter()
+        for panel in panels:
+            for day in event_dates:
+                if _panel_runs_on_day(panel, day, room_dates, event_dates):
+                    counts_dd[(panel.division, day)] += 1
+
+        victim: PanelEntry | None = None
+        chosen: tuple[DivisionCode, Date, int, float] | None = None
+        for (division, day), need in demand.items():
+            n = counts_dd[(division, day)]
+            if n < 2 or need <= 0:
+                continue
+            per_panel = need / n
+            if per_panel > CONSOLIDATE_MAX_INTERVIEWS:
+                continue  # nobody is near-empty on an even split
+            removable = [
+                p
+                for p in panels
+                if _is_scaled_panel(p)
+                and p.division == division
+                and _panel_runs_on_day(p, day, room_dates, event_dates)
+            ]
+            if not removable:
+                continue
+            candidate = max(removable, key=lambda p: _room_config_index(rooms, p.room))
+            trial = [p for p in panels if p is not candidate]
+            cap_after = _capacity_by_division_day(trial, rooms, grid, room_dates).get(
+                (division, day), 0
+            )
+            if cap_after <= 0 or need / cap_after > threshold:
+                continue  # siblings can't absorb it under the threshold — leave it
+            victim, chosen = candidate, (division, day, n, per_panel)
+            break
+
+        if victim is None or chosen is None:
+            break
+        division, day, n, per_panel = chosen
+        panels = [p for p in panels if p is not victim]
+        messages.append(
+            f"Consolidated {division.value} ({labels.get(day, day.isoformat())}): "
+            f"{n}→{n - 1} panels — folded ~{round(per_panel)} interview(s) from "
+            f"{victim.id} into {n - 1} sibling panel(s), all still under "
+            f"{round(threshold * 100)}% utilisation"
+        )
+
+    if not messages:
+        return settings, []
+    return settings.model_copy(update={"panels": PanelsConfig(panels=panels)}), messages

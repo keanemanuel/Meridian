@@ -20,6 +20,12 @@ from iff_scheduler.domain.enums import DivisionCode
 # Repo root is three levels up from this file: src/iff_scheduler/settings.py
 DEFAULT_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 
+# Hard ceiling on how many interviews one physical room may run at once (C4).
+# A room may host fewer — the load-balancer and CP-SAT decide the real number
+# per evening from demand — but never more, under any circumstance. Enforced at
+# config load so a mis-edited rooms.yaml fails loudly here, not deep in a solve.
+ROOM_CONCURRENCY_CEILING = 4
+
 
 class BreakWindow(BaseModel):
     """A window during which no slots are generated (FR-14)."""
@@ -124,6 +130,21 @@ class RoomEntry(BaseModel):
     # every day. A room listed for Thursday only cannot host a Friday slot, and
     # `resolve_panels` shrinks any panel in it to that day's slots accordingly.
     days: list[Date] = []
+
+    @model_validator(mode="after")
+    def _within_concurrency_ceiling(self) -> RoomEntry:
+        """`max_concurrent_panels` is a hard ceiling: at least 1, never above
+        `ROOM_CONCURRENCY_CEILING` (4). A lower value is a deliberate physical
+        limit for that one room; anything above 4 is rejected here rather than
+        silently handed to the solver (CLAUDE.md: "fail loudly on malformed
+        config")."""
+        if not 1 <= self.max_concurrent_panels <= ROOM_CONCURRENCY_CEILING:
+            raise ValueError(
+                f"room {self.id}: max_concurrent_panels must be between 1 and "
+                f"{ROOM_CONCURRENCY_CEILING} (the hard ceiling); got "
+                f"{self.max_concurrent_panels}."
+            )
+        return self
 
 
 class RoomsConfig(BaseModel):

@@ -3,45 +3,56 @@
 # "every day" — here every room states its day(s) explicitly.
 #
 # Every room can host any division (there is no per-room division split in the
-# real booking), so `divisions` lists all of them. `max_concurrent_panels: 2`
-# — each room runs up to two interview stations at once.
+# real booking), so `divisions` lists all of them.
+#
+# `max_concurrent_panels` is a HARD CEILING, not a target. Physically every
+# room here fits up to 4 interview stations running at once, so every room is
+# set to 4 and the solver / load-balancer picks the actual number per evening
+# (typically 3-4, sometimes fewer) from real applicant demand — nothing is
+# hard-coded lower. 4 is the absolute maximum: `settings.RoomEntry` refuses to
+# load a value above `ROOM_CONCURRENCY_CEILING` (4), and CP-SAT enforces it as
+# a hard constraint (C4, solver_cpsat.py) so no solved schedule ever exceeds it.
+#
+# If a specific room genuinely cannot fit 4 (a real physical limit — furniture,
+# power, noise), drop that one room's value and add a comment saying so: it is
+# then a deliberate exception, not an accidental default. None apply today.
 rooms:
   # ---- Thursday 2026-09-17 ----
   - id: "2016"
-    max_concurrent_panels: 3   # hosts 3 Thursday panels (see panels.yaml)
+    max_concurrent_panels: 4
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-17]
   - id: "2017"
-    max_concurrent_panels: 3   # hosts 3 Thursday panels (see panels.yaml)
+    max_concurrent_panels: 4
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-17]
   - id: "2020"
-    max_concurrent_panels: 2
+    max_concurrent_panels: 4
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-17]
   - id: "3013"
-    max_concurrent_panels: 2
+    max_concurrent_panels: 4
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-17]
   # ---- Friday 2026-09-18 ----
   - id: "2014"
-    max_concurrent_panels: 3   # hosts 3 Friday panels (see panels.yaml)
+    max_concurrent_panels: 4
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-18]
   - id: "2015"
-    max_concurrent_panels: 3   # hosts 3 Friday panels (see panels.yaml)
+    max_concurrent_panels: 4
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-18]
   - id: "3033"
-    max_concurrent_panels: 2
+    max_concurrent_panels: 4
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-18]
   # ---- Both evenings ----
   - id: "2018"
-    max_concurrent_panels: 2
+    max_concurrent_panels: 4
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-17, 2026-09-18]
   - id: "2019"
-    max_concurrent_panels: 2
+    max_concurrent_panels: 4
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-17, 2026-09-18]

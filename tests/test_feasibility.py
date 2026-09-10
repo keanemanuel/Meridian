@@ -7,6 +7,9 @@ import re
 from collections import Counter
 from datetime import date, datetime, time
 
+import pytest
+from pydantic import ValidationError
+
 from iff_scheduler.domain.enums import DivisionCode
 from iff_scheduler.domain.grid import build_slot_grid
 from iff_scheduler.domain.models import Applicant
@@ -14,15 +17,18 @@ from iff_scheduler.scheduling.feasibility import (
     REBALANCE_THRESHOLD,
     autoscale_panels,
     compute_capacity_advisor,
+    consolidate_panels,
     is_feasible,
     rebalance_panels,
 )
 from iff_scheduler.settings import (
+    ROOM_CONCURRENCY_CEILING,
     ActiveWindow,
     DayConfig,
     EventConfig,
     PanelEntry,
     PanelsConfig,
+    RoomsConfig,
     load_settings,
 )
 
@@ -413,3 +419,119 @@ def test_rebalance_leaves_a_comfortable_division_untouched() -> None:
     scaled, messages = rebalance_panels(settings, applicants, grid)
     assert messages == []
     assert scaled is settings
+
+
+# ---- room concurrency hard ceiling (Part 1) ----
+
+
+def test_committed_rooms_stay_within_the_hard_concurrency_ceiling() -> None:
+    """Part 1: every committed room allows 1..4 concurrent panels, and 4 is the
+    ceiling. Consistent values, no accidental low caps."""
+    settings = load_settings()
+    caps = {r.id: r.max_concurrent_panels for r in settings.rooms.rooms}
+    assert caps, "expected rooms in the committed config"
+    for room_id, cap in caps.items():
+        assert 1 <= cap <= ROOM_CONCURRENCY_CEILING, (room_id, cap)
+    assert max(caps.values()) == ROOM_CONCURRENCY_CEILING
+
+
+def test_rooms_config_rejects_a_concurrency_above_the_ceiling() -> None:
+    """A rooms.yaml value over 4 fails at load, not deep in the solver
+    (CLAUDE.md: fail loudly on malformed config)."""
+    with pytest.raises(ValidationError):
+        RoomsConfig.model_validate(
+            {
+                "rooms": [
+                    {"id": "X", "max_concurrent_panels": 5, "divisions": ["FNB"]},
+                ]
+            }
+        )
+
+
+# ---- near-empty panel consolidation (Part 2) ----
+
+
+def test_consolidate_merges_a_near_empty_added_panel_into_its_sibling() -> None:
+    """A `*-BAL-*` panel an even split would fill to only ~2 interviews is
+    folded back into its same-division sibling when that sibling can absorb the
+    load under the rebalance threshold — freeing the room, keeping the
+    lower-numbered one."""
+    base = load_settings()
+    grid = build_slot_grid(base.event)
+    thu = base.event.days[0].date
+    thu_slots = [s.slot_id for s in grid.slots if s.date == thu]
+
+    # Baseline FNB-T (room 2020) + an over-eager extra FNB panel that Thursday.
+    panels = list(base.panels.panels) + [
+        PanelEntry(
+            id="FNB-BAL-1",
+            division=DivisionCode.FNB,
+            room="3013",
+            active_windows=[ActiveWindow(date=thu, start=time(18, 30), end=time(21, 30))],
+        )
+    ]
+    settings = base.model_copy(update={"panels": PanelsConfig(panels=panels)})
+
+    # 4 FNB interviews, Thursday only — an even split is 2 per panel.
+    applicants = [
+        _applicant(f"F{i}", DivisionCode.FNB, DivisionCode.PROGRAM, thu_slots) for i in range(4)
+    ]
+
+    consolidated, messages = consolidate_panels(settings, applicants, grid)
+
+    assert any(m.startswith("Consolidated FNB (Thu)") for m in messages)
+    ids = {p.id for p in consolidated.panels.panels}
+    assert "FNB-BAL-1" not in ids  # the near-empty added panel is gone
+    assert "FNB-T" in ids  # the committed baseline panel is kept
+
+
+def test_consolidate_leaves_a_busy_added_panel_alone() -> None:
+    """When siblings can't absorb the small panel's load without blowing past
+    the threshold, the panel stays — consolidation is a soft optimisation, it
+    never forces an invalid merge."""
+    base = load_settings()
+    grid = build_slot_grid(base.event)
+    thu = base.event.days[0].date
+    thu_slots = [s.slot_id for s in grid.slots if s.date == thu]
+
+    panels = list(base.panels.panels) + [
+        PanelEntry(
+            id="FNB-BAL-1",
+            division=DivisionCode.FNB,
+            room="3013",
+            active_windows=[ActiveWindow(date=thu, start=time(18, 30), end=time(21, 30))],
+        )
+    ]
+    settings = base.model_copy(update={"panels": PanelsConfig(panels=panels)})
+
+    # 16 FNB interviews on a 9-slot Thursday: one panel alone is 16/9 ~ 178%,
+    # far over threshold, so the second panel must survive.
+    applicants = [
+        _applicant(f"F{i}", DivisionCode.FNB, DivisionCode.PROGRAM, thu_slots) for i in range(16)
+    ]
+
+    consolidated, messages = consolidate_panels(settings, applicants, grid)
+
+    assert messages == []
+    assert consolidated is settings
+    assert any(p.id == "FNB-BAL-1" for p in consolidated.panels.panels)
+
+
+def test_consolidate_never_removes_a_committed_baseline_panel() -> None:
+    """Only load-balancer-added panels (`*-BAL-*` / `*-AUTO-*`) are removable;
+    a division whose only panel that evening is the baseline is left as-is even
+    when its load is tiny."""
+    base = load_settings()
+    grid = build_slot_grid(base.event)
+    thu = base.event.days[0].date
+    thu_slots = [s.slot_id for s in grid.slots if s.date == thu]
+
+    applicants = [
+        _applicant(f"F{i}", DivisionCode.FNB, DivisionCode.PROGRAM, thu_slots) for i in range(2)
+    ]
+
+    consolidated, messages = consolidate_panels(base, applicants, grid)
+
+    assert messages == []
+    assert consolidated is base
+    assert any(p.id == "FNB-T" for p in consolidated.panels.panels)
