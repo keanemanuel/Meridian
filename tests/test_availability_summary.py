@@ -61,3 +61,25 @@ def test_non_contiguous_blocks_stay_separate_ranges() -> None:
 def test_slot_ids_not_on_the_grid_are_ignored() -> None:
     slots = _slots()
     assert summarise_availability(["9999-01-01_0000"], slots) == ""
+
+
+def test_time_drifted_slot_ids_recover_to_whole_day_labels() -> None:
+    """Regression: shortening/re-timing the event window after ingest shifts
+    every stored slot id's HHMM suffix, so none match the grid by value. The
+    date the applicant ticked survives, so the column shows the day label
+    instead of going blank (FR-51)."""
+    slots = _slots()  # Thu/Fri 18:00–21:00
+    # What ingest stored against an earlier grid that started at 18:30 —
+    # no id here is on the current grid.
+    stored = ["2026-09-17_1830", "2026-09-17_1930", "2026-09-18_1830"]
+    assert all(sid not in {s.slot_id for s in slots} for sid in stored)
+    assert summarise_availability(stored, slots) == "Thu 17 Sep; Fri 18 Sep"
+
+
+def test_exact_matches_still_win_over_whole_day_recovery() -> None:
+    """A day with some ids still on the grid keeps its precise ranges; only the
+    days that drifted entirely fall back to a bare label."""
+    slots = _slots()
+    thu = sorted((s for s in slots if s.date == THU), key=lambda s: s.start_time)
+    picked = [thu[0].slot_id, thu[1].slot_id, "2026-09-18_1830"]  # Fri id drifted
+    assert summarise_availability(picked, slots) == "Thu 17 Sep (18:00–20:00); Fri 18 Sep"
