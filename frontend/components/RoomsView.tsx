@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { type DragEvent, useMemo, useState } from "react";
 import {
   assignmentMatches,
   dayAxis,
@@ -13,6 +13,10 @@ import {
 } from "@/lib/schedule";
 import type { Assignment, RoomPanel } from "@/lib/types";
 import { EmptyState, SearchBar } from "./ui";
+
+/** Payload MIME for a panel badge dragged between room cards. A private type
+ * so the card's drop zone ignores any other drag (text selections, files). */
+const PANEL_DND_MIME = "application/x-meridian-panel";
 
 /** One card per room, for a single day at a time (FR-32).
  *
@@ -41,6 +45,7 @@ export function RoomsView({
   onSelect,
   onAddPanel,
   onDeletePanel,
+  onMovePanel,
 }: {
   assignments: Assignment[];
   /** Every panel in the run (solver + manually added), for the per-room panel
@@ -51,6 +56,9 @@ export function RoomsView({
   onSelect: (a: Assignment) => void;
   onAddPanel?: (division: string, room: string) => void;
   onDeletePanel?: (panelId: string) => void;
+  /** Drag a panel badge from one room card onto another to relocate the whole
+   * panel (and its interviews) to that room. */
+  onMovePanel?: (panelId: string, room: string) => void;
 }) {
   const days = useMemo(() => dayAxis(assignments), [assignments]);
   const [rawDay, setRawDay] = useState(0);
@@ -133,6 +141,7 @@ export function RoomsView({
               onSelect={onSelect}
               onAddPanel={onAddPanel}
               onDeletePanel={onDeletePanel}
+              onMovePanel={onMovePanel}
             />
           ))}
         </div>
@@ -158,6 +167,7 @@ function RoomCard({
   onSelect,
   onAddPanel,
   onDeletePanel,
+  onMovePanel,
 }: {
   room: string;
   summary: RoomSummary | undefined;
@@ -173,7 +183,10 @@ function RoomCard({
   onSelect: (a: Assignment) => void;
   onAddPanel?: (division: string, room: string) => void;
   onDeletePanel?: (panelId: string) => void;
+  onMovePanel?: (panelId: string, room: string) => void;
 }) {
+  // A panel badge from another room card is hovering over this one.
+  const [dragOver, setDragOver] = useState(false);
   const interviewCount = summary?.interviewCount ?? assignments.length;
   const clashes = summary?.clashes ?? 0;
 
@@ -250,8 +263,42 @@ function RoomCard({
   );
   const multiPanel = divisionPanels.length > 1;
 
+  /** Accept a panel badge dropped from another room card. */
+  const dropProps = onMovePanel
+    ? {
+        onDragOver: (e: DragEvent) => {
+          if (!e.dataTransfer.types.includes(PANEL_DND_MIME)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          setDragOver(true);
+        },
+        onDragLeave: () => setDragOver(false),
+        onDrop: (e: DragEvent) => {
+          setDragOver(false);
+          const raw = e.dataTransfer.getData(PANEL_DND_MIME);
+          if (!raw) return;
+          e.preventDefault();
+          let payload: { panelId: string; fromRoom: string };
+          try {
+            payload = JSON.parse(raw);
+          } catch {
+            return;
+          }
+          if (payload.fromRoom === room) return;
+          onMovePanel(payload.panelId, room);
+        },
+      }
+    : {};
+
   return (
-    <section className="overflow-hidden rounded-lg border border-neutral-200 bg-white">
+    <section
+      {...dropProps}
+      className={`overflow-hidden rounded-lg border bg-white ${
+        dragOver
+          ? "border-sky-400 ring-2 ring-inset ring-sky-300"
+          : "border-neutral-200"
+      }`}
+    >
       <header className="flex items-start justify-between border-b border-neutral-200 px-4 py-2.5">
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-neutral-900">
@@ -264,14 +311,33 @@ function RoomCard({
               badgePanels.map((p) => (
                 <span
                   key={p.panel_id}
+                  draggable={Boolean(onMovePanel)}
+                  onDragStart={
+                    onMovePanel
+                      ? (e: DragEvent) => {
+                          e.dataTransfer.effectAllowed = "move";
+                          e.dataTransfer.setData(
+                            PANEL_DND_MIME,
+                            JSON.stringify({
+                              panelId: p.panel_id,
+                              fromRoom: room,
+                            }),
+                          );
+                        }
+                      : undefined
+                  }
                   title={
-                    p.manual && !p.deletable
-                      ? `${p.interview_count} interview(s) — move them out before this panel can be deleted`
-                      : p.manual
-                        ? "Manually added — empty, safe to delete"
-                        : undefined
+                    onMovePanel
+                      ? `Drag onto another room card to move ${p.panel_id} there`
+                      : p.manual && !p.deletable
+                        ? `${p.interview_count} interview(s) — move them out before this panel can be deleted`
+                        : p.manual
+                          ? "Manually added — empty, safe to delete"
+                          : undefined
                   }
                   className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium ${
+                    onMovePanel ? "cursor-grab active:cursor-grabbing" : ""
+                  } ${
                     p.manual
                       ? "border-sky-200 bg-sky-50 text-sky-700"
                       : "border-neutral-200 bg-neutral-100 text-neutral-600"

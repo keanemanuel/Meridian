@@ -336,6 +336,15 @@ export const api = {
       { method: "DELETE" },
     ),
 
+  /** Relocate a whole panel (and every interview on it) to another room —
+   * Rooms tab drag-and-drop. 409 if the target room already runs that
+   * division (room-exclusivity); the 4-panel room cap is not enforced. */
+  movePanel: (id: string, runId: string, panelId: string, room: string) =>
+    request<{ panel: RoomPanel; panels: RoomPanel[]; moved_interviews: number }>(
+      `/workspaces/${seg(id)}/runs/${seg(runId)}/panels/${seg(panelId)}`,
+      { method: "PATCH", body: JSON.stringify({ room }) },
+    ),
+
   /** Re-solve honouring every lock (C6). Writes a fresh run. */
   resolve: (id: string, runId: string, skipCheck = false) =>
     request<SolveResult>(`/workspaces/${seg(id)}/runs/${seg(runId)}/resolve`, {

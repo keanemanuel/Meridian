@@ -89,6 +89,35 @@ def _write_manual_panels(run_dir: Path, entries: list[dict[str, str]]) -> None:
     )
 
 
+# A recruiter can also drag a whole panel from one room card to another on the
+# Rooms tab — only its room changes, every interview stays on it. A solver
+# panel's room lives in `metrics["solved_panels"]` / config, so the override is
+# recorded here, `{panel_id: new_room}`, and `_run_panels` folds it back in. A
+# manually-added panel carries its own room in `manual_panels.json`, so its move
+# is written there instead. Neither artefact survives a re-solve — the automated
+# solve starts from committed config again (Session G1).
+
+
+def _panel_moves_path(run_dir: Path) -> Path:
+    return run_dir / "panel_room_moves.json"
+
+
+def _load_panel_moves(run_dir: Path | None) -> dict[str, str]:
+    if run_dir is None:
+        return {}
+    path = _panel_moves_path(run_dir)
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return dict(data) if isinstance(data, dict) else {}
+
+
+def _write_panel_moves(run_dir: Path, moves: dict[str, str]) -> None:
+    _panel_moves_path(run_dir).write_text(
+        json.dumps(moves, indent=2), encoding="utf-8"
+    )
+
+
 def _room_day_letter(settings: Settings, grid: SlotGrid, room_id: str) -> str:
     """"A" for the first event day, "B" for the second — matching the canonical
     `[DIVISION]-[DAY][N]` panel-id format (settings.PanelEntry). A room open on
@@ -118,6 +147,7 @@ def _run_panels(
     run_dir: Path | None,
     run_metrics: dict[str, Any] | None,
     manual_panels: list[dict[str, str]] | None = None,
+    panel_moves: dict[str, str] | None = None,
 ) -> list[Panel]:
     """The panel set a manual edit to this run must be validated against.
 
@@ -202,6 +232,29 @@ def _run_panels(
                 active_slot_ids=active,
             )
         )
+
+    # Manual panel-to-room moves (Rooms tab drag-and-drop). Only the room
+    # changes; the active-slot window is kept — the move endpoint only allows a
+    # target room open on every day the panel runs, so the same slots stay
+    # valid. A move whose entry has been overtaken (e.g. the manual panel's own
+    # room already updated) is a harmless no-op.
+    moves = panel_moves or {}
+    if moves:
+        slot_date = {s.slot_id: s.date for s in grid.slots}
+        remapped: list[Panel] = []
+        for p in panels:
+            dest = moves.get(p.id)
+            if not dest or dest == p.room:
+                remapped.append(p)
+                continue
+            allowed = room_days.get(dest, all_dates)
+            active = [s for s in p.active_slot_ids if slot_date.get(s) in allowed]
+            remapped.append(
+                p.model_copy(
+                    update={"room": dest, "active_slot_ids": active or p.active_slot_ids}
+                )
+            )
+        panels = remapped
     return panels
 
 
@@ -318,6 +371,7 @@ def patch_assignment(
         run_dir=run_dir,
         run_metrics=run_metrics,
         manual_panels=_load_manual_panels(run_dir),
+        panel_moves=_load_panel_moves(run_dir),
     )
     rooms = resolve_rooms(settings.rooms, grid)
     panels_by_id = {p.id: p for p in panels}
@@ -461,6 +515,7 @@ def _panel_rows(settings: Settings, workspace_id: str, run_id: str) -> list[dict
         run_dir=run_dir,
         run_metrics=None,
         manual_panels=manual,
+        panel_moves=_load_panel_moves(run_dir),
     )
     counts = Counter(a.panel_id for a in assignments)
     rows = [
@@ -572,6 +627,150 @@ def delete_panel(
         )
     _write_manual_panels(run_dir, [e for e in manual if e["id"] != panel_id])
     return {"deleted": panel_id, "panels": _panel_rows(settings, workspace_id, run_id)}
+
+
+class PanelMove(BaseModel):
+    room: str
+
+
+@router.patch("/panels/{panel_id}")
+def move_panel(
+    workspace_id: str,
+    run_id: str,
+    panel_id: str,
+    body: PanelMove,
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Relocate a whole panel to another room from the Rooms tab (FR-40..FR-42).
+
+    Only the room changes — every interview already on the panel stays on it, at
+    the same panel id and slot. Room-exclusivity is still enforced (409 if the
+    target room already runs this division); the C4 4-panel cap is NOT,
+    consistent with every other manual Rooms-tab action (Session G4). A target
+    room must be open on every day the panel runs.
+    """
+    db_mode = supabase_enabled()
+    assignments, run_dir = _load_run_assignments(workspace_id, run_id)
+    if run_dir is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This run has no directory on this instance, so its panels cannot be moved.",
+        )
+
+    grid = build_slot_grid(settings.event)
+    manual = _load_manual_panels(run_dir)
+    moves = _load_panel_moves(run_dir)
+    panels = _run_panels(
+        settings,
+        grid,
+        assignments=assignments,
+        run_dir=run_dir,
+        run_metrics=None,
+        manual_panels=manual,
+        panel_moves=moves,
+    )
+    panel = next((p for p in panels if p.id == panel_id), None)
+    if panel is None:
+        raise HTTPException(status_code=404, detail=f"No panel '{panel_id}' in this run.")
+
+    dest = next((r for r in settings.rooms.rooms if r.id == body.room), None)
+    if dest is None:
+        raise HTTPException(status_code=422, detail=f"Unknown room '{body.room}'.")
+    if dest.id == panel.room:
+        raise HTTPException(
+            status_code=400, detail=f"Panel '{panel_id}' is already in room {dest.id}."
+        )
+    if panel.division not in dest.divisions:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Room '{dest.id}' is not configured for {panel.division.value}.",
+        )
+
+    all_dates = {s.date for s in grid.slots}
+    slot_date = {s.slot_id: s.date for s in grid.slots}
+    dest_days = set(dest.days) if dest.days else set(all_dates)
+    panel_dates = {slot_date[s] for s in panel.active_slot_ids if s in slot_date} | {
+        a.date for a in assignments if a.panel_id == panel_id
+    }
+    off_day = sorted(str(d) for d in panel_dates - dest_days)
+    if off_day:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Room '{dest.id}' is not open on {', '.join(off_day)} — panel "
+                f"'{panel_id}' runs then."
+            ),
+        )
+
+    if any(
+        p.id != panel_id and p.division == panel.division and p.room == dest.id
+        for p in panels
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{panel.division.value} already has a panel in room {dest.id} — a room "
+                "cannot run two panels of the same division (room-exclusivity)."
+            ),
+        )
+
+    moved_panels = [
+        p.model_copy(update={"room": dest.id}) if p.id == panel_id else p for p in panels
+    ]
+    edited_list = [
+        a.model_copy(update={"room": dest.id}) if a.panel_id == panel_id else a
+        for a in assignments
+    ]
+    rooms = resolve_rooms(settings.rooms, grid)
+    # An explicit recruiter instruction, so the C4 room cap is not enforced —
+    # the panel may land in an already-full room. Every other edit check still
+    # applies (division mismatch, off-grid slot, unknown room, ...).
+    violations = validate_edits(
+        edited_list, moved_panels, rooms, grid.slots, enforce_room_capacity=False
+    )
+    if violations:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": f"{len(violations)} illegal edit(s) — nothing moved (FR-42, E-12).",
+                "violations": [
+                    {"applicant_id": v.applicant_id, "code": v.code, "message": v.message}
+                    for v in violations
+                ],
+            },
+        )
+
+    # Persist the room change: a manually-added panel carries its room in
+    # manual_panels.json; a solver panel's override goes to panel_room_moves.json.
+    if any(e["id"] == panel_id for e in manual):
+        for e in manual:
+            if e["id"] == panel_id:
+                e["room"] = dest.id
+        _write_manual_panels(run_dir, manual)
+    else:
+        moves[panel_id] = dest.id
+        _write_panel_moves(run_dir, moves)
+
+    moved = sum(1 for a in assignments if a.panel_id == panel_id)
+    csv_path = run_dir / "assignments.csv"
+    if csv_path.exists():
+        assignments_frame(edited_list).to_csv(csv_path, index=False)
+    if db_mode:
+        from iff_scheduler.db import assignment_repo
+
+        run_pk = resolve_run_pk(workspace_id, run_id)
+        for a in assignments:
+            if a.panel_id == panel_id:
+                assignment_repo.update_assignment(
+                    run_pk, a.applicant_id, int(a.choice_index), {"room": dest.id}
+                )
+
+    rows = _panel_rows(settings, workspace_id, run_id)
+    return {
+        "panel": next((r for r in rows if r["panel_id"] == panel_id), None),
+        "panels": rows,
+        "moved_interviews": moved,
+    }
 
 
 class ResolveBody(BaseModel):

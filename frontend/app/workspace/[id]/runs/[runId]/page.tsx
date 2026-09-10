@@ -111,6 +111,28 @@ export default function RunPage({
     [workspaceId, runId, toast],
   );
 
+  /** Drag a panel's division badge from one room card onto another: the panel
+   * (with every interview on it) moves to the new room. Refresh assignments
+   * too so Room View / Applicants reflect the new room without a reload. */
+  const movePanel = useCallback(
+    async (panelId: string, room: string) => {
+      try {
+        const res = await api.movePanel(workspaceId, runId, panelId, room);
+        setPanels(res.panels);
+        await load();
+        toast.success(
+          `Moved ${panelId} to room ${room}` +
+            (res.moved_interviews > 0
+              ? ` with its ${res.moved_interviews} interview${res.moved_interviews === 1 ? "" : "s"}.`
+              : "."),
+        );
+      } catch (err) {
+        toast.fromError(err, "That panel could not be moved.");
+      }
+    },
+    [workspaceId, runId, toast, load],
+  );
+
   useEffect(() => {
     void (async () => {
       setLoading(true);
@@ -330,6 +352,7 @@ export default function RunPage({
                   onSelect={setSelected}
                   onAddPanel={addPanel}
                   onDeletePanel={removePanel}
+                  onMovePanel={movePanel}
                 />
               )}
             </>

@@ -546,6 +546,125 @@ def test_delete_rejects_a_non_manual_panel(client: TestClient, wsname: str) -> N
     assert resp.status_code == 404
 
 
+# ------------------------------------------------ Rooms tab: move a panel's room
+
+
+def _movable_panel_and_room(
+    client: TestClient, wsname: str, run_id: str
+) -> tuple[dict, str]:
+    """A solver panel with interviews plus a room, open on every day that panel
+    runs, that carries no panel of the same division — a legal drag target."""
+    panels = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/panels").json()["panels"]
+    rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    rooms_by_date: dict[str, set[str]] = {}
+    for r in rows:
+        rooms_by_date.setdefault(r["date"], set()).add(r["room"])
+    for src in panels:
+        if src["interview_count"] == 0:
+            continue
+        src_dates = {r["date"] for r in rows if r["panel_id"] == src["panel_id"]}
+        open_rooms = set.intersection(*(rooms_by_date.get(d, set()) for d in src_dates))
+        div_rooms = {p["room"] for p in panels if p["division"] == src["division"]}
+        for target in sorted(open_rooms - div_rooms - {src["room"]}):
+            return src, target
+    raise AssertionError("no movable panel/room pair in this run")
+
+
+def test_move_panel_relocates_it_with_every_interview(
+    client: TestClient, wsname: str
+) -> None:
+    run_id = _solved_run(client, wsname)
+    src, target = _movable_panel_and_room(client, wsname, run_id)
+    before = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    src_rows = [r for r in before if r["panel_id"] == src["panel_id"]]
+
+    resp = client.patch(
+        f"/api/workspaces/{wsname}/runs/{run_id}/panels/{src['panel_id']}",
+        json={"room": target},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["moved_interviews"] == len(src_rows)
+    moved = {p["panel_id"]: p for p in body["panels"]}[src["panel_id"]]
+    assert moved["room"] == target
+    assert moved["interview_count"] == src["interview_count"]
+
+    # Every interview follows the panel: new room, same panel id and slot.
+    after = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    after_rows = [r for r in after if r["panel_id"] == src["panel_id"]]
+    assert len(after_rows) == len(src_rows)
+    assert all(r["room"] == target for r in after_rows)
+    assert {r["slot_id"] for r in after_rows} == {r["slot_id"] for r in src_rows}
+
+    # Survives a re-fetch of the panel list.
+    again = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/panels").json()["panels"]
+    assert {p["panel_id"]: p["room"] for p in again}[src["panel_id"]] == target
+
+
+def test_move_panel_rejects_a_room_already_running_that_division(
+    client: TestClient, wsname: str
+) -> None:
+    run_id = _solved_run(client, wsname)
+    src, target = _movable_panel_and_room(client, wsname, run_id)
+
+    # Give `target` a panel of the same division (an empty manual one), so the
+    # move would put two panels of one division in one room.
+    added = client.post(
+        f"/api/workspaces/{wsname}/runs/{run_id}/panels",
+        json={"division": src["division"], "room": target},
+    )
+    assert added.status_code == 200, added.text
+
+    resp = client.patch(
+        f"/api/workspaces/{wsname}/runs/{run_id}/panels/{src['panel_id']}",
+        json={"room": target},
+    )
+    assert resp.status_code == 409
+    assert "room-exclusivity" in resp.json()["detail"]
+
+    # Nothing moved: the panel is still in its original room.
+    still = {p["panel_id"]: p["room"] for p in _panels(client, wsname, run_id)}
+    assert still[src["panel_id"]] == src["room"]
+
+
+def test_move_panel_ignores_the_4_panel_room_cap(
+    client: TestClient, wsname: str
+) -> None:
+    """A manual panel move may overload a room past max_concurrent_panels —
+    consistent with add-panel and single-interview moves (Session G4)."""
+    run_id = _solved_run(client, wsname)
+    src, target = _movable_panel_and_room(client, wsname, run_id)
+
+    # Fill `target` with manual panels of other divisions until it is at the cap.
+    rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/panels").json()
+    divisions = rows["divisions"]
+    in_target = {p["division"] for p in rows["panels"] if p["room"] == target}
+    room_cfg_cap = 4
+    fillers = [d for d in divisions if d not in in_target and d != src["division"]]
+    while (
+        sum(1 for p in _panels(client, wsname, run_id) if p["room"] == target)
+        < room_cfg_cap
+        and fillers
+    ):
+        client.post(
+            f"/api/workspaces/{wsname}/runs/{run_id}/panels",
+            json={"division": fillers.pop(), "room": target},
+        )
+
+    resp = client.patch(
+        f"/api/workspaces/{wsname}/runs/{run_id}/panels/{src['panel_id']}",
+        json={"room": target},
+    )
+    assert resp.status_code == 200, resp.text
+    assert {p["panel_id"]: p["room"] for p in resp.json()["panels"]}[
+        src["panel_id"]
+    ] == target
+
+
+def _panels(client: TestClient, wsname: str, run_id: str) -> list[dict]:
+    return client.get(f"/api/workspaces/{wsname}/runs/{run_id}/panels").json()["panels"]
+
+
 _THU_SLOTS = [
     "2026-09-17_1830",
     "2026-09-17_1850",
