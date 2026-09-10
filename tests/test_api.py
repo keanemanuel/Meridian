@@ -433,6 +433,55 @@ def test_patch_assignment_locks_and_survives_resolve(client: TestClient, wsname:
     assert resolved.json()["locked"] >= 1
 
 
+def test_move_onto_a_load_balanced_panel_is_accepted(
+    client: TestClient, wsname: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: every solve grows hot divisions with extra panels (ids like
+    ``PROGRAM-BAL-1``) that never reach committed ``panels.yaml``. The run's
+    assignments — and the panels the move UIs offer — carry those ids, so a
+    manual move onto one must validate against the run's own panel set, not the
+    committed config, which used to 422 "Unknown panel" with no re-solve able
+    to clear it (FR-40..FR-42)."""
+    import datetime
+
+    from iff_scheduler.settings import ActiveWindow, PanelEntry, PanelsConfig
+
+    bal_panel = PanelEntry(
+        id="PROGRAM-BAL-1",
+        division="PROGRAM",
+        room="2016",
+        active_windows=[ActiveWindow(date=datetime.date(2026, 9, 17), start="18:30", end="21:30")],
+    )
+
+    def fake_rebalance(settings, applicants, grid):  # type: ignore[no-untyped-def]
+        augmented = settings.model_copy(
+            update={"panels": PanelsConfig(panels=[*settings.panels.panels, bal_panel])}
+        )
+        return augmented, ["Rebalanced PROGRAM (Thu): 1->2 panels, ~1 applicants each"]
+
+    monkeypatch.setattr("api.services.rebalance_panels", fake_rebalance)
+
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={}).json()["run_id"]
+
+    # The solved run records the panel set it actually used, BAL panel included.
+    detail = client.get(f"/api/workspaces/{wsname}/runs/{run_id}")
+    solved_panel_ids = {p["id"] for p in detail.json()["metrics"]["solved_panels"]}
+    assert "PROGRAM-BAL-1" in solved_panel_ids
+
+    rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    target = next(r for r in rows if r["division"] == "PROGRAM" and r["date"] == "2026-09-17")
+
+    resp = client.patch(
+        f"/api/workspaces/{wsname}/runs/{run_id}/assignments/{target['assignment_id']}",
+        json={"panel_id": "PROGRAM-BAL-1", "slot_id": target["slot_id"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["assignment"]["panel_id"] == "PROGRAM-BAL-1"
+    assert resp.json()["locked"] is True
+
+
 # --------------------------------------------------------------- notify
 
 

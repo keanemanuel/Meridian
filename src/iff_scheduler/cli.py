@@ -614,6 +614,11 @@ def solve(
     metrics = compute_metrics(result, problem) | {
         "run_id": run_id,
         "panel_adjustments": autoscale_notes,
+        # The exact panel set solved with — committed panels plus anything
+        # `rebalance_panels`/`autoscale_panels` added (ids like
+        # `MEDMARDOC-BAL-1`). Read back by the API's manual-edit validator so a
+        # move onto a load-balanced panel is not rejected as "Unknown panel".
+        "solved_panels": [p.model_dump(mode="json") for p in settings.panels.panels],
     }
 
     _assignments_frame(result.assignments).to_csv(run_dir / "assignments.csv", index=False)

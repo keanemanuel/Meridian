@@ -9,6 +9,8 @@ if it is legal, the touched choice is written to
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -32,12 +34,12 @@ from api.services import execute_solve
 from iff_scheduler import workspace as ws
 from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.availability import summarise_availability
-from iff_scheduler.domain.grid import build_slot_grid
-from iff_scheduler.domain.models import Assignment
+from iff_scheduler.domain.grid import SlotGrid, build_slot_grid
+from iff_scheduler.domain.models import Assignment, Panel
 from iff_scheduler.review.edit_validator import validate_edits
 from iff_scheduler.review.locks import lock_from_assignment, merge_locks
 from iff_scheduler.scheduling.base import resolve_panels, resolve_rooms
-from iff_scheduler.settings import Settings
+from iff_scheduler.settings import PanelsConfig, Settings
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/runs/{run_id}", tags=["schedule"])
 
@@ -50,6 +52,47 @@ def _assignment_id(a: Assignment) -> str:
 
 def _serialise(a: Assignment) -> dict[str, Any]:
     return {"assignment_id": _assignment_id(a), **a.model_dump(mode="json")}
+
+
+def _run_panels(
+    settings: Settings,
+    grid: SlotGrid,
+    *,
+    run_dir: Path | None,
+    run_metrics: dict[str, Any] | None,
+) -> list[Panel]:
+    """The panel set the run in question was actually solved with.
+
+    Every solve runs `rebalance_panels`/`autoscale_panels`, which append extra
+    panels to the committed config before the problem reaches CP-SAT — ids
+    like ``MEDMARDOC-BAL-1`` or ``PROGRAM-AUTO-2`` that never appear in
+    ``panels.yaml``. The run's own assignments carry those ids, and so do the
+    panels the move UIs offer (frontend ``divisionPanels``, derived from the
+    same assignments). Validating a manual edit against the *committed* config
+    therefore rejects every move onto a load-balanced panel as "Unknown
+    panel", and a re-solve never fixes it because the next solve regenerates
+    the same extra panels and still never writes them to config.
+
+    The solved set is recorded on the run: ``metrics["solved_panels"]`` (this
+    session onward), with a fallback to the legacy ``autoscale.json`` for runs
+    written before that, and finally the committed config for a run that
+    scaled nothing. Rooms are never scaled, so they still come from config.
+    """
+    entries: list[dict[str, Any]] | None = None
+
+    metrics = run_metrics
+    if metrics is None and run_dir is not None:
+        metrics_path = run_dir / "metrics.json"
+        if metrics_path.exists():
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    if metrics and metrics.get("solved_panels"):
+        entries = metrics["solved_panels"]
+    elif run_dir is not None and (run_dir / "autoscale.json").exists():
+        legacy = json.loads((run_dir / "autoscale.json").read_text(encoding="utf-8"))
+        entries = legacy.get("panels") or None
+
+    panels_config = PanelsConfig.model_validate({"panels": entries}) if entries else settings.panels
+    return resolve_panels(panels_config, settings.rooms, grid)
 
 
 def _applicant_availability(
@@ -130,7 +173,18 @@ def patch_assignment(
         raise HTTPException(status_code=404, detail=f"{path} not found — solve first.")
 
     grid = build_slot_grid(settings.event)
-    panels = resolve_panels(settings.panels, settings.rooms, grid)
+    # Validate against the panels *this run* was solved with (which include any
+    # load-balanced `*-BAL-*` / `*-AUTO-*` panels), not the committed config —
+    # otherwise every move onto one is a false "Unknown panel" and no re-solve
+    # clears it (FR-40..FR-42).
+    run_metrics: dict[str, Any] | None = None
+    if db_mode and run_dir is None:
+        from api.dependencies import workspace_pk
+        from iff_scheduler.db import run_repo
+
+        row = run_repo.get_run(workspace_pk(workspace_id), run_id)
+        run_metrics = (row or {}).get("metrics") or None
+    panels = _run_panels(settings, grid, run_dir=run_dir, run_metrics=run_metrics)
     rooms = resolve_rooms(settings.rooms, grid)
     panels_by_id = {p.id: p for p in panels}
     slots_by_id = {s.slot_id: s for s in grid.slots}
