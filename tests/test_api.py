@@ -433,53 +433,154 @@ def test_patch_assignment_locks_and_survives_resolve(client: TestClient, wsname:
     assert resolved.json()["locked"] >= 1
 
 
-def test_move_onto_a_load_balanced_panel_is_accepted(
-    client: TestClient, wsname: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Regression: every solve grows hot divisions with extra panels (ids like
-    ``PROGRAM-BAL-1``) that never reach committed ``panels.yaml``. The run's
-    assignments — and the panels the move UIs offer — carry those ids, so a
-    manual move onto one must validate against the run's own panel set, not the
-    committed config, which used to 422 "Unknown panel" with no re-solve able
-    to clear it (FR-40..FR-42)."""
-    import datetime
+_THU_SLOTS = [
+    "2026-09-17_1830",
+    "2026-09-17_1850",
+    "2026-09-17_1910",
+    "2026-09-17_1930",
+    "2026-09-17_1950",
+    "2026-09-17_2010",
+    "2026-09-17_2030",
+    "2026-09-17_2050",
+    "2026-09-17_2110",
+]
 
-    from iff_scheduler.settings import ActiveWindow, PanelEntry, PanelsConfig
 
-    bal_panel = PanelEntry(
-        id="PROGRAM-BAL-1",
-        division="PROGRAM",
-        room="2016",
-        active_windows=[ActiveWindow(date=datetime.date(2026, 9, 17), start="18:30", end="21:30")],
+def _write_concentrated_creative_applicants(wsname: str, n: int = 16) -> None:
+    """Drop an applicants.clean.csv straight into the workspace: `n` applicants
+    all wanting two CREATIVE roles, all free only on the Thursday evening. That
+    per-day load is far past the 85% utilisation mark for one panel, so a real
+    ``rebalance_panels`` split runs at solve time and CREATIVE-BAL-1..k panels
+    are created — no monkeypatch, the actual production path."""
+    from datetime import datetime
+
+    import pandas as pd
+
+    from iff_scheduler import workspace as ws
+    from iff_scheduler.ingest.validate import CLEAN_COLUMNS
+
+    rows = [
+        {
+            "applicant_id": f"IFF-{i:04d}",
+            "full_name": f"Creative Applicant {i}",
+            "email": f"creative{i}@example.com",
+            "phone": f"+62-812-{i:04d}",
+            "student_id": f"S{i:04d}",
+            "sub_division_1": "Design and Decor",
+            "sub_division_2": "WebMaster",
+            "division_1": "CREATIVE",
+            "division_2": "CREATIVE",
+            "single_choice": "False",
+            "availability_slots": "|".join(_THU_SLOTS),
+            "submitted_at": datetime(2026, 8, 15, 10, i).isoformat(),
+            "notes": "",
+        }
+        for i in range(1, n + 1)
+    ]
+    path = ws.applicants_clean_path(wsname)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows, columns=CLEAN_COLUMNS).to_csv(path, index=False)
+
+
+def _other_slot(rows: list[dict], target: dict) -> str:
+    """The slot the target applicant's *other* interview sits in (so a move
+    never double-books them, C3)."""
+    other = next(
+        (
+            r
+            for r in rows
+            if r["applicant_id"] == target["applicant_id"]
+            and r["assignment_id"] != target["assignment_id"]
+        ),
+        None,
     )
+    return other["slot_id"] if other else ""
 
-    def fake_rebalance(settings, applicants, grid):  # type: ignore[no-untyped-def]
-        augmented = settings.model_copy(
-            update={"panels": PanelsConfig(panels=[*settings.panels.panels, bal_panel])}
-        )
-        return augmented, ["Rebalanced PROGRAM (Thu): 1->2 panels, ~1 applicants each"]
 
-    monkeypatch.setattr("api.services.rebalance_panels", fake_rebalance)
-
+def test_move_onto_a_load_balanced_panel_is_accepted(client: TestClient, wsname: str) -> None:
+    """Regression (FR-40..FR-42): every solve grows a hot division with extra
+    panels — real ids like ``CREATIVE-BAL-1`` — that never reach committed
+    ``panels.yaml``. The run's assignments and the move UIs both carry those
+    ids, so a manual move onto one must be validated against the run's own
+    panel set. Previously it 422'd "Unknown panel" and no re-solve could clear
+    it. Solve → move → assert it lands."""
     _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={}).json()["run_id"]
+    _write_concentrated_creative_applicants(wsname)
 
-    # The solved run records the panel set it actually used, BAL panel included.
-    detail = client.get(f"/api/workspaces/{wsname}/runs/{run_id}")
-    solved_panel_ids = {p["id"] for p in detail.json()["metrics"]["solved_panels"]}
-    assert "PROGRAM-BAL-1" in solved_panel_ids
+    solved = client.post(f"/api/workspaces/{wsname}/solve", json={})
+    assert solved.status_code == 200, solved.text
+    run_id = solved.json()["run_id"]
 
     rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
-    target = next(r for r in rows if r["division"] == "PROGRAM" and r["date"] == "2026-09-17")
+    seen = sorted({r["panel_id"] for r in rows})
+    bal_ids = sorted(p for p in seen if "-BAL-" in p)
+    assert bal_ids, f"expected a real rebalance split; panels seen: {seen}"
+
+    # Move an interview that is sitting on a load-balanced panel to a different
+    # load-balanced panel of the same division, at the slot its choice already
+    # occupies (so the only thing under test is that the panel is recognised).
+    src, dst = bal_ids[0], bal_ids[-1]
+    target = next(r for r in rows if r["panel_id"] == src)
+    occupied = {(r["panel_id"], r["slot_id"]) for r in rows}
+    free_slot = next(
+        s for s in _THU_SLOTS if (dst, s) not in occupied and s != _other_slot(rows, target)
+    )
 
     resp = client.patch(
         f"/api/workspaces/{wsname}/runs/{run_id}/assignments/{target['assignment_id']}",
-        json={"panel_id": "PROGRAM-BAL-1", "slot_id": target["slot_id"]},
+        json={"panel_id": dst, "slot_id": free_slot},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["assignment"]["panel_id"] == "PROGRAM-BAL-1"
+    assert "Unknown panel" not in resp.text
+    assert resp.json()["assignment"]["panel_id"] == dst
     assert resp.json()["locked"] is True
+
+
+def test_move_onto_a_load_balanced_panel_survives_lost_run_metadata(
+    client: TestClient, wsname: str
+) -> None:
+    """The panel set is also recoverable from the run's own assignments, so a
+    move still validates when every record of the augmented panels is gone:
+    a run solved before ``solved_panels`` was persisted (its ``autoscale.json``
+    and DB metrics carry nothing the validator can use). This is the exact
+    shape of the still-open bug report — a fresh solve alone did not fix it."""
+    from iff_scheduler import workspace as ws
+
+    _create_ws(client, wsname)
+    _write_concentrated_creative_applicants(wsname)
+    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={}).json()["run_id"]
+
+    rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    bal_ids = sorted({r["panel_id"] for r in rows if "-BAL-" in r["panel_id"]})
+    assert bal_ids
+    target = next(r for r in rows if r["panel_id"] == bal_ids[0])
+
+    # Strip every record of the augmented panels, in whichever store is live,
+    # while leaving the run itself intact.
+    run_dir = ws.runs_dir(wsname) / run_id
+    if run_dir.exists():
+        (run_dir / "autoscale.json").unlink(missing_ok=True)
+        metrics_path = run_dir / "metrics.json"
+        m = json.loads(metrics_path.read_text())
+        m.pop("solved_panels", None)
+        metrics_path.write_text(json.dumps(m))
+    from iff_scheduler.db import supabase_enabled
+
+    if supabase_enabled():
+        from api.dependencies import workspace_pk
+        from iff_scheduler.db import run_repo
+
+        row = run_repo.get_run(workspace_pk(wsname), run_id)
+        stripped = {k: v for k, v in row["metrics"].items() if k != "solved_panels"}
+        run_repo.update_run(row["id"], metrics=stripped)
+
+    resp = client.patch(
+        f"/api/workspaces/{wsname}/runs/{run_id}/assignments/{target['assignment_id']}",
+        json={"panel_id": target["panel_id"], "slot_id": target["slot_id"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "Unknown panel" not in resp.text
+    assert resp.json()["assignment"]["panel_id"] == target["panel_id"]
 
 
 # --------------------------------------------------------------- notify
