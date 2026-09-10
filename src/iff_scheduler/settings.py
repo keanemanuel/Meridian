@@ -172,6 +172,13 @@ class SolverWeights(BaseModel):
     spread: int
     balance: int
     lateness: int
+    # Penalty each time a panel's running order steps from one sub-division to
+    # another on the same day (Creative -> WebMaster -> Creative ...). Pushes
+    # each sub-division of a shared-panel division onto its own panel/room
+    # where capacity allows, and into a contiguous block when it must share.
+    # Soft and low: ranked below balance, never overriding a clash or a
+    # same-day placement. Defaults to 0 so an unset config is unchanged.
+    subdivision_switch: int = 0
 
 
 class SolverConfig(BaseModel):

@@ -6,10 +6,13 @@ number. `solver_cpsat` builds the identical expression inside the CP-SAT
 model; `test_solver_constraints` asserts the two agree.
 
 The weight ordering `clash >> different_day > repeat_panel > spread > balance
-> lateness` makes the objective lexicographic in practice: the solver will
-never accept an extra clash to gain compactness, never split an applicant's
-two interviews across days to avoid a repeated panel, and never drop an
-interview at all (FR-33, FR-36b).
+> subdivision_switch > lateness` makes the objective lexicographic in
+practice: the solver will never accept an extra clash to gain compactness,
+never split an applicant's two interviews across days to avoid a repeated
+panel, and never drop an interview at all (FR-33, FR-36b). `subdivision_switch`
+is the Part 2 clustering nudge — keep each sub-division of a shared-panel
+division (Creative / WebMaster) in a contiguous block on a panel's day, or on
+its own panel/room where capacity allows — ranked low so it only breaks ties.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ class ObjectiveBreakdown:
     repeat_panels: int
     spread_slots: int
     balance_spread: int
+    subdivision_switches: int
     lateness: int
     weights: SolverWeights
 
@@ -48,6 +52,7 @@ class ObjectiveBreakdown:
             + self.weights.repeat_panel * self.repeat_panels
             + self.weights.spread * self.spread_slots
             + self.weights.balance * self.balance_spread
+            + self.weights.subdivision_switch * self.subdivision_switches
             + self.weights.lateness * self.lateness
         )
 
@@ -58,6 +63,7 @@ class ObjectiveBreakdown:
             "repeat_panels": self.repeat_panels,
             "spread_slots": self.spread_slots,
             "balance_spread": self.balance_spread,
+            "subdivision_switches": self.subdivision_switches,
             "lateness": self.lateness,
             "total": self.total,
         }
@@ -82,14 +88,66 @@ def c8_applies(applicant: Applicant, by_division: dict[DivisionCode, list[Panel]
     return len(by_division.get(applicant.division_1, [])) >= 2
 
 
+def count_subdivision_switches(
+    assignments: Sequence[Assignment],
+    panels: Sequence[Panel],
+    slots: Sequence[Slot],
+) -> int:
+    """Times a panel's running order steps from one sub-division to another
+    between two consecutive-on-the-grid, same-day slots (Part 2 clustering).
+
+    Only counted for divisions that actually run more than one sub-division in
+    this schedule — a division with a single sub-division (Logistics, Liaison)
+    can never switch and is never charged for it. Phase 2 of the CP-SAT solve
+    builds the identical quantity; phase 1 (zero-clash) omits it, so callers
+    pass `subdivision_switch_scored=False` for a phase-1 result and the
+    breakdown total still matches `objective_value`.
+    """
+    slot_by_id = {slot.slot_id: slot for slot in slots}
+    division_of_panel = {panel.id: panel.division for panel in panels}
+
+    subdivisions: dict[DivisionCode, set[str]] = defaultdict(set)
+    for assignment in assignments:
+        subdivisions[assignment.division].add(assignment.sub_division)
+
+    by_panel: dict[str, list[Assignment]] = defaultdict(list)
+    for assignment in assignments:
+        by_panel[assignment.panel_id].append(assignment)
+
+    switches = 0
+    for panel_id, booked in by_panel.items():
+        division = division_of_panel.get(panel_id)
+        if division is None or len(subdivisions.get(division, set())) < 2:
+            continue
+        ordered = sorted(booked, key=lambda a: slot_by_id[a.slot_id].slot_index)
+        for i in range(len(ordered) - 1):
+            prev, cur = ordered[i], ordered[i + 1]
+            prev_slot, cur_slot = slot_by_id[prev.slot_id], slot_by_id[cur.slot_id]
+            if prev_slot.date != cur_slot.date:
+                continue
+            if cur_slot.slot_index != prev_slot.slot_index + 1:
+                continue
+            if prev.sub_division != cur.sub_division:
+                switches += 1
+    return switches
+
+
 def score_schedule(
     assignments: Sequence[Assignment],
     applicants: Sequence[Applicant],
     panels: Sequence[Panel],
     slots: Sequence[Slot],
     weights: SolverWeights,
+    *,
+    subdivision_switch_scored: bool = True,
 ) -> ObjectiveBreakdown:
-    """Score a finished schedule against the SPEC.md §5.2 objective."""
+    """Score a finished schedule against the SPEC.md §5.2 objective.
+
+    `subdivision_switch_scored` must match whether the solve actually put the
+    Part 2 clustering term in its model — it is off for a phase-1 (zero-clash)
+    result, so the breakdown total still equals what CP-SAT minimised. Pass
+    `result.phase == 2` from the pipeline.
+    """
     slot_index = {slot.slot_id: slot.slot_index for slot in slots}
     by_division = panels_by_division(panels)
     availability = {a.applicant_id: set(a.availability_slots) for a in applicants}
@@ -133,6 +191,11 @@ def score_schedule(
         repeat_panels=repeat_panels,
         spread_slots=spread_slots,
         balance_spread=balance_spread,
+        subdivision_switches=(
+            count_subdivision_switches(assignments, panels, slots)
+            if subdivision_switch_scored
+            else 0
+        ),
         lateness=lateness,
         weights=weights,
     )

@@ -186,18 +186,66 @@ def _all_day_windows(event: EventConfig) -> list[ActiveWindow]:
     return [ActiveWindow(date=d.date, start=d.start, end=d.end) for d in event.days]
 
 
-def _autoscale_room(rooms: RoomsConfig, event: EventConfig, division: DivisionCode) -> str:
-    """Pick the room an auto-scaled panel for `division` should sit in: the
-    first room that accepts the division AND runs every event day, so the
-    panel really is active both evenings. Falls back to the first room that
-    accepts the division, then to the first room at all."""
+def _division_rooms_by_date(
+    panels: list[PanelEntry],
+    division: DivisionCode,
+    room_dates: dict[str, set[Date]],
+    event_dates: set[Date],
+) -> dict[Date, set[str]]:
+    """(event day) -> rooms already running a panel of `division` that day.
+
+    Two panels of one division may never share a room on the same day: each is
+    a separate interview station and stacking them in one room adds no real
+    capacity. This is what `_pick_panel_room` checks before placing a new one.
+    """
+    taken: dict[Date, set[str]] = defaultdict(set)
+    for panel in panels:
+        if panel.division != division:
+            continue
+        room_days = room_dates.get(panel.room, set(event_dates))
+        if panel.active_windows:
+            active_days = {w.date for w in panel.active_windows} & room_days & event_dates
+        else:
+            active_days = room_days & event_dates
+        for day in active_days:
+            taken[day].add(panel.room)
+    return taken
+
+
+def _pick_panel_room(
+    rooms: RoomsConfig,
+    event: EventConfig,
+    division: DivisionCode,
+    existing_panels: list[PanelEntry],
+    room_dates: dict[str, set[Date]],
+) -> str | None:
+    """Room for a newly added panel of `division` (rebalance or autoscale).
+
+    A newly added panel is active for the whole event, so it runs on every
+    evening its room is open. Pick the first room that (a) can host the
+    division, (b) is open on at least one event day, and (c) is NOT already
+    running another panel of the same division on any day it would be active —
+    same-division panels are kept in distinct rooms so each one adds a real
+    station. Prefer a room open every event day so the panel really is active
+    both evenings.
+
+    Returns None when every room that can host `division` is already taken by
+    it: a genuine capacity ceiling for the caller to warn about, rather than
+    silently doubling two panels of one division into one room.
+    """
     event_dates = {d.date for d in event.days}
+    taken = _division_rooms_by_date(existing_panels, division, room_dates, event_dates)
+
     accepts = [r for r in rooms.rooms if division in r.divisions]
     both_days = [r for r in accepts if not r.days or set(r.days) >= event_dates]
-    for candidates in (both_days, accepts, list(rooms.rooms)):
-        if candidates:
-            return candidates[0].id
-    raise ValueError("rooms.yaml defines no rooms — cannot auto-scale panels.")
+    for candidates in (both_days, accepts):
+        for room in candidates:
+            run_dates = (set(room.days) if room.days else set(event_dates)) & event_dates
+            if run_dates and all(room.id not in taken.get(day, set()) for day in run_dates):
+                return room.id
+    if not rooms.rooms:
+        raise ValueError("rooms.yaml defines no rooms — cannot add a panel.")
+    return None
 
 
 def autoscale_panels(
@@ -218,11 +266,16 @@ def autoscale_panels(
     to surface as a review-your-staffing warning, not be swallowed.
 
     Returns the (possibly unchanged) settings and the list of messages —
-    empty when nothing was added.
+    empty when nothing was added and no capacity ceiling was hit. A ceiling
+    warning is appended when a division needs more panels but every room that
+    can host it already runs one (panels are never stacked to get past this).
     """
     windows = _all_day_windows(settings.event)
+    room_dates = _room_dates(settings.rooms, grid)
     panels: list[PanelEntry] = list(settings.panels.panels)
     added: Counter[DivisionCode] = Counter()
+    ceiling_hit: set[DivisionCode] = set()
+    warnings: list[str] = []
 
     for _ in range(max_rounds):
         rows = compute_capacity_advisor(
@@ -232,14 +285,27 @@ def autoscale_panels(
             settings.solver.target_utilisation,
             rooms=settings.rooms,
         )
-        short = [r for r in rows if r.verdict == "INFEASIBLE"]
+        short = [r for r in rows if r.verdict == "INFEASIBLE" and r.division not in ceiling_hit]
         if not short:
             break
+        progressed = False
         for row in short:
             need = max(1, row.recommended_panels - row.panels_configured)
-            room_id = _autoscale_room(settings.rooms, settings.event, row.division)
             for _n in range(need):
+                room_id = _pick_panel_room(
+                    settings.rooms, settings.event, row.division, panels, room_dates
+                )
+                if room_id is None:
+                    ceiling_hit.add(row.division)
+                    warnings.append(
+                        f"{row.division.value}: capacity ceiling — every room that can host "
+                        f"{row.division.value} already runs a {row.division.value} panel on "
+                        "every evening it is open. Two panels of one division are not stacked "
+                        "in a room; add a room or an evening to place more."
+                    )
+                    break
                 added[row.division] += 1
+                progressed = True
                 panels.append(
                     PanelEntry(
                         id=f"{row.division.value}-{AUTO_PANEL_TAG}-{added[row.division]}",
@@ -248,16 +314,18 @@ def autoscale_panels(
                         active_windows=windows,
                     )
                 )
+        if not progressed:
+            break
 
     if not added:
-        return settings, []
+        return settings, warnings
 
     augmented = settings.model_copy(update={"panels": PanelsConfig(panels=panels)})
     messages = [
         f"Auto-scaled {division.value}: added {count} panel(s)"
         for division, count in sorted(added.items(), key=lambda kv: kv[0].value)
     ]
-    return augmented, messages
+    return augmented, messages + warnings
 
 
 def _event_day_labels(event: EventConfig) -> dict[Date, str]:
@@ -373,6 +441,10 @@ def rebalance_panels(
     base_counts = Counter(panel.division for panel in panels)
     added: Counter[DivisionCode] = Counter()
     messages: list[str] = []
+    # (division, day) pairs that want another panel but have no distinct room
+    # left — a real capacity ceiling. Kept out of the candidate list so the
+    # loop does not spin on them, and warned about once.
+    ceiling_hit: set[tuple[DivisionCode, Date]] = set()
 
     for _ in range(max_rounds):
         capacity = _capacity_by_division_day(panels, grid, room_dates)
@@ -383,6 +455,8 @@ def rebalance_panels(
         # sees the wider set before the next split.
         candidates: list[tuple[float, str, Date, DivisionCode, int]] = []
         for (division, day), need in demand.items():
+            if (division, day) in ceiling_hit:
+                continue
             slot_cap = capacity.get((division, day), 0)
             if slot_cap <= 0 or need <= 0:
                 continue
@@ -401,6 +475,20 @@ def rebalance_panels(
         candidates.sort(key=lambda c: (-c[0], c[1], c[2].isoformat()))
         _util, _name, day, division, need = candidates[0]
 
+        # A split only helps if the new panel gets its own room: two panels of
+        # one division in one room run no extra interviews. If none is free,
+        # this is a genuine ceiling — say so rather than stacking.
+        room_id = _pick_panel_room(rooms, settings.event, division, panels, room_dates)
+        if room_id is None:
+            ceiling_hit.add((division, day))
+            messages.append(
+                f"Cannot split {division.value} "
+                f"({labels.get(day, day.isoformat())}): every room that can host "
+                f"{division.value} already runs a {division.value} panel that evening. "
+                "Capacity ceiling — add a room; panels were not stacked."
+            )
+            continue
+
         before = counts[division]
         after = before + 1
         added[division] += 1
@@ -408,7 +496,7 @@ def rebalance_panels(
             PanelEntry(
                 id=f"{division.value}-{BALANCE_PANEL_TAG}-{added[division]}",
                 division=division,
-                room=_autoscale_room(rooms, settings.event, division),
+                room=room_id,
                 active_windows=windows,
             )
         )
@@ -418,7 +506,7 @@ def rebalance_panels(
         )
 
     if not added:
-        return settings, []
+        return settings, messages
 
     augmented = settings.model_copy(update={"panels": PanelsConfig(panels=panels)})
     return augmented, messages

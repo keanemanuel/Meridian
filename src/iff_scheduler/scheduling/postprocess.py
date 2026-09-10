@@ -140,7 +140,15 @@ def build_conflicts(
 def compute_metrics(result: SolveResult, problem: SolveProblem) -> dict[str, Any]:
     """metrics.json for the run directory — enough to explain the schedule later."""
     breakdown = score_schedule(
-        result.assignments, problem.applicants, problem.panels, problem.slots, problem.weights
+        result.assignments,
+        problem.applicants,
+        problem.panels,
+        problem.slots,
+        problem.weights,
+        # Phase 1 (zero-clash) does not carry the Part 2 clustering term, so it
+        # must not be scored into a phase-1 result's breakdown or the total
+        # would no longer match `objective_value`.
+        subdivision_switch_scored=result.phase == 2,
     )
 
     load = Counter(a.panel_id for a in result.assignments)

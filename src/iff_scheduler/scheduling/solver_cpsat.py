@@ -253,6 +253,7 @@ class CpSatSolver:
             vars_by_choice_day=vars_by_choice_day,
             vars_by_panel=vars_by_panel,
             slots_by_id=slots_by_id,
+            score_subdivision_switch=allow_clashes,
         )
         model.minimize(objective)
 
@@ -360,11 +361,21 @@ class CpSatSolver:
         vars_by_choice_day: dict[tuple[str, ChoiceIndex, Date], list[cp_model.IntVar]],
         vars_by_panel: dict[str, list[cp_model.IntVar]],
         slots_by_id: dict[str, Slot],
+        score_subdivision_switch: bool = True,
     ) -> cp_model.LinearExpr:
         """The SPEC.md §5.2 objective, term for term.
 
         Mirrors `objectives.score_schedule` exactly, so the CP-SAT objective
         value and the independently-computed breakdown agree.
+
+        `score_subdivision_switch` is False for phase 1 (the zero-clash phase):
+        that phase is time-limited and returns the first feasible schedule it
+        finds, so loading its objective with the low-priority Part 2 clustering
+        term only perturbs the search away from a clean, same-day-heavy
+        solution for no gain. The term rides on phase 2, where the schedule is
+        already relaxed and the solver has budget to use it. `score_schedule`
+        is told the same via its `subdivision_switch_scored` flag, so the
+        breakdown still matches whichever phase produced the result.
         """
         weights = problem.weights
         terms: list[cp_model.LinearExpr] = []
@@ -473,6 +484,63 @@ class CpSatSolver:
             model.add_max_equality(highest, loads)
             model.add_min_equality(lowest, loads)
             terms.append(weights.balance * (highest - lowest))
+
+        # W_SUBDIVISION_SWITCH — keep each sub-division of a shared-panel
+        # division in a contiguous block on a panel's day, so the same
+        # interviewers are not flipped between Creative and WebMaster slot by
+        # slot (Part 2). A switch is charged when two consecutive-on-the-grid,
+        # same-day slots on one panel hold different sub-divisions. Only
+        # divisions actually running >1 sub-division can incur it. Mirrors
+        # objectives.count_subdivision_switches exactly.
+        if score_subdivision_switch and weights.subdivision_switch:
+            subdivision_of = {choice.key: choice.sub_division for choice in choices}
+            subdivisions_by_division: dict[DivisionCode, set[str]] = defaultdict(set)
+            for choice in choices:
+                subdivisions_by_division[choice.division].add(choice.sub_division)
+
+            # sum of x on (panel, slot) restricted to one sub-division — a
+            # linear expression, no extra var (each is 0/1 by C2).
+            by_panel_slot_subdivision: dict[tuple[str, str, str], list[cp_model.IntVar]] = (
+                defaultdict(list)
+            )
+            for (applicant_id, choice_index, panel_id, slot_id), var in x.items():
+                sub_division = subdivision_of[(applicant_id, choice_index)]
+                by_panel_slot_subdivision[(panel_id, slot_id, sub_division)].append(var)
+
+            ordered_slots = sorted(problem.slots, key=lambda s: s.slot_index)
+            for panel in problem.panels:
+                present = sorted(subdivisions_by_division.get(panel.division, set()))
+                if len(present) < 2:
+                    continue
+                for index in range(len(ordered_slots) - 1):
+                    earlier, later = ordered_slots[index], ordered_slots[index + 1]
+                    if earlier.date != later.date or later.slot_index != earlier.slot_index + 1:
+                        continue
+                    # One switch var per (panel, adjacent pair). It is forced to
+                    # 1 only when `earlier` holds one sub-division and `later`
+                    # another (both 0/1 by C2, so at most one ordered pair can
+                    # fire) — matching count_subdivision_switches' +1 per pair.
+                    pair_constraints: list[tuple[list[cp_model.IntVar], list[cp_model.IntVar]]] = []
+                    for here in present:
+                        first_vars = by_panel_slot_subdivision.get(
+                            (panel.id, earlier.slot_id, here), []
+                        )
+                        next_other = [
+                            var
+                            for other in present
+                            if other != here
+                            for var in by_panel_slot_subdivision.get(
+                                (panel.id, later.slot_id, other), []
+                            )
+                        ]
+                        if first_vars and next_other:
+                            pair_constraints.append((first_vars, next_other))
+                    if not pair_constraints:
+                        continue
+                    switch = model.new_bool_var(f"subdiv_switch_{panel.id}_{earlier.slot_id}")
+                    for first_vars, next_other in pair_constraints:
+                        model.add(sum(first_vars) + sum(next_other) - 1 <= switch)
+                    terms.append(weights.subdivision_switch * switch)
 
         return cp_model.LinearExpr.sum(terms) if terms else cp_model.LinearExpr.sum([])
 

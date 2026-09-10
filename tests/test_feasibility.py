@@ -223,6 +223,26 @@ def test_baseline_config_covers_an_even_40_per_division_split() -> None:
     assert by_division[DivisionCode.CREATIVE].verdict == "OK"
 
 
+def _same_division_room_day_collisions(settings) -> list[tuple[str, str, str]]:
+    """(division, date, room) tuples where two panels of one division are put in
+    the same room on the same day — the thing Part 1 forbids in the auto
+    panel-to-room assignment. Empty list == clean."""
+    all_dates = {d.date for d in settings.event.days}
+    room_days = {r.id: (set(r.days) if r.days else set(all_dates)) for r in settings.rooms.rooms}
+    seen: set[tuple[DivisionCode, object, str]] = set()
+    collisions: list[tuple[str, str, str]] = []
+    for panel in settings.panels.panels:
+        days = room_days.get(panel.room, set(all_dates))
+        if panel.active_windows:
+            days = days & {w.date for w in panel.active_windows}
+        for day in days & all_dates:
+            key = (panel.division, day, panel.room)
+            if key in seen:
+                collisions.append((panel.division.value, day.isoformat(), panel.room))
+            seen.add(key)
+    return collisions
+
+
 def test_autoscale_panels_clears_an_infeasible_division() -> None:
     """A division whose demand outstrips the committed config gets extra
     panels until the Advisor stops flagging it — and the caller is told."""
@@ -230,10 +250,11 @@ def test_autoscale_panels_clears_an_infeasible_division() -> None:
     grid = build_slot_grid(settings.event)
     all_slots = [s.slot_id for s in grid.slots]
 
-    # 120 applicants all wanting LIAISON twice — far past its 3 panels.
+    # 25 applicants wanting LIAISON twice (50 interviews) — past its 3 panels,
+    # but a shortfall that spare distinct rooms can still absorb.
     applicants = [
         _applicant(f"L{i}", DivisionCode.LIAISON, DivisionCode.LIAISON, all_slots)
-        for i in range(120)
+        for i in range(25)
     ]
 
     before = compute_capacity_advisor(
@@ -249,10 +270,34 @@ def test_autoscale_panels_clears_an_infeasible_division() -> None:
         applicants, scaled.panels, grid, settings.solver.target_utilisation, rooms=settings.rooms
     )
     assert is_feasible(after)
+    # Part 1: the added panels never double up with another LIAISON panel in
+    # the same room on the same day.
+    assert _same_division_room_day_collisions(scaled) == []
     # Untouched when nothing is short.
     ok_settings, ok_messages = autoscale_panels(settings, [], grid)
     assert ok_messages == []
     assert ok_settings is settings
+
+
+def test_autoscale_warns_at_the_room_ceiling_instead_of_stacking() -> None:
+    """When a division's demand is so high that every room it can use already
+    runs one of its panels, autoscale stops and warns — it never puts two
+    panels of one division in the same room to get past the ceiling (Part 1)."""
+    settings = load_settings()
+    grid = build_slot_grid(settings.event)
+    all_slots = [s.slot_id for s in grid.slots]
+
+    # 120 applicants wanting LIAISON twice = 240 interviews across two evenings:
+    # unreachable without more rooms.
+    applicants = [
+        _applicant(f"L{i}", DivisionCode.LIAISON, DivisionCode.LIAISON, all_slots)
+        for i in range(120)
+    ]
+
+    scaled, messages = autoscale_panels(settings, applicants, grid)
+
+    assert any("capacity ceiling" in m and "LIAISON" in m for m in messages)
+    assert _same_division_room_day_collisions(scaled) == []
 
 
 # ---- proactive load-balancing split (SPEC.md §5.5, req: rebalance not overflow) ----
@@ -312,11 +357,17 @@ def test_rebalance_splits_before_panels_pack_past_the_threshold() -> None:
 
     scaled_creative = _creative_panels(scaled)
     assert scaled_creative == creative_before + len(messages)
-    # An even split now sits under the threshold, so a second pass is a no-op
-    # and returns the same object untouched (idempotent).
+    # Part 1: every split panel landed in its own room — no two CREATIVE
+    # panels share a room on a day.
+    assert _same_division_room_day_collisions(scaled) == []
+
+    # A second pass never stacks two panels of a division in one room: any
+    # further split lands in a fresh distinct room, and once the rooms run out
+    # it reports a ceiling ("panels were not stacked") instead.
     again, again_messages = rebalance_panels(scaled, applicants, grid)
-    assert again_messages == []
-    assert again is scaled
+    assert _same_division_room_day_collisions(again) == []
+    for message in again_messages:
+        assert message.startswith("Rebalanced CREATIVE") or "not stacked" in message
 
 
 def test_rebalance_is_capped_so_it_cannot_grow_unbounded() -> None:
