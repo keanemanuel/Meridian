@@ -17,7 +17,7 @@ import { formatRunId, formatTime, interviewBreakdown } from "@/lib/schedule";
 import type { Assignment } from "@/lib/types";
 
 const TABS = [
-  { id: "room", label: "Room View" },
+  { id: "room", label: "View" },
   { id: "applicants", label: "Applicants" },
   { id: "panels", label: "Panels" },
   { id: "rooms", label: "Rooms" },

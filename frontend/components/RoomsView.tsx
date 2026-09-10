@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import {
+  assignmentMatches,
   dayAxis,
   formatDayLabel,
   formatTime,
@@ -11,7 +12,7 @@ import {
   slotAxis,
 } from "@/lib/schedule";
 import type { Assignment } from "@/lib/types";
-import { EmptyState } from "./ui";
+import { EmptyState, SearchBar } from "./ui";
 
 /** One card per room, for a single day at a time (FR-32).
  *
@@ -42,6 +43,7 @@ export function RoomsView({
 }) {
   const days = useMemo(() => dayAxis(assignments), [assignments]);
   const [rawDay, setRawDay] = useState(0);
+  const [query, setQuery] = useState("");
 
   /** Run-wide summary per room, looked up by the selected day's cards. */
   const summaryByRoom = useMemo(() => {
@@ -69,6 +71,7 @@ export function RoomsView({
 
   return (
     <div>
+      <SearchBar value={query} onChange={setQuery} />
       <div className="mb-3 flex items-center gap-3">
         <button
           type="button"
@@ -107,6 +110,7 @@ export function RoomsView({
               summary={summaryByRoom.get(room)}
               assignments={onDay.filter((a) => a.room === room)}
               slots={daySlots}
+              query={query}
               onSelect={onSelect}
             />
           ))}
@@ -127,6 +131,7 @@ function RoomCard({
   summary,
   assignments,
   slots,
+  query,
   onSelect,
 }: {
   room: string;
@@ -135,6 +140,7 @@ function RoomCard({
   /** The whole day's slot axis, shared by every card. Rows are drawn for all
    * of these, not just the slots the active division happens to fill. */
   slots: SlotAxis[];
+  query: string;
   onSelect: (a: Assignment) => void;
 }) {
   const panels = summary?.panels ?? [
@@ -154,7 +160,9 @@ function RoomCard({
     }
     return [...counts.entries()]
       .map(([division, count]) => ({ division, count }))
-      .sort((x, y) => y.count - x.count || x.division.localeCompare(y.division));
+      .sort(
+        (x, y) => y.count - x.count || x.division.localeCompare(y.division),
+      );
   }, [summary, assignments]);
 
   // Default to the first (largest) division; `?? divisions[0]` keeps a sensible
@@ -197,7 +205,9 @@ function RoomCard({
     <section className="overflow-hidden rounded-lg border border-neutral-200 bg-white">
       <header className="flex items-baseline justify-between border-b border-neutral-200 px-4 py-2.5">
         <div>
-          <h3 className="text-sm font-semibold text-neutral-900">Room {room}</h3>
+          <h3 className="text-sm font-semibold text-neutral-900">
+            Room {room}
+          </h3>
           <p className="text-xs text-neutral-400">
             {panels.length} panel{panels.length === 1 ? "" : "s"}:{" "}
             {panels.join(", ")}
@@ -286,6 +296,7 @@ function RoomCard({
                       >
                         <ScheduleCell
                           items={here.filter((a) => a.panel_id === panelId)}
+                          query={query}
                           onSelect={onSelect}
                         />
                       </td>
@@ -308,7 +319,11 @@ function RoomCard({
                 >
                   <SlotTimeHeader slot={slot} />
                   <td className="p-0 align-top">
-                    <ScheduleCell items={here} onSelect={onSelect} />
+                    <ScheduleCell
+                      items={here}
+                      query={query}
+                      onSelect={onSelect}
+                    />
                   </td>
                 </tr>
               );
@@ -342,15 +357,15 @@ function SlotTimeHeader({ slot }: { slot: SlotAxis }) {
  * empty, otherwise one clickable row per applicant. Shared by both layouts. */
 function ScheduleCell({
   items,
+  query,
   onSelect,
 }: {
   items: Assignment[];
+  query: string;
   onSelect: (a: Assignment) => void;
 }) {
   if (items.length === 0) {
-    return (
-      <div className="min-h-[2.75rem] px-3 py-2 text-neutral-300">·</div>
-    );
+    return <div className="min-h-[2.75rem] px-3 py-2 text-neutral-300">·</div>;
   }
   return (
     <>
@@ -364,6 +379,10 @@ function ScheduleCell({
             a.is_clash
               ? "bg-red-100 text-red-600 hover:bg-red-200"
               : "text-neutral-800 hover:bg-neutral-100"
+          } ${
+            assignmentMatches(a, query)
+              ? "ring-2 ring-inset ring-amber-500"
+              : ""
           }`}
         >
           <span className="block truncate pr-4 font-medium">{a.full_name}</span>

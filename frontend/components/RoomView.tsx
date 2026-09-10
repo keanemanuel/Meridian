@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import {
+  assignmentMatches,
   cellIndex,
   cellKey,
   dayAxis,
@@ -11,7 +12,7 @@ import {
   slotAxis,
 } from "@/lib/schedule";
 import type { Assignment } from "@/lib/types";
-import { EmptyState } from "./ui";
+import { EmptyState, SearchBar } from "./ui";
 
 export type MoveRequest = {
   assignment: Assignment;
@@ -44,6 +45,7 @@ export function RoomView({
 }) {
   const days = useMemo(() => dayAxis(assignments), [assignments]);
   const [rawDay, setRawDay] = useState(0);
+  const [query, setQuery] = useState("");
   const [dragging, setDragging] = useState<Assignment | null>(null);
 
   const cells = useMemo(() => cellIndex(assignments), [assignments]);
@@ -81,6 +83,7 @@ export function RoomView({
 
   return (
     <div>
+      <SearchBar value={query} onChange={setQuery} />
       <div className="mb-3 flex items-center gap-3">
         <button
           type="button"
@@ -124,6 +127,7 @@ export function RoomView({
                 date={date}
                 assignments={assignments}
                 cells={cells}
+                query={query}
                 onSelect={onSelect}
                 onMove={onMove}
                 moving={moving}
@@ -143,6 +147,7 @@ function DayGrid({
   date,
   assignments,
   cells,
+  query,
   onSelect,
   onMove,
   moving,
@@ -153,6 +158,7 @@ function DayGrid({
   date: string;
   assignments: Assignment[];
   cells: Map<string, Assignment[]>;
+  query: string;
   onSelect: (a: Assignment) => void;
   onMove?: (move: MoveRequest) => void | Promise<void>;
   moving: boolean;
@@ -236,7 +242,9 @@ function DayGrid({
                         : undefined
                     }
                     className={`border-b border-r border-neutral-100 p-0 align-top transition-colors ${
-                      droppable ? "bg-blue-50 ring-1 ring-inset ring-blue-400" : ""
+                      droppable
+                        ? "bg-blue-50 ring-1 ring-inset ring-blue-400"
+                        : ""
                     }`}
                   >
                     {here.length === 0 ? (
@@ -274,6 +282,10 @@ function DayGrid({
                             a.is_clash
                               ? "bg-red-100 text-red-600 hover:bg-red-200"
                               : "text-neutral-800 hover:bg-neutral-100"
+                          } ${
+                            assignmentMatches(a, query)
+                              ? "ring-2 ring-inset ring-amber-500"
+                              : ""
                           }`}
                         >
                           <span className="block truncate pr-4 font-medium">

@@ -70,13 +70,31 @@ export function Badge({
   );
 }
 
-export function EmptyState({
-  title,
-  hint,
+/** Compact search input for the schedule views. Controlled; the parent holds
+ * the query and decides what to highlight. `type="search"` gives a native
+ * clear affordance, and clearing it fires onChange("") like any other edit. */
+export function SearchBar({
+  value,
+  onChange,
+  placeholder = "Search by applicant or division…",
 }: {
-  title: string;
-  hint?: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
 }) {
+  return (
+    <input
+      type="search"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      aria-label={placeholder}
+      className="mb-3 w-64 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-800 outline-none placeholder:text-neutral-400 focus:border-neutral-500"
+    />
+  );
+}
+
+export function EmptyState({ title, hint }: { title: string; hint?: string }) {
   return (
     <div className="rounded-lg border border-dashed border-neutral-300 bg-white px-6 py-10 text-center">
       <p className="text-sm font-medium text-neutral-700">{title}</p>
