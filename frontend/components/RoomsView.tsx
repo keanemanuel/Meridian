@@ -26,7 +26,9 @@ import { EmptyState } from "./ui";
  * The "divisions represented" chips double as a filter: exactly one is active
  * at a time and the schedule below shows only that division's interviews, so a
  * room card reads as one division's running order rather than every division
- * interleaved. The selection is per-card — each room keeps its own.
+ * interleaved. The selection is per-card — each room keeps its own. When the
+ * active division runs on more than one panel in the same room, the schedule
+ * gains a column per panel so the two running orders never collide in a cell.
  *
  * Clicking an interview calls `onSelect`, the same hook RoomView uses to open
  * the move / detail dialog.
@@ -116,7 +118,10 @@ export function RoomsView({
 
 /** A single room's card: the run-wide summary header, a one-of division
  * selector, then this day's schedule for the selected division as a vertical
- * time -> applicant list. */
+ * time -> applicant list. If that division runs on two panels in this one
+ * room, the schedule splits into a column per panel (labelled with the panel
+ * id) so their running orders sit side by side instead of piling into one
+ * cell. */
 function RoomCard({
   room,
   summary,
@@ -174,6 +179,19 @@ function RoomCard({
     }
     return map;
   }, [shown]);
+
+  /** The panels the active division runs in this room. A division can be split
+   * across two panels sharing one room (e.g. MEDMARDOC-BAL-1 and
+   * MEDMARDOC-BAL-2 both in Room 2018); when that happens each gets its own
+   * column so their running orders never overlap in a single cell. */
+  const divisionPanels = useMemo(
+    () =>
+      [...new Set(shown.map((a) => a.panel_id))].sort((x, y) =>
+        x.localeCompare(y, undefined, { numeric: true }),
+      ),
+    [shown],
+  );
+  const multiPanel = divisionPanels.length > 1;
 
   return (
     <section className="overflow-hidden rounded-lg border border-neutral-200 bg-white">
@@ -234,6 +252,50 @@ function RoomCard({
         <p className="px-4 py-3 text-xs text-neutral-400">
           Nothing scheduled in this room today.
         </p>
+      ) : multiPanel ? (
+        <div className="overflow-x-auto">
+          <table className="min-w-full border-collapse text-xs">
+            <thead>
+              <tr className="border-b border-neutral-200">
+                <th className="w-24 border-r border-neutral-100 bg-neutral-50 px-3 py-2 text-left font-medium uppercase tracking-wide text-neutral-400">
+                  Slot
+                </th>
+                {divisionPanels.map((panelId) => (
+                  <th
+                    key={panelId}
+                    className="min-w-[9rem] border-r border-neutral-100 bg-neutral-50 px-3 py-2 text-left font-medium text-neutral-700 last:border-r-0"
+                  >
+                    {panelId}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {slots.map((slot) => {
+                const here = bySlot.get(slot.slot_id) ?? [];
+                return (
+                  <tr
+                    key={slot.slot_id}
+                    className="border-b border-neutral-100 last:border-0"
+                  >
+                    <SlotTimeHeader slot={slot} />
+                    {divisionPanels.map((panelId) => (
+                      <td
+                        key={panelId}
+                        className="border-r border-neutral-100 p-0 align-top last:border-r-0"
+                      >
+                        <ScheduleCell
+                          items={here.filter((a) => a.panel_id === panelId)}
+                          onSelect={onSelect}
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       ) : (
         <table className="min-w-full border-collapse text-xs">
           <tbody>
@@ -244,49 +306,9 @@ function RoomCard({
                   key={slot.slot_id}
                   className="border-b border-neutral-100 last:border-0"
                 >
-                  <th
-                    scope="row"
-                    className="w-24 border-r border-neutral-100 bg-neutral-50 px-3 py-2 text-left align-top font-normal"
-                  >
-                    {/* Always two lines — start over end — so every time
-                        cell is the same height regardless of the division
-                        filter or how the range would otherwise wrap. */}
-                    <span className="block font-medium tabular-nums text-neutral-700">
-                      {formatTime(slot.start_time)}
-                    </span>
-                    <span className="block tabular-nums text-neutral-400">
-                      {formatTime(slot.end_time)}
-                    </span>
-                  </th>
+                  <SlotTimeHeader slot={slot} />
                   <td className="p-0 align-top">
-                    {here.length === 0 ? (
-                      <div className="min-h-[2.75rem] px-3 py-2 text-neutral-300">
-                        ·
-                      </div>
-                    ) : (
-                      here.map((a) => (
-                        <button
-                          key={a.assignment_id}
-                          type="button"
-                          onClick={() => onSelect(a)}
-                          title={buildTitle(a)}
-                          className={`block min-h-[2.75rem] w-full px-3 py-2 text-left transition-colors ${
-                            a.is_clash
-                              ? "bg-red-100 text-red-600 hover:bg-red-200"
-                              : "text-neutral-800 hover:bg-neutral-100"
-                          }`}
-                        >
-                          <span className="block truncate pr-4 font-medium">
-                            {a.full_name}
-                          </span>
-                          <span
-                            className={`block truncate ${a.is_clash ? "text-red-500" : "text-neutral-500"}`}
-                          >
-                            {a.sub_division}
-                          </span>
-                        </button>
-                      ))
-                    )}
+                    <ScheduleCell items={here} onSelect={onSelect} />
                   </td>
                 </tr>
               );
@@ -295,6 +317,64 @@ function RoomCard({
         </table>
       )}
     </section>
+  );
+}
+
+/** The two-line "start over end" row header, identical in the single- and
+ * multi-panel layouts so every time cell is the same height. */
+function SlotTimeHeader({ slot }: { slot: SlotAxis }) {
+  return (
+    <th
+      scope="row"
+      className="w-24 border-r border-neutral-100 bg-neutral-50 px-3 py-2 text-left align-top font-normal"
+    >
+      <span className="block font-medium tabular-nums text-neutral-700">
+        {formatTime(slot.start_time)}
+      </span>
+      <span className="block tabular-nums text-neutral-400">
+        {formatTime(slot.end_time)}
+      </span>
+    </th>
+  );
+}
+
+/** One slot's worth of interviews for a single column: the blank marker when
+ * empty, otherwise one clickable row per applicant. Shared by both layouts. */
+function ScheduleCell({
+  items,
+  onSelect,
+}: {
+  items: Assignment[];
+  onSelect: (a: Assignment) => void;
+}) {
+  if (items.length === 0) {
+    return (
+      <div className="min-h-[2.75rem] px-3 py-2 text-neutral-300">·</div>
+    );
+  }
+  return (
+    <>
+      {items.map((a) => (
+        <button
+          key={a.assignment_id}
+          type="button"
+          onClick={() => onSelect(a)}
+          title={buildTitle(a)}
+          className={`block min-h-[2.75rem] w-full px-3 py-2 text-left transition-colors ${
+            a.is_clash
+              ? "bg-red-100 text-red-600 hover:bg-red-200"
+              : "text-neutral-800 hover:bg-neutral-100"
+          }`}
+        >
+          <span className="block truncate pr-4 font-medium">{a.full_name}</span>
+          <span
+            className={`block truncate ${a.is_clash ? "text-red-500" : "text-neutral-500"}`}
+          >
+            {a.sub_division}
+          </span>
+        </button>
+      ))}
+    </>
   );
 }
 
