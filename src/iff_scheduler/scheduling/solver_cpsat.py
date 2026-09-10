@@ -254,6 +254,7 @@ class CpSatSolver:
             vars_by_panel=vars_by_panel,
             slots_by_id=slots_by_id,
             score_subdivision_switch=allow_clashes,
+            score_same_day_gap=allow_clashes,
         )
         model.minimize(objective)
 
@@ -362,23 +363,29 @@ class CpSatSolver:
         vars_by_panel: dict[str, list[cp_model.IntVar]],
         slots_by_id: dict[str, Slot],
         score_subdivision_switch: bool = True,
+        score_same_day_gap: bool = True,
     ) -> cp_model.LinearExpr:
         """The SPEC.md §5.2 objective, term for term.
 
         Mirrors `objectives.score_schedule` exactly, so the CP-SAT objective
         value and the independently-computed breakdown agree.
 
-        `score_subdivision_switch` is False for phase 1 (the zero-clash phase):
-        that phase is time-limited and returns the first feasible schedule it
-        finds, so loading its objective with the low-priority Part 2 clustering
-        term only perturbs the search away from a clean, same-day-heavy
-        solution for no gain. The term rides on phase 2, where the schedule is
-        already relaxed and the solver has budget to use it. `score_schedule`
-        is told the same via its `subdivision_switch_scored` flag, so the
-        breakdown still matches whichever phase produced the result.
+        `score_subdivision_switch` and `score_same_day_gap` are both False for
+        phase 1 (the zero-clash phase): that phase is time-limited against the
+        240-interview budget (FR-39) and returns the first optimal/feasible
+        schedule it finds, so its model is kept exactly as it was rather than
+        loaded with a low-priority refinement (the Part 2 clustering term or the
+        Part 3 same-day gap term). Both ride on phase 2, where the schedule is
+        already relaxed and the solver has headroom. `score_schedule` is told
+        the same via its `subdivision_switch_scored` / `same_day_gap_scored`
+        flags, so the breakdown still matches whichever phase produced the
+        result.
         """
         weights = problem.weights
-        terms: list[cp_model.LinearExpr] = []
+        # `int` entries occur when a soft term collapses to a constant (e.g. a
+        # pair with no common candidate day always pays W_DIFFERENT_DAY);
+        # LinearExpr.sum folds them in and score_schedule counts the same.
+        terms: list[cp_model.LinearExpr | int] = []
 
         # W_CLASH (dominant) and W_LATE, both linear in x.
         availability = {a.applicant_id: set(a.availability_slots) for a in problem.applicants}
@@ -398,7 +405,11 @@ class CpSatSolver:
         # placement would require a clash. An applicant whose two choices have
         # no common candidate day is split by construction — the term is still
         # added (as a constant) so the objective value matches score_schedule.
+        # `same_day_sum[aid]` (a 0/1 expression: at most one per-day flag is hot
+        # by C1) is captured here and reused by W_SAME_DAY_GAP below, so that
+        # term adds no per-day vars of its own.
         event_dates = sorted({slot.date for slot in problem.slots})
+        same_day_sum: dict[str, cp_model.LinearExpr | int] = {}
         if weights.different_day and len(event_dates) > 1:
             for applicant in problem.applicants:
                 if applicant.single_choice or applicant.division_2 is None:
@@ -418,6 +429,7 @@ class CpSatSolver:
                 different_day = model.new_bool_var(f"diffday_{aid}")
                 model.add(different_day + sum(same_day_flags) >= 1)
                 terms.append(weights.different_day * different_day)
+                same_day_sum[aid] = sum(same_day_flags) if same_day_flags else 0
 
         # W_REPEAT — C8, soft and auto-relaxing (FR-30b, E-01c).
         for applicant in problem.applicants:
@@ -432,11 +444,41 @@ class CpSatSolver:
                 model.add(sum(first) + sum(second) - 1 <= repeat)
                 terms.append(weights.repeat_panel * repeat)
 
-        # W_SPREAD — dead time between an applicant's two interviews (FR-36).
+        # W_SPREAD — total dead time between an applicant's two interviews
+        # (FR-36), linear in the raw grid distance (an L1 term: keeps the sum of
+        # gaps down). W_SAME_DAY_GAP — the Part 3 refinement: a *bottleneck*
+        # (L-infinity) term on the single widest gap any applicant has between
+        # two interviews **on the same event day**. Minimising the worst gap is
+        # what stops the "5-hour gap between classes" — one applicant left with a
+        # long wait while everyone else goes back-to-back. Together the two keep
+        # same-day gaps both small (W_SPREAD) and even (W_SAME_DAY_GAP), which is
+        # Strategy 1 from the brief; Strategy 2 ("both as early as possible") is
+        # already served by the untouched W_LATE term.
+        #
+        # Soft, and kept below W_DIFF_DAY: `worst_same_day_gap` is a single int
+        # var in [0, last_index], and with `same_day_gap` small enough that
+        # `same_day_gap · last_index < different_day` (see config/solver.yaml) it
+        # can never make a cross-day split look cheaper than a same-day pair —
+        # FR-36b keeps priority. A gap forced wide by panel/room availability
+        # just pins `worst_same_day_gap` there; the term then stops discriminating
+        # but never forces a clash or a cross-day split to shrink it.
+        #
+        # Like the Part 2 clustering term it rides on phase 2 only
+        # (`score_same_day_gap`): phase 1 is time-boxed against the 240-interview
+        # budget (FR-39) and already minimises the linear W_SPREAD, so its model
+        # is left exactly as it was.
         # A single-choice applicant has no second interview, so there is no
         # gap to penalise (the `not placed` break also covers this).
         last_index = len(problem.slots) - 1
+        multi_day = len({slot.date for slot in problem.slots}) > 1
+        price_same_day_gap = score_same_day_gap and weights.same_day_gap > 0
+        worst_same_day_gap = (
+            model.new_int_var(0, last_index, "worst_same_day_gap")
+            if price_same_day_gap
+            else None
+        )
         for applicant in problem.applicants:
+            aid = applicant.applicant_id
             positions = []
             for choice_index in (1, 2):
                 division = applicant.division_1 if choice_index == 1 else applicant.division_2
@@ -445,7 +487,7 @@ class CpSatSolver:
                         var
                         for panel in by_division.get(division, [])
                         for var in vars_by_choice_panel.get(
-                            (applicant.applicant_id, choice_index, panel.id), []
+                            (aid, choice_index, panel.id), []
                         )
                     ]
                     if division is not None
@@ -453,22 +495,56 @@ class CpSatSolver:
                 )
                 if not placed:
                     break
-                position = model.new_int_var(
-                    0, last_index, f"pos_{applicant.applicant_id}_{choice_index}"
-                )
+                position = model.new_int_var(0, last_index, f"pos_{aid}_{choice_index}")
                 model.add(
                     position
                     == sum(
                         slots_by_id[key[3]].slot_index * var
                         for key, var in x.items()
-                        if key[0] == applicant.applicant_id and key[1] == choice_index
+                        if key[0] == aid and key[1] == choice_index
                     )
                 )
                 positions.append(position)
-            if len(positions) == 2:
-                gap = model.new_int_var(0, last_index, f"gap_{applicant.applicant_id}")
-                model.add_abs_equality(gap, positions[0] - positions[1])
+            if len(positions) != 2:
+                continue
+
+            gap = model.new_int_var(0, last_index, f"gap_{aid}")
+            model.add_abs_equality(gap, positions[0] - positions[1])
+            if weights.spread:
                 terms.append(weights.spread * gap)
+
+            if worst_same_day_gap is None:
+                continue
+            # `same_day` == 1 iff both interviews sit on one event day. Reused
+            # from W_DIFF_DAY where available (the common case); on a single-day
+            # grid every pair is same-day; only the rare different_day == 0 config
+            # needs fresh per-day AND-flags here. When `same_day` is 0 the
+            # `last_index · (1 − same_day)` slack drops the bound. C3/C5 give
+            # `gap − 1 − min_gap >= 0`.
+            same_day: cp_model.LinearExpr | int
+            if not multi_day:
+                same_day = 1
+            elif aid in same_day_sum:
+                same_day = same_day_sum[aid]
+            else:
+                gap_day_flags: list[cp_model.IntVar] = []
+                for day in event_dates:
+                    first = vars_by_choice_day.get((aid, 1, day), [])
+                    second = vars_by_choice_day.get((aid, 2, day), [])
+                    if not first or not second:
+                        continue
+                    on_day = model.new_bool_var(f"sdgap_on_{aid}_{day.isoformat()}")
+                    model.add(on_day <= sum(first))
+                    model.add(on_day <= sum(second))
+                    model.add(on_day >= sum(first) + sum(second) - 1)
+                    gap_day_flags.append(on_day)
+                same_day = sum(gap_day_flags) if gap_day_flags else 0
+            model.add(
+                worst_same_day_gap
+                >= gap - 1 - problem.min_gap_slots - last_index * (1 - same_day)
+            )
+        if worst_same_day_gap is not None:
+            terms.append(weights.same_day_gap * worst_same_day_gap)
 
         # W_BALANCE — spread of load across panels of the same division (FR-37).
         for division_panels in by_division.values():

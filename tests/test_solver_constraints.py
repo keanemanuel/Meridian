@@ -13,6 +13,7 @@ parent division still gets two separate interviews (SPEC.md §1.2 Finding B).
 from __future__ import annotations
 
 import time as timer
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from datetime import date, datetime, time
 
@@ -614,6 +615,79 @@ def test_a_clash_still_outranks_the_same_day_preference() -> None:
     assert result.status in USABLE_STATUSES
     assert result.clash_count == 0
     assert {a.date for a in result.assignments} == {DAY}
+
+
+def test_shipped_same_day_gap_weight_cannot_force_a_cross_day_split() -> None:
+    """FR-36b outranks FR-36: with the committed config, the most the bottleneck
+    `same_day_gap` term can add for any one applicant is smaller than a single
+    `different_day` penalty, so it can never make a cross-day split look cheap."""
+    settings = load_settings()
+    weights = settings.solver.weights
+    grid = build_slot_grid(settings.event)
+    slots_per_day = Counter(s.date for s in grid.slots)
+    widest_possible_gap = max(slots_per_day.values()) - 1
+    assert weights.same_day_gap * widest_possible_gap < weights.different_day
+
+
+def test_same_day_gap_shrinks_the_worst_forced_gap() -> None:
+    """FR-36: when panel availability forces gaps between same-day interviews,
+    the bottleneck `same_day_gap` term makes the solver hold the *widest* of
+    them down rather than leaving one applicant a long "gap between classes".
+    Soft — it rides on phase 2 and never trades a clash or a cross-day split
+    for a smaller gap."""
+    slots = make_slots(6)
+    rooms = [make_room("R1", [DivisionCode.CREATIVE, DivisionCode.LOGISTICS])]
+    # CREATIVE runs only in the first three slots, LOGISTICS only in the last
+    # three, so every applicant's two interviews are forced apart.
+    panels = [
+        make_panel("CREATIVE-A", DivisionCode.CREATIVE, "R1", slots, active=slots[:3]),
+        make_panel("LOGISTICS-A", DivisionCode.LOGISTICS, "R1", slots, active=slots[3:]),
+    ]
+    a0 = make_applicant("A0", DivisionCode.CREATIVE, DivisionCode.LOGISTICS, slots)
+    a1 = make_applicant("A1", DivisionCode.CREATIVE, DivisionCode.LOGISTICS, slots)
+    # A decoy free only for the last slot: its CREATIVE interview cannot avoid a
+    # clash, so phase 1 fails and the phase-2 objective (which carries the
+    # same_day_gap term) decides the schedule.
+    decoy = make_applicant("D0", DivisionCode.CREATIVE, DivisionCode.LOGISTICS, slots[5:])
+
+    def solve_with(same_day_gap: int) -> tuple[object, int]:
+        weights = SolverWeights(
+            clash=10_000, different_day=100, repeat_panel=50, spread=10,
+            balance=5, lateness=1, same_day_gap=same_day_gap,
+        )
+        problem = SolveProblem(
+            applicants=[a0, a1, decoy], panels=panels, rooms=list(rooms),
+            slots=list(slots), weights=weights, min_gap_slots=0, two_phase=True,
+            time_limit_seconds=20.0,
+        )
+        res = CpSatSolver().solve(problem)
+        assert res.status in USABLE_STATUSES
+        assert res.phase == 2
+        assert res.clash_count == 1  # the decoy only; never traded up for a gap
+        placed = by_choice(res.assignments)
+        worst = 0
+        for aid in ("A0", "A1", "D0"):
+            first, second = placed[(aid, 1)], placed[(aid, 2)]
+            if first.date != second.date:
+                continue
+            span = abs(
+                slot_index_of(slots, first.slot_id) - slot_index_of(slots, second.slot_id)
+            )
+            worst = max(worst, span - 1)
+        breakdown = score_schedule(
+            res.assignments, [a0, a1, decoy], panels, list(slots), weights,
+            min_gap_slots=0, same_day_gap_scored=True,
+        )
+        assert breakdown.total == res.objective_value
+        assert breakdown.same_day_max_gap == worst
+        return res, worst
+
+    _off, worst_without = solve_with(0)
+    _on, worst_with = solve_with(4)
+
+    # The term is what pulls the widest same-day gap in.
+    assert worst_with < worst_without
+    assert worst_with <= 2
 
 
 def test_availability_is_preferred_over_earliness() -> None:

@@ -172,6 +172,16 @@ class SolverWeights(BaseModel):
     spread: int
     balance: int
     lateness: int
+    # Penalty on the *widest* gap any single applicant has between two
+    # interviews that fall on the same event day (FR-36, "5-hour gap between
+    # classes"). A bottleneck / L-infinity term: minimising the worst gap, on
+    # top of the linear `spread` term, keeps same-day gaps both small and even
+    # rather than letting one applicant absorb a long wait. Soft and ranked
+    # below different_day — keep it small enough that `same_day_gap *
+    # (slots on the longest day - 1) < different_day` so it can never turn a
+    # same-day pair into a cross-day split. Defaults to 0 so an unset config is
+    # unchanged; the term is applied on the relaxed (phase 2) solve only.
+    same_day_gap: int = 0
     # Penalty each time a panel's running order steps from one sub-division to
     # another on the same day (Creative -> WebMaster -> Creative ...). Pushes
     # each sub-division of a shared-panel division onto its own panel/room

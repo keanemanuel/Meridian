@@ -145,10 +145,14 @@ def compute_metrics(result: SolveResult, problem: SolveProblem) -> dict[str, Any
         problem.panels,
         problem.slots,
         problem.weights,
-        # Phase 1 (zero-clash) does not carry the Part 2 clustering term, so it
-        # must not be scored into a phase-1 result's breakdown or the total
-        # would no longer match `objective_value`.
+        # The same-day gap term only prices slots beyond the C5 minimum, so the
+        # score must know the solve's own `min_gap_slots` to match CP-SAT.
+        min_gap_slots=problem.min_gap_slots,
+        # Phase 1 (zero-clash) carries neither the Part 2 clustering term nor
+        # the Part 3 same-day gap term, so neither may be scored into a phase-1
+        # breakdown or the total would no longer match `objective_value`.
         subdivision_switch_scored=result.phase == 2,
+        same_day_gap_scored=result.phase == 2,
     )
 
     load = Counter(a.panel_id for a in result.assignments)

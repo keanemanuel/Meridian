@@ -39,6 +39,12 @@ class ObjectiveBreakdown:
     different_days: int
     repeat_panels: int
     spread_slots: int
+    # The widest gap (free slots between, over `min_gap_slots`) any single
+    # applicant has between two *same-day* interviews — an L-infinity / bottleneck
+    # term (FR-36). Minimising it stops the solver from leaving one applicant a
+    # long "gap between classes" while others go back-to-back. Pre-weight, like
+    # every other count here; `same_day_gap` in `weights` scales it into `total`.
+    same_day_max_gap: int
     balance_spread: int
     subdivision_switches: int
     lateness: int
@@ -51,6 +57,7 @@ class ObjectiveBreakdown:
             + self.weights.different_day * self.different_days
             + self.weights.repeat_panel * self.repeat_panels
             + self.weights.spread * self.spread_slots
+            + self.weights.same_day_gap * self.same_day_max_gap
             + self.weights.balance * self.balance_spread
             + self.weights.subdivision_switch * self.subdivision_switches
             + self.weights.lateness * self.lateness
@@ -62,6 +69,7 @@ class ObjectiveBreakdown:
             "different_days": self.different_days,
             "repeat_panels": self.repeat_panels,
             "spread_slots": self.spread_slots,
+            "same_day_max_gap": self.same_day_max_gap,
             "balance_spread": self.balance_spread,
             "subdivision_switches": self.subdivision_switches,
             "lateness": self.lateness,
@@ -139,14 +147,19 @@ def score_schedule(
     slots: Sequence[Slot],
     weights: SolverWeights,
     *,
+    min_gap_slots: int = 0,
     subdivision_switch_scored: bool = True,
+    same_day_gap_scored: bool = True,
 ) -> ObjectiveBreakdown:
     """Score a finished schedule against the SPEC.md §5.2 objective.
 
-    `subdivision_switch_scored` must match whether the solve actually put the
-    Part 2 clustering term in its model — it is off for a phase-1 (zero-clash)
-    result, so the breakdown total still equals what CP-SAT minimised. Pass
-    `result.phase == 2` from the pipeline.
+    `subdivision_switch_scored` and `same_day_gap_scored` must match whether the
+    solve actually put those terms in its model — both are off for a phase-1
+    (zero-clash) result, so the breakdown total still equals what CP-SAT
+    minimised. Pass `result.phase == 2` from the pipeline.
+
+    `min_gap_slots` must be the solve's own value: the same-day gap term only
+    charges for slots *beyond* the gap C5 already forces, so the two agree.
     """
     slot_index = {slot.slot_id: slot.slot_index for slot in slots}
     by_division = panels_by_division(panels)
@@ -166,15 +179,22 @@ def score_schedule(
 
     repeat_panels = 0
     spread_slots = 0
+    same_day_max_gap = 0
     different_days = 0
     for applicant in applicants:
         theirs = per_applicant.get(applicant.applicant_id, [])
         if len(theirs) != 2:
             continue
         first, second = theirs
-        spread_slots += abs(slot_index[first.slot_id] - slot_index[second.slot_id])
+        distance = abs(slot_index[first.slot_id] - slot_index[second.slot_id])
+        spread_slots += distance
         if first.date != second.date:
             different_days += 1
+        elif same_day_gap_scored:
+            # free slots between the two interviews, minus the gap C5 forces;
+            # the term tracks the single widest such gap in the schedule.
+            excess = max(0, distance - 1 - min_gap_slots)
+            same_day_max_gap = max(same_day_max_gap, excess)
         if first.panel_id == second.panel_id and c8_applies(applicant, by_division):
             repeat_panels += 1
 
@@ -190,6 +210,7 @@ def score_schedule(
         different_days=different_days,
         repeat_panels=repeat_panels,
         spread_slots=spread_slots,
+        same_day_max_gap=same_day_max_gap,
         balance_spread=balance_spread,
         subdivision_switches=(
             count_subdivision_switches(assignments, panels, slots)

@@ -8,6 +8,12 @@ weights:
   different_day: 100       # prefer both of an applicant's interviews on the same day (FR-36b)
   repeat_panel: 50         # C8: same panel for both interviews of a same-parent pair
   spread:      10
+  same_day_gap: 4         # FR-36: penalty on the *widest* gap any applicant has between
+                          # two same-day interviews (a bottleneck term on top of the linear
+                          # `spread`) — stops one applicant being left a long "gap between
+                          # classes" while others go back-to-back. Keep it small enough that
+                          # same_day_gap * (slots on the longest day - 1) < different_day, so
+                          # it never forces a cross-day split. Phase 2 only.
   balance:      5
   subdivision_switch: 3   # cluster each sub-division into contiguous blocks / its own room
   lateness:     1

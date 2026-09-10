@@ -228,7 +228,7 @@ Priority: **M** = must have for alpha, **S** = should have, **C** = could have.
 | FR-33 | M | The solver shall **prioritise time first**: it shall maximise the number of interviews that fall inside the applicant's declared availability, then allocate divisions/panels available at those times. |
 | FR-34 | M | Where no in-availability placement exists, the solver shall place the applicant anyway (to satisfy FR-30) and mark the assignment as a **CLASH**, highlighted red in every export. |
 | FR-35 | M | The solver shall be deterministic: the same inputs, config and random seed produce the same schedule. |
-| FR-36 | S | The solver shall prefer compact schedules for applicants (minimise dead time between their two interviews) as a secondary objective. |
+| FR-36 | S | The solver shall prefer compact schedules for applicants (minimise dead time between their two interviews) as a secondary objective. Two terms carry this: `W_SPREAD`, linear in the raw grid distance (keeps the *total* gap down), and `W_SAME_DAY_GAP`, a **bottleneck** penalty on the single *widest* gap any applicant has between two interviews **on the same event day** (keeps gaps *even* — no one applicant left with a long "gap between classes"). `W_SAME_DAY_GAP` is kept small enough to stay below one `W_DIFF_DAY` unit, so it never forces a cross-day split, and it is applied on the relaxed (phase 2) solve only. |
 | FR-36b | S | The solver shall prefer scheduling both of an applicant's interviews on the **same event day**, splitting across days only when a hard constraint (availability, panel capacity, no double-booking, minimum gap) leaves no same-day placement. Soft: ranked below clash-avoidance and above the compactness/balance/earliness terms. Target ≥ 90% of multi-interview applicants same-day on the committed two-day grid. |
 | FR-37 | S | The solver shall balance load across panels of the same division rather than filling one panel first. |
 | FR-38 | S | The solver shall prefer earlier slots when all else is equal, so the event can finish early if attendance drops. |
@@ -439,6 +439,7 @@ minimise
     + W_DIFF_DAY  · Σ_a  (1 if a's two interviews fall on different event days else 0)
     + W_REPEAT    · Σ_a  (1 if both interviews used the same panel else 0)
     + W_SPREAD    · Σ_a  gap_slots_between_a's_two_interviews
+    + W_SAME_DAY_GAP · max_a (free_slots_between_a − min_gap_slots)   ← same-day pairs only; phase 2 only
     + W_BALANCE   · Σ_d  (max_panel_load(d) − min_panel_load(d))
     + W_LATE      · Σ x[a,c,p,s] · slot_index(s)
 ```
