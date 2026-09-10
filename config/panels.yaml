@@ -1,65 +1,49 @@
-# Real-room staffing for up to 120 applicants / 240 interviews / 23 slots.
+# Baseline staffing: one panel per division per event day (SPEC.md §1.2 —
+# "12 panels is the baseline", "one room per division"). 12 panels total.
 #
-# 26 panels, weighted by historical demand:
-#   PROGRAM 6 · MEDMARDOC 5 · LOGISTICS 4 · FNB 4 · CREATIVE 4 · LIAISON 3
-# Each panel inherits its room's day(s); panels in the two rooms that run
-# both evenings (2018, 2019) carry explicit `active_windows`.
+# This is the *starting* point, not the final plan. Before every solve the
+# load-balancer (`rebalance_panels`, SPEC.md §5.5) grows a division that is
+# running hot one panel at a time, each new panel in a DIFFERENT room that
+# day — filling the rooms available that evening room by room. Two panels of
+# the SAME division never share a room on the same day; different divisions
+# freely share a room (bounded by the room's `max_concurrent_panels`, FR-24).
+# `autoscale_panels` is the INFEASIBLE backstop on top of that.
 #
-# Raw capacity per division (panels x their day's slots): PROGRAM 69,
-# MEDMARDOC 56, LOGISTICS 46, FNB 46, CREATIVE 46, LIAISON 33 — total 296,
-# ~23% over 240. If a real sheet still runs a division hot, `iffsched check`
-# / the solve pipeline auto-scale panels to the recommendation and warn.
+# Rooms per evening (config/rooms.yaml): Thursday 6 (2016, 2017, 2020, 3013,
+# 2018, 2019), Friday 5 (2014, 2015, 3033, 2018, 2019). A division can grow
+# to one panel in every room that evening before the rare same-room fallback
+# is ever considered.
+#
+# Panels in a room that only runs one evening inherit that day automatically;
+# panels in 2018 / 2019 (both evenings) pin their day with `active_windows`.
 panels:
-  # ---------------- Thursday 2026-09-17 ----------------
-  - {id: PROGRAM-T1,   division: PROGRAM,   room: "2016"}
-  - {id: PROGRAM-T2,   division: PROGRAM,   room: "2017"}
-  - {id: PROGRAM-T3,   division: PROGRAM,   room: "2020"}
-  - {id: MEDMARDOC-T1, division: MEDMARDOC, room: "2016"}
-  - {id: MEDMARDOC-T2, division: MEDMARDOC, room: "2017"}
-  - {id: MEDMARDOC-T3, division: MEDMARDOC, room: "2020"}
-  - {id: LOGISTICS-T1, division: LOGISTICS, room: "3013"}
-  - {id: CREATIVE-T1,  division: CREATIVE,  room: "3013"}
-  - {id: LIAISON-T1,   division: LIAISON,   room: "2016"}
-  - {id: LIAISON-T2,   division: LIAISON,   room: "2017"}
-  - id: LOGISTICS-T2
-    division: LOGISTICS
-    room: "2018"
-    active_windows: [{date: 2026-09-17, start: "18:00", end: "21:30"}]
-  - id: FNB-T1
-    division: FNB
-    room: "2018"
-    active_windows: [{date: 2026-09-17, start: "18:00", end: "21:30"}]
-  - id: CREATIVE-T2
+  # ---------------- Thursday 2026-09-17 — one per division ----------------
+  - {id: PROGRAM-T,   division: PROGRAM,   room: "2016"}
+  - {id: MEDMARDOC-T, division: MEDMARDOC, room: "2017"}
+  - {id: FNB-T,       division: FNB,       room: "2020"}
+  - {id: LOGISTICS-T, division: LOGISTICS, room: "3013"}
+  - id: CREATIVE-T
     division: CREATIVE
-    room: "2019"
+    room: "2018"
     active_windows: [{date: 2026-09-17, start: "18:00", end: "21:30"}]
-  - id: FNB-T2
-    division: FNB
+  - id: LIAISON-T
+    division: LIAISON
     room: "2019"
     active_windows: [{date: 2026-09-17, start: "18:00", end: "21:30"}]
 
-  # ----------------- Friday 2026-09-18 -----------------
-  - {id: PROGRAM-F1,   division: PROGRAM,   room: "2014"}
-  - {id: PROGRAM-F2,   division: PROGRAM,   room: "2015"}
-  - {id: PROGRAM-F3,   division: PROGRAM,   room: "3033"}
-  - {id: MEDMARDOC-F1, division: MEDMARDOC, room: "2014"}
-  - {id: MEDMARDOC-F2, division: MEDMARDOC, room: "2015"}
-  - {id: FNB-F1,       division: FNB,       room: "2014"}
-  - {id: FNB-F2,       division: FNB,       room: "2015"}
-  - {id: LIAISON-F1,   division: LIAISON,   room: "3033"}
-  - id: LOGISTICS-F1
+  # ----------------- Friday 2026-09-18 — one per division -----------------
+  - {id: PROGRAM-F,   division: PROGRAM,   room: "2014"}
+  - {id: MEDMARDOC-F, division: MEDMARDOC, room: "2015"}
+  - {id: FNB-F,       division: FNB,       room: "3033"}
+  - id: LOGISTICS-F
     division: LOGISTICS
     room: "2018"
     active_windows: [{date: 2026-09-18, start: "17:00", end: "21:30"}]
-  - id: CREATIVE-F1
-    division: CREATIVE
-    room: "2018"
-    active_windows: [{date: 2026-09-18, start: "17:00", end: "21:30"}]
-  - id: LOGISTICS-F2
-    division: LOGISTICS
-    room: "2019"
-    active_windows: [{date: 2026-09-18, start: "17:00", end: "21:30"}]
-  - id: CREATIVE-F2
+  - id: CREATIVE-F
     division: CREATIVE
     room: "2019"
+    active_windows: [{date: 2026-09-18, start: "17:00", end: "21:30"}]
+  - id: LIAISON-F
+    division: LIAISON
+    room: "2014"
     active_windows: [{date: 2026-09-18, start: "17:00", end: "21:30"}]

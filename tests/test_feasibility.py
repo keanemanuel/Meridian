@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from datetime import date, datetime, time
 
 from iff_scheduler.domain.enums import DivisionCode
@@ -187,11 +188,22 @@ def test_is_feasible_true_when_nothing_infeasible() -> None:
 # ---- against the committed baseline config (SPEC.md §1.2 Finding A) ----
 
 
-def test_baseline_config_covers_an_even_40_per_division_split() -> None:
-    """Finding A's worked example: demand split perfectly evenly (40 per
-    division). panels.yaml is demand-weighted (PROGRAM 6, CREATIVE 4); at
-    23 slots x 0.83 the formula recommends 3 for a 40-demand division, so
-    every division clears the bar with headroom and none is INFEASIBLE."""
+def test_committed_baseline_is_one_panel_per_division_per_day() -> None:
+    """SPEC.md §1.2: the baseline is 12 panels — one per division per evening —
+    that the load-balancer grows from. Two panels of one division never share
+    a room on a day, even in the committed config."""
+    settings = load_settings()
+    by_division = Counter(p.division for p in settings.panels.panels)
+    assert len(settings.panels.panels) == 12
+    assert set(by_division.values()) == {2}  # exactly one Thursday + one Friday each
+    assert _same_division_room_day_collisions(settings) == []
+
+
+def test_baseline_is_grown_by_the_load_balancer_to_cover_an_even_40_split() -> None:
+    """Finding A's worked example: 40 interviews per division, spread evenly.
+    The one-per-division-per-day baseline is INFEASIBLE for it on its own;
+    `rebalance_panels` spreads each hot division across more rooms until the
+    Capacity Advisor clears."""
     settings = load_settings()
     grid = build_slot_grid(settings.event)
     all_slots = [s.slot_id for s in grid.slots]
@@ -204,23 +216,18 @@ def test_baseline_config_covers_an_even_40_per_division_split() -> None:
         for i in range(40)
     ]
 
-    rows = compute_capacity_advisor(
-        applicants,
-        settings.panels,
-        grid,
-        settings.solver.target_utilisation,
-        rooms=settings.rooms,
+    before = compute_capacity_advisor(
+        applicants, settings.panels, grid, settings.solver.target_utilisation, rooms=settings.rooms
     )
-    by_division = {r.division: r for r in rows}
-    # Demand-weighted committed counts.
-    assert by_division[DivisionCode.PROGRAM].panels_configured == 6
-    assert by_division[DivisionCode.MEDMARDOC].panels_configured == 5
-    assert by_division[DivisionCode.CREATIVE].panels_configured == 4
-    assert by_division[DivisionCode.LIAISON].panels_configured == 3
-    # The hot divisions clear an even 40-way split outright; a thinner
-    # division (LIAISON: 3 panels by design) is what autoscale is for.
-    assert by_division[DivisionCode.PROGRAM].verdict == "OK"
-    assert by_division[DivisionCode.CREATIVE].verdict == "OK"
+    assert not is_feasible(before)
+
+    scaled, messages = rebalance_panels(settings, applicants, grid)
+    assert messages
+    after = compute_capacity_advisor(
+        applicants, scaled.panels, grid, settings.solver.target_utilisation, rooms=settings.rooms
+    )
+    assert is_feasible(after)
+    assert _same_division_room_day_collisions(scaled) == []
 
 
 def _same_division_room_day_collisions(settings) -> list[tuple[str, str, str]]:
@@ -244,14 +251,15 @@ def _same_division_room_day_collisions(settings) -> list[tuple[str, str, str]]:
 
 
 def test_autoscale_panels_clears_an_infeasible_division() -> None:
-    """A division whose demand outstrips the committed config gets extra
-    panels until the Advisor stops flagging it — and the caller is told."""
+    """A division whose demand outstrips the baseline gets extra panels — each
+    in its own distinct room that evening — until the Advisor stops flagging
+    it, and the caller is told."""
     settings = load_settings()
     grid = build_slot_grid(settings.event)
     all_slots = [s.slot_id for s in grid.slots]
 
-    # 25 applicants wanting LIAISON twice (50 interviews) — past its 3 panels,
-    # but a shortfall that spare distinct rooms can still absorb.
+    # 25 applicants wanting LIAISON twice (50 interviews) — well past the
+    # one-per-day baseline, but a shortfall spare distinct rooms can absorb.
     applicants = [
         _applicant(f"L{i}", DivisionCode.LIAISON, DivisionCode.LIAISON, all_slots)
         for i in range(25)
@@ -264,14 +272,13 @@ def test_autoscale_panels_clears_an_infeasible_division() -> None:
 
     scaled, messages = autoscale_panels(settings, applicants, grid)
 
-    assert any("LIAISON" in m for m in messages)
+    assert any("Auto-scaled LIAISON" in m for m in messages)
     assert len(scaled.panels.panels) > len(settings.panels.panels)
     after = compute_capacity_advisor(
         applicants, scaled.panels, grid, settings.solver.target_utilisation, rooms=settings.rooms
     )
     assert is_feasible(after)
-    # Part 1: the added panels never double up with another LIAISON panel in
-    # the same room on the same day.
+    # Every added panel is in its own room that evening.
     assert _same_division_room_day_collisions(scaled) == []
     # Untouched when nothing is short.
     ok_settings, ok_messages = autoscale_panels(settings, [], grid)
@@ -279,16 +286,16 @@ def test_autoscale_panels_clears_an_infeasible_division() -> None:
     assert ok_settings is settings
 
 
-def test_autoscale_warns_at_the_room_ceiling_instead_of_stacking() -> None:
-    """When a division's demand is so high that every room it can use already
-    runs one of its panels, autoscale stops and warns — it never puts two
-    panels of one division in the same room to get past the ceiling (Part 1)."""
+def test_autoscale_flags_a_genuine_room_shortage_instead_of_stacking() -> None:
+    """When a division needs more panels than there are rooms open that
+    evening, autoscale fills every room once, then stops and says so — it does
+    not keep stacking panels the solver could never run."""
     settings = load_settings()
     grid = build_slot_grid(settings.event)
     all_slots = [s.slot_id for s in grid.slots]
 
     # 120 applicants wanting LIAISON twice = 240 interviews across two evenings:
-    # unreachable without more rooms.
+    # unreachable with the rooms on hand.
     applicants = [
         _applicant(f"L{i}", DivisionCode.LIAISON, DivisionCode.LIAISON, all_slots)
         for i in range(120)
@@ -296,11 +303,12 @@ def test_autoscale_warns_at_the_room_ceiling_instead_of_stacking() -> None:
 
     scaled, messages = autoscale_panels(settings, applicants, grid)
 
-    assert any("capacity ceiling" in m and "LIAISON" in m for m in messages)
+    assert any("every room open that evening is full" in m and "LIAISON" in m for m in messages)
+    # No same-division room doubling: it filled distinct rooms and then stopped.
     assert _same_division_room_day_collisions(scaled) == []
 
 
-# ---- proactive load-balancing split (SPEC.md §5.5, req: rebalance not overflow) ----
+# ---- proactive load-balancing split (SPEC.md §5.5) ----
 
 
 _rebalance_msg = re.compile(
@@ -312,27 +320,25 @@ def _creative_panels(settings) -> int:
     return sum(1 for p in settings.panels.panels if p.division == DivisionCode.CREATIVE)
 
 
-def _both_days_concurrency(settings, division: DivisionCode) -> int:
-    event_dates = {d.date for d in settings.event.days}
+def _rooms_open(settings, division: DivisionCode, day: date) -> int:
+    all_dates = {d.date for d in settings.event.days}
     return sum(
-        r.max_concurrent_panels
+        1
         for r in settings.rooms.rooms
-        if division in r.divisions and (not r.days or set(r.days) >= event_dates)
+        if division in r.divisions and day in (set(r.days) if r.days else all_dates)
     )
 
 
 def test_rebalance_splits_before_panels_pack_past_the_threshold() -> None:
-    """A division whose even per-day split would sit above 85% gets an extra
-    panel, and the whole load is re-spread across ALL panels (~N/each), not
-    dumped on the new one."""
+    """A hot division gets an extra panel — in a fresh room that evening — one
+    at a time, with the whole per-day load re-spread across all of them
+    (~N/each), not dumped on the newcomer."""
     settings = load_settings()
     grid = build_slot_grid(settings.event)
     all_slots = [s.slot_id for s in grid.slots]
 
-    creative_before = _creative_panels(settings)
     # 25 applicants, both choices CREATIVE (E-01 same-parent pair) => 50
-    # CREATIVE interviews demanded each day, well past what the committed
-    # panels seat at 85%, but nothing else is touched.
+    # CREATIVE interviews, ~25 per evening — well past one panel per evening.
     applicants = [
         _applicant(f"C{i}", DivisionCode.CREATIVE, DivisionCode.CREATIVE, all_slots)
         for i in range(25)
@@ -341,46 +347,43 @@ def test_rebalance_splits_before_panels_pack_past_the_threshold() -> None:
     scaled, messages = rebalance_panels(settings, applicants, grid)
 
     assert messages, "expected at least one rebalance split"
-    assert all("Rebalanced CREATIVE" in m for m in messages)
+    assert all(m.startswith("Rebalanced CREATIVE") for m in messages)
     parsed = [_rebalance_msg.match(m) for m in messages]
     assert all(p is not None for p in parsed), messages
-    # Panel counts step up one at a time: 4->5, 5->6, ...
     steps = [(int(p.group(1)), int(p.group(2)), int(p.group(3))) for p in parsed]
-    assert steps[0][0] == creative_before
     for before, after, each in steps:
-        assert after == before + 1
-        # ~even split: reported per-panel load is total / new panel count,
-        # not a near-zero "just the newcomers" figure.
-        assert each == round(50 / after)
-    afters = [s[1] for s in steps]
-    assert afters == list(range(creative_before + 1, creative_before + 1 + len(steps)))
+        assert after == before + 1  # one panel at a time, per evening
+        assert each == round(25 / after)  # even re-spread of that evening's ~25
 
-    scaled_creative = _creative_panels(scaled)
-    assert scaled_creative == creative_before + len(messages)
-    # Part 1: every split panel landed in its own room — no two CREATIVE
-    # panels share a room on a day.
+    # Each evening's panel count climbs 1 -> 2 -> 3 ..., never skipping.
+    for day_label in ("Thu", "Fri"):
+        befores = [
+            b for (b, _a, _e), m in zip(steps, messages, strict=True) if f"({day_label})" in m
+        ]
+        assert befores == list(range(1, 1 + len(befores)))
+
     assert _same_division_room_day_collisions(scaled) == []
 
-    # A second pass never stacks two panels of a division in one room: any
-    # further split lands in a fresh distinct room, and once the rooms run out
-    # it reports a ceiling ("panels were not stacked") instead.
+    # An even split now sits under 85%, so a second pass is a no-op.
     again, again_messages = rebalance_panels(scaled, applicants, grid)
-    assert _same_division_room_day_collisions(again) == []
-    for message in again_messages:
-        assert message.startswith("Rebalanced CREATIVE") or "not stacked" in message
+    assert again_messages == []
+    assert again is scaled
 
 
-def test_rebalance_is_capped_so_it_cannot_grow_unbounded() -> None:
-    """Runaway same-day demand can't grow a division past what the rooms that
-    run every evening can seat at once (req. 4)."""
+def test_rebalance_is_capped_at_one_panel_per_room_per_evening() -> None:
+    """Runaway same-day demand can't grow a division past one panel in every
+    room open that evening (req. 4) — beyond that it is a genuine room
+    shortage, not something the load-balancer papers over."""
     settings = load_settings()
     grid = build_slot_grid(settings.event)
     all_slots = [s.slot_id for s in grid.slots]
 
-    creative_before = _creative_panels(settings)
-    ceiling = creative_before + _both_days_concurrency(settings, DivisionCode.CREATIVE)
+    thu, fri = (d.date for d in settings.event.days)
+    ceiling = _rooms_open(settings, DivisionCode.CREATIVE, thu) + _rooms_open(
+        settings, DivisionCode.CREATIVE, fri
+    )
 
-    # Absurd demand: 90 applicants * 2 CREATIVE choices = 180/day.
+    # Absurd demand: 90 applicants * 2 CREATIVE choices = 180 interviews.
     applicants = [
         _applicant(f"C{i}", DivisionCode.CREATIVE, DivisionCode.CREATIVE, all_slots)
         for i in range(90)
@@ -389,25 +392,24 @@ def test_rebalance_is_capped_so_it_cannot_grow_unbounded() -> None:
     scaled, messages = rebalance_panels(settings, applicants, grid)
     assert messages
     assert _creative_panels(scaled) == ceiling
-    # It stopped at the cap despite the load still being way over threshold.
-    assert len(messages) == ceiling - creative_before
+    assert _same_division_room_day_collisions(scaled) == []
+    assert REBALANCE_THRESHOLD == 0.85
 
 
 def test_rebalance_leaves_a_comfortable_division_untouched() -> None:
-    """When the committed panels already absorb the per-day load with slack
-    under 85%, nothing is added and the settings pass straight through."""
+    """When one panel per evening already absorbs the per-day load under 85%,
+    nothing is added and the settings pass straight through."""
     settings = load_settings()
     grid = build_slot_grid(settings.event)
     all_slots = [s.slot_id for s in grid.slots]
 
-    # 15 applicants CREATIVE + PROGRAM: both divisions stay comfortably under
-    # 85% even if their whole load lands on the shorter (Thursday) evening.
+    # 8 applicants CREATIVE + PROGRAM: ~4 interviews per division per evening
+    # against one 10-slot panel — comfortably under threshold.
     applicants = [
         _applicant(f"X{i}", DivisionCode.CREATIVE, DivisionCode.PROGRAM, all_slots)
-        for i in range(15)
+        for i in range(8)
     ]
 
     scaled, messages = rebalance_panels(settings, applicants, grid)
     assert messages == []
     assert scaled is settings
-    assert REBALANCE_THRESHOLD == 0.85
