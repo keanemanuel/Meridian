@@ -25,11 +25,11 @@ panels:
   - id: CREATIVE-T
     division: CREATIVE
     room: "2018"
-    active_windows: [{date: 2026-09-17, start: "18:00", end: "21:30"}]
+    active_windows: [{date: 2026-09-17, start: "18:30", end: "21:30"}]
   - id: LIAISON-T
     division: LIAISON
     room: "2019"
-    active_windows: [{date: 2026-09-17, start: "18:00", end: "21:30"}]
+    active_windows: [{date: 2026-09-17, start: "18:30", end: "21:30"}]
 
   # ----------------- Friday 2026-09-18 — one per division -----------------
   - {id: PROGRAM-F,   division: PROGRAM,   room: "2014"}
@@ -38,12 +38,12 @@ panels:
   - id: LOGISTICS-F
     division: LOGISTICS
     room: "2018"
-    active_windows: [{date: 2026-09-18, start: "17:00", end: "21:30"}]
+    active_windows: [{date: 2026-09-18, start: "17:30", end: "21:30"}]
   - id: CREATIVE-F
     division: CREATIVE
     room: "2019"
-    active_windows: [{date: 2026-09-18, start: "17:00", end: "21:30"}]
+    active_windows: [{date: 2026-09-18, start: "17:30", end: "21:30"}]
   - id: LIAISON-F
     division: LIAISON
     room: "2014"
-    active_windows: [{date: 2026-09-18, start: "17:00", end: "21:30"}]
+    active_windows: [{date: 2026-09-18, start: "17:30", end: "21:30"}]

@@ -5,15 +5,16 @@ min_gap_slots: 0                  # slots required between an applicant's 2 inte
 availability_matching: strict     # strict = interview must sit fully inside ticked blocks;
                                    # lenient = >=50% overlap counts (SPEC.md §9.2, E-05)
 # Real IFF schedule: two evenings, different start times. At 20-minute
-# interviews this is 10 slots Thursday + 13 slots Friday = 23 slots.
+# interviews this is 9 slots Thursday (18:30-21:30) + 12 slots Friday
+# (17:30-21:30) = 21 slots.
 days:
   - date: 2026-09-17
     label: "Thu"
-    start: "18:00"
+    start: "18:30"
     end:   "21:30"
     breaks: []                    # e.g. [{start: "19:40", end: "20:00"}]
   - date: 2026-09-18
     label: "Fri"
-    start: "17:00"
+    start: "17:30"
     end:   "21:30"
     breaks: []
