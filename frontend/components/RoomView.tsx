@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { type RefObject, useCallback, useMemo, useRef, useState } from "react";
 import {
   assignmentMatches,
   cellIndex,
@@ -20,17 +20,26 @@ export type MoveRequest = {
   slotId: string;
 };
 
+/** How a blank cell relates to the interview being dragged:
+ *  - "ok"    — a clean target the server will accept without complaint.
+ *  - "clash" — a legal target, but outside the applicant's stated availability,
+ *              so the move lands flagged red (FR-34). Still allowed.
+ *  - null    — not a target: occupied, a different division's panel, or the
+ *              slot the applicant's other interview already sits in (C3). */
+type TargetKind = "ok" | "clash" | null;
+
 /** Timetable grid: rows are slots, columns are panels (FR-30).
  *
  * One day is shown at a time, with the days laid out side by side in a track
  * that slides. Each day only shows the panels that actually run that day,
  * because both axes are derived from the run's own assignments.
  *
- * When `onMove` is supplied, cells can be dragged to an empty slot. Valid
- * targets are highlighted: an empty cell, on a panel of the same division,
- * that is not where the applicant's other interview already sits. That is the
- * set the server's edit validator will accept, so a highlighted drop never
- * bounces back as DIVISION_MISMATCH or DOUBLE_BOOKED_APPLICANT (E-12).
+ * When `onMove` is supplied an interview can be dragged onto any blank slot on
+ * a panel of its own division (FR-40). A clean target is highlighted blue; a
+ * target outside the applicant's declared availability is highlighted amber and
+ * still accepted, landing as a clash the recruiter chose (FR-34). The one blank
+ * cell that is *not* a target is the slot holding the applicant's other
+ * interview — moving there would double-book them (C3).
  */
 export function RoomView({
   assignments,
@@ -46,7 +55,20 @@ export function RoomView({
   const days = useMemo(() => dayAxis(assignments), [assignments]);
   const [rawDay, setRawDay] = useState(0);
   const [query, setQuery] = useState("");
+
+  // `dragging` drives the highlight re-render; `draggingRef` is what the drop
+  // handlers read, so a drop is judged against the live drag even if a render
+  // has not yet committed (HTML5 DnD fires faster than React reconciles).
   const [dragging, setDragging] = useState<Assignment | null>(null);
+  const draggingRef = useRef<Assignment | null>(null);
+  const beginDrag = useCallback((a: Assignment) => {
+    draggingRef.current = a;
+    setDragging(a);
+  }, []);
+  const endDrag = useCallback(() => {
+    draggingRef.current = null;
+    setDragging(null);
+  }, []);
 
   const cells = useMemo(() => cellIndex(assignments), [assignments]);
   /** Which division each panel interviews for, as this run used it. */
@@ -55,31 +77,32 @@ export function RoomView({
     for (const a of assignments) map.set(a.panel_id, a.division);
     return map;
   }, [assignments]);
-  /** The other interview of whoever is being dragged, so its slot is excluded. */
-  const partnerSlot = useMemo(() => {
-    if (!dragging) return null;
-    return (
-      assignments.find(
+
+  /** Classify a blank cell for a given dragged interview. Pure in its inputs —
+   * no dependence on the `dragging` state — so drop handlers can call it with
+   * `draggingRef.current` and get the same answer the highlight showed. */
+  const classifyTarget = useCallback(
+    (drag: Assignment, panelId: string, slotId: string): TargetKind => {
+      if (!onMove) return null;
+      if ((cells.get(cellKey(panelId, slotId)) ?? []).length > 0) return null;
+      if (panelDivision.get(panelId) !== drag.division) return null;
+      const other = assignments.find(
         (a) =>
-          a.applicant_id === dragging.applicant_id &&
-          a.assignment_id !== dragging.assignment_id,
-      )?.slot_id ?? null
-    );
-  }, [assignments, dragging]);
+          a.applicant_id === drag.applicant_id &&
+          a.assignment_id !== drag.assignment_id,
+      );
+      if (other?.slot_id === slotId) return null; // would double-book (C3)
+      const avail = drag.availability_slots ?? [];
+      return avail.length > 0 && !avail.includes(slotId) ? "clash" : "ok";
+    },
+    [assignments, cells, panelDivision, onMove],
+  );
 
   if (days.length === 0) {
     return <EmptyState title="This run has no assignments to show." />;
   }
 
   const dayIndex = Math.min(rawDay, days.length - 1);
-
-  const isValidTarget = (panelId: string, slotId: string) => {
-    if (!dragging || !onMove) return false;
-    if ((cells.get(cellKey(panelId, slotId)) ?? []).length > 0) return false;
-    if (panelDivision.get(panelId) !== dragging.division) return false;
-    if (slotId === partnerSlot) return false;
-    return true;
-  };
 
   return (
     <div>
@@ -111,7 +134,8 @@ export function RoomView({
         </span>
         {dragging && (
           <span className="ml-auto text-xs font-medium text-blue-600">
-            Drop {dragging.full_name} on any highlighted slot.
+            Drop {dragging.full_name} on a blue slot, or an amber one to move
+            them outside their stated availability.
           </span>
         )}
       </div>
@@ -132,8 +156,10 @@ export function RoomView({
                 onMove={onMove}
                 moving={moving}
                 dragging={dragging}
-                setDragging={setDragging}
-                isValidTarget={isValidTarget}
+                draggingRef={draggingRef}
+                beginDrag={beginDrag}
+                endDrag={endDrag}
+                classifyTarget={classifyTarget}
               />
             </div>
           ))}
@@ -152,8 +178,10 @@ function DayGrid({
   onMove,
   moving,
   dragging,
-  setDragging,
-  isValidTarget,
+  draggingRef,
+  beginDrag,
+  endDrag,
+  classifyTarget,
 }: {
   date: string;
   assignments: Assignment[];
@@ -163,8 +191,10 @@ function DayGrid({
   onMove?: (move: MoveRequest) => void | Promise<void>;
   moving: boolean;
   dragging: Assignment | null;
-  setDragging: (a: Assignment | null) => void;
-  isValidTarget: (panelId: string, slotId: string) => boolean;
+  draggingRef: RefObject<Assignment | null>;
+  beginDrag: (a: Assignment) => void;
+  endDrag: () => void;
+  classifyTarget: (drag: Assignment, panelId: string, slotId: string) => TargetKind;
 }) {
   const onDay = useMemo(
     () => assignments.filter((a) => a.date === date),
@@ -213,44 +243,57 @@ function DayGrid({
               {panels.map((panel) => {
                 const here =
                   cells.get(cellKey(panel.panel_id, slot.slot_id)) ?? [];
-                const droppable = isValidTarget(panel.panel_id, slot.slot_id);
+                // Highlight follows the committed drag state; the drop handlers
+                // below re-check against draggingRef so they never act on a
+                // stale classification.
+                const kind: TargetKind = dragging
+                  ? classifyTarget(dragging, panel.panel_id, slot.slot_id)
+                  : null;
                 return (
                   <td
                     key={panel.panel_id}
-                    onDragOver={
-                      droppable
-                        ? (e) => {
-                            e.preventDefault();
-                            e.dataTransfer.dropEffect = "move";
-                          }
-                        : undefined
-                    }
-                    onDrop={
-                      droppable
-                        ? (e) => {
-                            e.preventDefault();
-                            const held = dragging;
-                            setDragging(null);
-                            if (held && onMove) {
-                              void onMove({
-                                assignment: held,
-                                panelId: panel.panel_id,
-                                slotId: slot.slot_id,
-                              });
-                            }
-                          }
-                        : undefined
-                    }
+                    onDragOver={(e) => {
+                      const drag = draggingRef.current;
+                      if (
+                        !drag ||
+                        moving ||
+                        !classifyTarget(drag, panel.panel_id, slot.slot_id)
+                      ) {
+                        return;
+                      }
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                    }}
+                    onDrop={(e) => {
+                      const drag = draggingRef.current;
+                      if (!drag || moving || !onMove) return;
+                      if (!classifyTarget(drag, panel.panel_id, slot.slot_id)) {
+                        return;
+                      }
+                      e.preventDefault();
+                      endDrag();
+                      void onMove({
+                        assignment: drag,
+                        panelId: panel.panel_id,
+                        slotId: slot.slot_id,
+                      });
+                    }}
                     className={`border-b border-r border-neutral-100 p-0 align-top transition-colors ${
-                      droppable
+                      kind === "ok"
                         ? "bg-blue-50 ring-1 ring-inset ring-blue-400"
-                        : ""
+                        : kind === "clash"
+                          ? "bg-amber-50 ring-1 ring-inset ring-amber-400"
+                          : ""
                     }`}
                   >
                     {here.length === 0 ? (
                       <div className="h-full min-h-[3rem] px-3 py-2 text-neutral-300">
-                        {droppable ? (
+                        {kind === "ok" ? (
                           <span className="text-blue-500">Drop here</span>
+                        ) : kind === "clash" ? (
+                          <span className="text-amber-600">
+                            Drop here · clash
+                          </span>
                         ) : (
                           "·"
                         )}
@@ -267,9 +310,9 @@ function DayGrid({
                               "text/plain",
                               a.assignment_id,
                             );
-                            setDragging(a);
+                            beginDrag(a);
                           }}
-                          onDragEnd={() => setDragging(null)}
+                          onDragEnd={endDrag}
                           onClick={() => onSelect(a)}
                           title={buildTitle(a)}
                           className={`relative block h-full min-h-[3rem] w-full px-3 py-2 text-left transition-colors ${

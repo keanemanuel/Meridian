@@ -52,28 +52,40 @@ def _serialise(a: Assignment) -> dict[str, Any]:
     return {"assignment_id": _assignment_id(a), **a.model_dump(mode="json")}
 
 
-def _declared_availability(workspace_id: str, settings: Settings) -> dict[str, str]:
-    """applicant_id -> the day/time preference they ticked on the form, for the
-    Applicants view's declared-availability column (FR-51). Best-effort: when
-    the clean applicant list is not on this instance the column is left blank
-    rather than guessed (CLAUDE.md invariant 3)."""
+def _applicant_availability(
+    workspace_id: str, settings: Settings
+) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """(preference summary, raw available slot-ids) per applicant.
+
+    The summary feeds the Applicants view's declared-availability column
+    (FR-51); the raw slot-id list lets the move dialog and drag-and-drop flag a
+    target that sits outside the applicant's stated availability as a clash
+    without blocking it (FR-40, FR-34). Best-effort: when the clean applicant
+    list is not on this instance both are left empty rather than guessed
+    (CLAUDE.md invariant 3)."""
     path = ws.applicants_clean_path(workspace_id)
     if not path.exists():
-        return {}
+        return {}, {}
     slots = build_slot_grid(settings.event).slots
-    return {
-        a.applicant_id: summarise_availability(a.availability_slots, slots)
-        for a in load_clean_applicants(path)
+    applicants = load_clean_applicants(path)
+    declared = {
+        a.applicant_id: summarise_availability(a.availability_slots, slots) for a in applicants
     }
+    available = {a.applicant_id: list(a.availability_slots) for a in applicants}
+    return declared, available
 
 
 @router.get("/assignments")
 def get_assignments(workspace_id: str, run_id: str, settings: SettingsDep) -> list[dict[str, Any]]:
-    declared = _declared_availability(workspace_id, settings)
+    declared, available = _applicant_availability(workspace_id, settings)
 
     def serialise(assignments: list[Assignment]) -> list[dict[str, Any]]:
         return [
-            {**_serialise(a), "declared_availability": declared.get(a.applicant_id, "")}
+            {
+                **_serialise(a),
+                "declared_availability": declared.get(a.applicant_id, ""),
+                "availability_slots": available.get(a.applicant_id, []),
+            }
             for a in assignments
         ]
 

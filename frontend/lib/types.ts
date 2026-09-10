@@ -43,6 +43,10 @@ export type Assignment = {
   reason: string | null;
   /** Day/time preference the applicant ticked on the form; "" if none declared. */
   declared_availability: string;
+  /** Every slot id the applicant marked available on the form. Empty when the
+   * clean applicant list is not on the API instance — treat empty as "unknown",
+   * not "available nowhere". Used to flag an off-preference move as a clash. */
+  availability_slots: string[];
 };
 
 /** `GET /ingest-status` — has this workspace had applicants ingested yet?

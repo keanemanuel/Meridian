@@ -108,7 +108,10 @@ export default function RunPage({
         }
         toast.success(
           `${assignment.full_name} moved to ${result.assignment.panel_id} at ` +
-            `${formatTime(result.assignment.start_time)} and locked.`,
+            `${formatTime(result.assignment.start_time)} and locked.` +
+            (result.assignment.is_clash
+              ? " Flagged as a clash — outside their stated availability."
+              : ""),
         );
         await load();
       } catch (err) {
@@ -268,9 +271,12 @@ export default function RunPage({
                     moving={moving}
                   />
                   <p className="mt-2 text-xs text-neutral-500">
-                    Drag an interview onto a highlighted slot to move it, or
-                    click it to pick a panel and slot by hand. Either way the
-                    move is locked, so every later solve keeps it (C6).
+                    Drag an interview onto a blue slot to move it, or an amber
+                    slot to move it outside the applicant&apos;s stated
+                    availability (recorded as a clash). Only blank slots on the
+                    applicant&apos;s own division show as targets. Click an
+                    interview instead to pick a panel and slot by hand. Either
+                    way the move is locked, so every later solve keeps it (C6).
                   </p>
                 </>
               )}
