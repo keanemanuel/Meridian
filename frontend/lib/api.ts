@@ -316,6 +316,19 @@ export const api = {
       { method: "PATCH", body: JSON.stringify({ panel_id: panelId, slot_id: slotId }) },
     ),
 
+  /** Lock or unlock a single interview without moving it (FR-41). Locking
+   * pins it so every later re-solve keeps it (C6); unlocking frees it. */
+  setAssignmentLock: (
+    id: string,
+    runId: string,
+    assignmentId: string,
+    locked: boolean,
+  ) =>
+    request<PatchAssignmentResult>(
+      `/workspaces/${seg(id)}/runs/${seg(runId)}/assignments/${seg(assignmentId)}/lock`,
+      { method: "PATCH", body: JSON.stringify({ locked }) },
+    ),
+
   /** Every panel in a run (solver + manually-added) plus the division list
    * for the Rooms tab's "add panel" dropdown. */
   listPanels: (id: string, runId: string) =>

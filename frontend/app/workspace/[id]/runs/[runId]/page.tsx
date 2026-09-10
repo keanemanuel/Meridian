@@ -183,6 +183,34 @@ export default function RunPage({
     [workspaceId, runId, toast, load],
   );
 
+  /** Lock or unlock one interview in place. Persists immediately — same as a
+   * drag — then reloads so the 🔒 count and the Re-solve summary track it. */
+  const toggleLock = useCallback(
+    async (assignment: Assignment) => {
+      const next = !assignment.is_locked;
+      setMoving(true);
+      try {
+        await api.setAssignmentLock(
+          workspaceId,
+          runId,
+          assignment.assignment_id,
+          next,
+        );
+        toast.success(
+          next
+            ? `${assignment.full_name}'s interview is locked — every re-solve keeps it.`
+            : `${assignment.full_name}'s interview is unlocked — a re-solve may move it.`,
+        );
+        await load();
+      } catch (err) {
+        toast.fromError(err, "The lock could not be changed. Nothing was saved.");
+      } finally {
+        setMoving(false);
+      }
+    },
+    [workspaceId, runId, toast, load],
+  );
+
   const undoLastMove = useCallback(async () => {
     const last = history[history.length - 1];
     if (!last) return;
@@ -328,6 +356,7 @@ export default function RunPage({
                     assignments={assignments}
                     onSelect={setSelected}
                     onMove={applyMove}
+                    onToggleLock={toggleLock}
                     moving={moving}
                   />
                   <p className="mt-2 text-xs text-neutral-500">
@@ -337,6 +366,8 @@ export default function RunPage({
                     applicant&apos;s own division show as targets. Click an
                     interview instead to pick a panel and slot by hand. Either
                     way the move is locked, so every later solve keeps it (C6).
+                    Use the 🔒 / 🔓 toggle in an interview&apos;s corner to lock
+                    or unlock it by hand without moving it.
                   </p>
                 </>
               )}

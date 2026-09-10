@@ -470,6 +470,96 @@ def patch_assignment(
     }
 
 
+class LockEdit(BaseModel):
+    locked: bool
+
+
+@router.patch("/assignments/{assignment_id}/lock")
+def set_assignment_lock(
+    workspace_id: str,
+    run_id: str,
+    assignment_id: str,
+    body: LockEdit,
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Lock or unlock a single interview by hand (FR-41).
+
+    Only the lock flag changes — panel, room and slot stay exactly where they
+    are — so this skips the geometry checks `patch_assignment` runs. Locking
+    pins the choice in `locks/pinned_assignments.csv` so every later re-solve
+    keeps it (C6); unlocking drops that pin so the solver may move it again.
+    Idempotent: re-sending the state a choice is already in just rewrites the
+    same lock set.
+    """
+    db_mode = supabase_enabled()
+    run_dir = (
+        run_dir_if_present(workspace_id, run_id)
+        if db_mode
+        else resolve_run_dir(workspace_id, run_id)
+    )
+    if db_mode:
+        ensure_run_exists(workspace_id, run_id)
+    path = (run_dir / "assignments.csv") if run_dir is not None else None
+    if not db_mode and (path is None or not path.exists()):
+        raise HTTPException(status_code=404, detail=f"{path} not found — solve first.")
+
+    run_pk: str | None = None
+    if db_mode:
+        from iff_scheduler.db import assignment_repo
+
+        run_pk = resolve_run_pk(workspace_id, run_id)
+        assignments = assignment_repo.list_assignments(run_pk)
+    else:
+        assert path is not None
+        assignments = load_assignments(path)
+
+    target = next((a for a in assignments if _assignment_id(a) == assignment_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"No assignment '{assignment_id}' in this run.")
+
+    edited = target.model_copy(
+        update={
+            "is_locked": body.locked,
+            "reason": "manual lock (FR-41)" if body.locked else "manual unlock (FR-41)",
+        }
+    )
+    edited_list = [edited if a is target else a for a in assignments]
+
+    if path is not None and path.exists():
+        assignments_frame(edited_list).to_csv(path, index=False)
+    if db_mode:
+        from iff_scheduler.db import assignment_repo
+
+        assert run_pk is not None
+        assignment_repo.update_assignment(
+            run_pk,
+            edited.applicant_id,
+            int(edited.choice_index),
+            {"is_locked": body.locked},
+        )
+
+    # Locks live in a CSV in both backends — `_build_problem` reads pins from
+    # `ws.locks_path` on every re-solve (C6).
+    locks_path = ws.locks_path(workspace_id)
+    existing = load_locks(locks_path) if locks_path.exists() else []
+    if body.locked:
+        merged = merge_locks(existing, [lock_from_assignment(edited)])
+    else:
+        merged = [
+            lock
+            for lock in existing
+            if (lock.applicant_id, lock.choice_index)
+            != (edited.applicant_id, edited.choice_index)
+        ]
+    write_locks(merged, locks_path)
+
+    return {
+        "assignment": _serialise(edited),
+        "locked": body.locked,
+        "total_locks": len(merged),
+    }
+
+
 # --------------------------------------------------------- panel management
 #
 # Per-room manual panel control for the Rooms tab (FR-40..FR-42). Add an empty

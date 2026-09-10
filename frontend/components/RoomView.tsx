@@ -45,11 +45,13 @@ export function RoomView({
   assignments,
   onSelect,
   onMove,
+  onToggleLock,
   moving = false,
 }: {
   assignments: Assignment[];
   onSelect: (a: Assignment) => void;
   onMove?: (move: MoveRequest) => void | Promise<void>;
+  onToggleLock?: (a: Assignment) => void | Promise<void>;
   moving?: boolean;
 }) {
   const days = useMemo(() => dayAxis(assignments), [assignments]);
@@ -154,6 +156,7 @@ export function RoomView({
                 query={query}
                 onSelect={onSelect}
                 onMove={onMove}
+                onToggleLock={onToggleLock}
                 moving={moving}
                 dragging={dragging}
                 draggingRef={draggingRef}
@@ -176,6 +179,7 @@ function DayGrid({
   query,
   onSelect,
   onMove,
+  onToggleLock,
   moving,
   dragging,
   draggingRef,
@@ -189,6 +193,7 @@ function DayGrid({
   query: string;
   onSelect: (a: Assignment) => void;
   onMove?: (move: MoveRequest) => void | Promise<void>;
+  onToggleLock?: (a: Assignment) => void | Promise<void>;
   moving: boolean;
   dragging: Assignment | null;
   draggingRef: RefObject<Assignment | null>;
@@ -300,54 +305,82 @@ function DayGrid({
                       </div>
                     ) : (
                       here.map((a) => (
-                        <button
-                          key={a.assignment_id}
-                          type="button"
-                          draggable={Boolean(onMove) && !moving}
-                          onDragStart={(e) => {
-                            e.dataTransfer.effectAllowed = "move";
-                            e.dataTransfer.setData(
-                              "text/plain",
-                              a.assignment_id,
-                            );
-                            beginDrag(a);
-                          }}
-                          onDragEnd={endDrag}
-                          onClick={() => onSelect(a)}
-                          title={buildTitle(a)}
-                          className={`relative block h-full min-h-[3rem] w-full px-3 py-2 text-left transition-colors ${
-                            onMove ? "cursor-grab active:cursor-grabbing" : ""
-                          } ${
-                            dragging?.assignment_id === a.assignment_id
-                              ? "opacity-40"
-                              : ""
-                          } ${
-                            a.is_clash
-                              ? "bg-red-100 text-red-600 hover:bg-red-200"
-                              : "text-neutral-800 hover:bg-neutral-100"
-                          } ${
-                            assignmentMatches(a, query)
-                              ? "ring-2 ring-inset ring-amber-500"
-                              : ""
-                          }`}
-                        >
-                          <span className="block truncate pr-4 font-medium">
-                            {a.full_name}
-                          </span>
-                          <span
-                            className={`block truncate ${a.is_clash ? "text-red-500" : "text-neutral-500"}`}
+                        <div key={a.assignment_id} className="relative">
+                          <button
+                            type="button"
+                            draggable={Boolean(onMove) && !moving}
+                            onDragStart={(e) => {
+                              e.dataTransfer.effectAllowed = "move";
+                              e.dataTransfer.setData(
+                                "text/plain",
+                                a.assignment_id,
+                              );
+                              beginDrag(a);
+                            }}
+                            onDragEnd={endDrag}
+                            onClick={() => onSelect(a)}
+                            title={buildTitle(a)}
+                            className={`block h-full min-h-[3rem] w-full px-3 py-2 text-left transition-colors ${
+                              onMove ? "cursor-grab active:cursor-grabbing" : ""
+                            } ${
+                              dragging?.assignment_id === a.assignment_id
+                                ? "opacity-40"
+                                : ""
+                            } ${
+                              a.is_clash
+                                ? "bg-red-100 text-red-600 hover:bg-red-200"
+                                : "text-neutral-800 hover:bg-neutral-100"
+                            } ${
+                              assignmentMatches(a, query)
+                                ? "ring-2 ring-inset ring-amber-500"
+                                : ""
+                            }`}
                           >
-                            {a.sub_division}
-                          </span>
-                          {a.is_locked && (
-                            <span
-                              className="absolute right-1 top-1 text-[10px] leading-none"
-                              title="Locked. The solver will not move this."
-                            >
-                              🔒
+                            <span className="block truncate pr-6 font-medium">
+                              {a.full_name}
                             </span>
+                            <span
+                              className={`block truncate ${a.is_clash ? "text-red-500" : "text-neutral-500"}`}
+                            >
+                              {a.sub_division}
+                            </span>
+                          </button>
+                          {onToggleLock ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void onToggleLock(a);
+                              }}
+                              disabled={moving}
+                              aria-pressed={a.is_locked}
+                              aria-label={
+                                a.is_locked
+                                  ? `Unlock ${a.full_name}'s interview`
+                                  : `Lock ${a.full_name}'s interview`
+                              }
+                              title={
+                                a.is_locked
+                                  ? "Locked — every re-solve keeps this. Click to unlock."
+                                  : "Unlocked — a re-solve may move this. Click to lock."
+                              }
+                              className={`absolute right-0.5 top-0.5 rounded px-1 py-0.5 text-[11px] leading-none transition-opacity hover:bg-white/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 disabled:cursor-not-allowed disabled:opacity-40 ${
+                                a.is_locked ? "opacity-100" : "opacity-30 hover:opacity-80"
+                              }`}
+                            >
+                              {a.is_locked ? "🔒" : "🔓"}
+                            </button>
+                          ) : (
+                            a.is_locked && (
+                              <span
+                                className="absolute right-1 top-1 text-[10px] leading-none"
+                                title="Locked. The solver will not move this."
+                              >
+                                🔒
+                              </span>
+                            )
                           )}
-                        </button>
+                        </div>
                       ))
                     )}
                   </td>

@@ -433,6 +433,62 @@ def test_patch_assignment_locks_and_survives_resolve(client: TestClient, wsname:
     assert resolved.json()["locked"] >= 1
 
 
+def test_toggle_assignment_lock_locks_then_unlocks(client: TestClient, wsname: str) -> None:
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
+        "run_id"
+    ]
+    rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    first = rows[0]
+    assert first["is_locked"] is False
+
+    locked = client.patch(
+        f"/api/workspaces/{wsname}/runs/{run_id}/assignments/{first['assignment_id']}/lock",
+        json={"locked": True},
+    )
+    assert locked.status_code == 200, locked.text
+    assert locked.json()["locked"] is True
+    assert locked.json()["assignment"]["is_locked"] is True
+    assert locked.json()["total_locks"] == 1
+
+    after_lock = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    assert next(r for r in after_lock if r["assignment_id"] == first["assignment_id"])[
+        "is_locked"
+    ]
+
+    unlocked = client.patch(
+        f"/api/workspaces/{wsname}/runs/{run_id}/assignments/{first['assignment_id']}/lock",
+        json={"locked": False},
+    )
+    assert unlocked.status_code == 200, unlocked.text
+    assert unlocked.json()["locked"] is False
+    assert unlocked.json()["assignment"]["is_locked"] is False
+    assert unlocked.json()["total_locks"] == 0
+
+    after_unlock = client.get(
+        f"/api/workspaces/{wsname}/runs/{run_id}/assignments"
+    ).json()
+    assert not next(
+        r for r in after_unlock if r["assignment_id"] == first["assignment_id"]
+    )["is_locked"]
+
+
+def test_toggle_assignment_lock_unknown_assignment_is_404(
+    client: TestClient, wsname: str
+) -> None:
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
+        "run_id"
+    ]
+    resp = client.patch(
+        f"/api/workspaces/{wsname}/runs/{run_id}/assignments/nobody:1/lock",
+        json={"locked": True},
+    )
+    assert resp.status_code == 404
+
+
 # --------------------------------------------------- Rooms tab panel management
 
 
