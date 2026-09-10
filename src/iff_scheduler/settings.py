@@ -166,10 +166,18 @@ class ActiveWindow(BaseModel):
 class PanelEntry(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    # Canonical id format: `[DIVISION]-[DAY][N]` — DAY is "A" for the first
+    # event day, "B" for the second; N counts that division's panels on that
+    # day from 1, in creation order (e.g. PROGRAM-A1, PROGRAM-A2, PROGRAM-B1).
     id: str
     division: DivisionCode
     room: str
     active_windows: list[ActiveWindow] = []
+    # "config" = a committed panels.yaml panel — never removed by consolidation.
+    # "balanced" = added at solve time by rebalance_panels / autoscale_panels.
+    # Once the id stopped carrying a `-BAL-`/`-AUTO-` tag this is the only way
+    # to tell an added panel from a baseline one (feasibility._is_scaled_panel).
+    origin: Literal["config", "balanced"] = "config"
 
 
 class PanelsConfig(BaseModel):

@@ -66,8 +66,9 @@ def _run_panels(
 
     Every solve runs `rebalance_panels`/`autoscale_panels`, which append extra
     panels to the committed config before the problem reaches CP-SAT — ids
-    like ``MEDMARDOC-BAL-1`` or ``PROGRAM-AUTO-2`` that never appear in
-    ``panels.yaml``. The run's own assignments carry those ids, and so do the
+    like ``MEDMARDOC-A2`` or ``PROGRAM-B3`` (next free number for the division
+    that day, ``origin="balanced"``) that never appear in ``panels.yaml``. The
+    run's own assignments carry those ids, and so do the
     panels the move UIs offer (frontend ``divisionPanels``, derived from the
     same assignments). Validating against the bare committed config therefore
     rejects every move onto a load-balanced panel as "Unknown panel", and a
@@ -86,8 +87,8 @@ def _run_panels(
        or any other stale/absent record. These are the CURRENT live panels by
        definition; nothing the run actually scheduled can be "unknown". Their
        active slots are every grid slot on the day(s) the panel runs, within
-       its room's open days — matching how a `*-BAL-*`/`*-AUTO-*` panel is
-       resolved from its full-evening active window.
+       its room's open days — matching how a load-balanced (`origin="balanced"`)
+       panel is resolved from its full-evening active window.
     """
     entries: list[dict[str, Any]] | None = None
 
@@ -226,7 +227,7 @@ def patch_assignment(
         raise HTTPException(status_code=404, detail=f"No assignment '{assignment_id}' in this run.")
 
     # Validate against the panels *this run* was solved with — committed config
-    # plus any load-balanced `*-BAL-*` / `*-AUTO-*` panels — never the bare
+    # plus any load-balanced (`origin="balanced"`) panels — never the bare
     # committed config, or every move onto a load-balanced panel is a false
     # "Unknown panel" that no re-solve can clear (FR-40..FR-42).
     run_metrics: dict[str, Any] | None = None

@@ -152,9 +152,9 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
         "panel_adjustments": capacity_warnings,
         # The exact panel set this run was solved with — committed panels.yaml
         # plus whatever `rebalance_panels`/`autoscale_panels` added (ids like
-        # `MEDMARDOC-BAL-1`). A later manual edit is validated against this, not
-        # the committed config, so a move onto a load-balanced panel is not
-        # rejected as "Unknown panel" (FR-40..FR-42).
+        # `MEDMARDOC-A2`, tagged `origin="balanced"`). A later manual edit is
+        # validated against this, not the committed config, so a move onto a
+        # load-balanced panel is not rejected as "Unknown panel" (FR-40..FR-42).
         "solved_panels": [p.model_dump(mode="json") for p in settings.panels.panels],
     }
 

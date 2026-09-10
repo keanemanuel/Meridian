@@ -450,7 +450,7 @@ def _write_concentrated_creative_applicants(wsname: str, n: int = 16) -> None:
     """Drop an applicants.clean.csv straight into the workspace: `n` applicants
     all wanting two CREATIVE roles, all free only on the Thursday evening. That
     per-day load is far past the 85% utilisation mark for one panel, so a real
-    ``rebalance_panels`` split runs at solve time and CREATIVE-BAL-1..k panels
+    ``rebalance_panels`` split runs at solve time and CREATIVE-A2..k panels
     are created — no monkeypatch, the actual production path."""
     from datetime import datetime
 
@@ -482,6 +482,25 @@ def _write_concentrated_creative_applicants(wsname: str, n: int = 16) -> None:
     pd.DataFrame(rows, columns=CLEAN_COLUMNS).to_csv(path, index=False)
 
 
+# CREATIVE's committed baseline is one panel per event day — CREATIVE-A1
+# (Thursday) and CREATIVE-B1 (Friday), per config/panels.yaml. Any other
+# CREATIVE panel a run carries was split off by `rebalance_panels` /
+# `autoscale_panels` (id `CREATIVE-A2`, `CREATIVE-A3`, ...; origin="balanced").
+_COMMITTED_CREATIVE_PANELS = {"CREATIVE-A1", "CREATIVE-B1"}
+
+
+def _balanced_creative_panels(rows: list[dict]) -> list[str]:
+    """The load-balanced CREATIVE panel ids present in `rows`, sorted."""
+    return sorted(
+        {
+            r["panel_id"]
+            for r in rows
+            if r["panel_id"].startswith("CREATIVE-")
+            and r["panel_id"] not in _COMMITTED_CREATIVE_PANELS
+        }
+    )
+
+
 def _other_slot(rows: list[dict], target: dict) -> str:
     """The slot the target applicant's *other* interview sits in (so a move
     never double-books them, C3)."""
@@ -499,7 +518,7 @@ def _other_slot(rows: list[dict], target: dict) -> str:
 
 def test_move_onto_a_load_balanced_panel_is_accepted(client: TestClient, wsname: str) -> None:
     """Regression (FR-40..FR-42): every solve grows a hot division with extra
-    panels — real ids like ``CREATIVE-BAL-1`` — that never reach committed
+    panels — real ids like ``CREATIVE-A2`` — that never reach committed
     ``panels.yaml``. The run's assignments and the move UIs both carry those
     ids, so a manual move onto one must be validated against the run's own
     panel set. Previously it 422'd "Unknown panel" and no re-solve could clear
@@ -513,8 +532,8 @@ def test_move_onto_a_load_balanced_panel_is_accepted(client: TestClient, wsname:
 
     rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
     seen = sorted({r["panel_id"] for r in rows})
-    bal_ids = sorted(p for p in seen if "-BAL-" in p)
-    assert bal_ids, f"expected a real rebalance split; panels seen: {seen}"
+    bal_ids = _balanced_creative_panels(rows)
+    assert len(bal_ids) >= 2, f"expected a real rebalance split; panels seen: {seen}"
 
     # Move an interview that is sitting on a load-balanced panel to a different
     # load-balanced panel of the same division, at the slot its choice already
@@ -551,7 +570,7 @@ def test_move_onto_a_load_balanced_panel_survives_lost_run_metadata(
     run_id = client.post(f"/api/workspaces/{wsname}/solve", json={}).json()["run_id"]
 
     rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
-    bal_ids = sorted({r["panel_id"] for r in rows if "-BAL-" in r["panel_id"]})
+    bal_ids = _balanced_creative_panels(rows)
     assert bal_ids
     target = next(r for r in rows if r["panel_id"] == bal_ids[0])
 

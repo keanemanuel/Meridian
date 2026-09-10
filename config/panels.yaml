@@ -1,12 +1,19 @@
 # Baseline staffing: one panel per division per event day (SPEC.md §1.2 —
 # "12 panels is the baseline", "one room per division"). 12 panels total.
 #
+# Panel ids follow one format everywhere: `[DIVISION]-[DAY][N]`. DAY is "A"
+# for the first event day (Thursday), "B" for the second (Friday); N counts
+# that division's panels on that day from 1. The baseline below is therefore
+# `<DIVISION>-A1` on Thursday and `<DIVISION>-B1` on Friday.
+#
 # This is the *starting* point, not the final plan. Before every solve the
 # load-balancer (`rebalance_panels`, SPEC.md §5.5) grows a division that is
 # running hot one panel at a time, each new panel in a DIFFERENT room that
-# day — filling the rooms available that evening room by room. Two panels of
-# the SAME division never share a room on the same day; different divisions
-# freely share a room (bounded by the room's `max_concurrent_panels`, FR-24).
+# day — filling the rooms available that evening room by room. A split panel
+# takes the next free number for its division that day (PROGRAM-A2, PROGRAM-A3,
+# ...) and is tagged `origin: balanced` in memory. Two panels of the SAME
+# division never share a room on the same day; different divisions freely
+# share a room (bounded by the room's `max_concurrent_panels`, FR-24).
 # `autoscale_panels` is the INFEASIBLE backstop on top of that.
 #
 # Rooms per evening (config/rooms.yaml): Thursday 6 (2016, 2017, 2020, 3013,
@@ -18,32 +25,32 @@
 # panels in 2018 / 2019 (both evenings) pin their day with `active_windows`.
 panels:
   # ---------------- Thursday 2026-09-17 — one per division ----------------
-  - {id: PROGRAM-T,   division: PROGRAM,   room: "2016"}
-  - {id: MEDMARDOC-T, division: MEDMARDOC, room: "2017"}
-  - {id: FNB-T,       division: FNB,       room: "2020"}
-  - {id: LOGISTICS-T, division: LOGISTICS, room: "3013"}
-  - id: CREATIVE-T
+  - {id: PROGRAM-A1,   division: PROGRAM,   room: "2016"}
+  - {id: MEDMARDOC-A1, division: MEDMARDOC, room: "2017"}
+  - {id: FNB-A1,       division: FNB,       room: "2020"}
+  - {id: LOGISTICS-A1, division: LOGISTICS, room: "3013"}
+  - id: CREATIVE-A1
     division: CREATIVE
     room: "2018"
     active_windows: [{date: 2026-09-17, start: "18:30", end: "21:30"}]
-  - id: LIAISON-T
+  - id: LIAISON-A1
     division: LIAISON
     room: "2019"
     active_windows: [{date: 2026-09-17, start: "18:30", end: "21:30"}]
 
   # ----------------- Friday 2026-09-18 — one per division -----------------
-  - {id: PROGRAM-F,   division: PROGRAM,   room: "2014"}
-  - {id: MEDMARDOC-F, division: MEDMARDOC, room: "2015"}
-  - {id: FNB-F,       division: FNB,       room: "3033"}
-  - id: LOGISTICS-F
+  - {id: PROGRAM-B1,   division: PROGRAM,   room: "2014"}
+  - {id: MEDMARDOC-B1, division: MEDMARDOC, room: "2015"}
+  - {id: FNB-B1,       division: FNB,       room: "3033"}
+  - id: LOGISTICS-B1
     division: LOGISTICS
     room: "2018"
     active_windows: [{date: 2026-09-18, start: "17:30", end: "21:30"}]
-  - id: CREATIVE-F
+  - id: CREATIVE-B1
     division: CREATIVE
     room: "2019"
     active_windows: [{date: 2026-09-18, start: "17:30", end: "21:30"}]
-  - id: LIAISON-F
+  - id: LIAISON-B1
     division: LIAISON
     room: "2014"
     active_windows: [{date: 2026-09-18, start: "17:30", end: "21:30"}]

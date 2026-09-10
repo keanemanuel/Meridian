@@ -452,22 +452,23 @@ def test_rooms_config_rejects_a_concurrency_above_the_ceiling() -> None:
 
 
 def test_consolidate_merges_a_near_empty_added_panel_into_its_sibling() -> None:
-    """A `*-BAL-*` panel an even split would fill to only ~2 interviews is
-    folded back into its same-division sibling when that sibling can absorb the
-    load under the rebalance threshold — freeing the room, keeping the
-    lower-numbered one."""
+    """A load-balanced panel (`origin="balanced"`) an even split would fill to
+    only ~2 interviews is folded back into its same-division sibling when that
+    sibling can absorb the load under the rebalance threshold — freeing the
+    room, keeping the lower-numbered one."""
     base = load_settings()
     grid = build_slot_grid(base.event)
     thu = base.event.days[0].date
     thu_slots = [s.slot_id for s in grid.slots if s.date == thu]
 
-    # Baseline FNB-T (room 2020) + an over-eager extra FNB panel that Thursday.
+    # Baseline FNB-A1 (room 2020) + an over-eager extra FNB panel that Thursday.
     panels = list(base.panels.panels) + [
         PanelEntry(
-            id="FNB-BAL-1",
+            id="FNB-A2",
             division=DivisionCode.FNB,
             room="3013",
             active_windows=[ActiveWindow(date=thu, start=time(18, 30), end=time(21, 30))],
+            origin="balanced",
         )
     ]
     settings = base.model_copy(update={"panels": PanelsConfig(panels=panels)})
@@ -481,8 +482,8 @@ def test_consolidate_merges_a_near_empty_added_panel_into_its_sibling() -> None:
 
     assert any(m.startswith("Consolidated FNB (Thu)") for m in messages)
     ids = {p.id for p in consolidated.panels.panels}
-    assert "FNB-BAL-1" not in ids  # the near-empty added panel is gone
-    assert "FNB-T" in ids  # the committed baseline panel is kept
+    assert "FNB-A2" not in ids  # the near-empty added panel is gone
+    assert "FNB-A1" in ids  # the committed baseline panel is kept
 
 
 def test_consolidate_leaves_a_busy_added_panel_alone() -> None:
@@ -496,10 +497,11 @@ def test_consolidate_leaves_a_busy_added_panel_alone() -> None:
 
     panels = list(base.panels.panels) + [
         PanelEntry(
-            id="FNB-BAL-1",
+            id="FNB-A2",
             division=DivisionCode.FNB,
             room="3013",
             active_windows=[ActiveWindow(date=thu, start=time(18, 30), end=time(21, 30))],
+            origin="balanced",
         )
     ]
     settings = base.model_copy(update={"panels": PanelsConfig(panels=panels)})
@@ -514,11 +516,11 @@ def test_consolidate_leaves_a_busy_added_panel_alone() -> None:
 
     assert messages == []
     assert consolidated is settings
-    assert any(p.id == "FNB-BAL-1" for p in consolidated.panels.panels)
+    assert any(p.id == "FNB-A2" for p in consolidated.panels.panels)
 
 
 def test_consolidate_never_removes_a_committed_baseline_panel() -> None:
-    """Only load-balancer-added panels (`*-BAL-*` / `*-AUTO-*`) are removable;
+    """Only load-balancer-added panels (`origin="balanced"`) are removable;
     a division whose only panel that evening is the baseline is left as-is even
     when its load is tiny."""
     base = load_settings()
@@ -534,4 +536,4 @@ def test_consolidate_never_removes_a_committed_baseline_panel() -> None:
 
     assert messages == []
     assert consolidated is base
-    assert any(p.id == "FNB-T" for p in consolidated.panels.panels)
+    assert any(p.id == "FNB-A1" for p in consolidated.panels.panels)

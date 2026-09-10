@@ -33,8 +33,6 @@ from iff_scheduler.settings import (
 
 Verdict = Literal["OK", "TIGHT", "INFEASIBLE"]
 
-AUTO_PANEL_TAG = "AUTO"
-
 # Proactive load-balancing split (SPEC.md §5.5, §1.2 Finding A). When an even
 # split of a division's per-day load would push its panels past this
 # utilisation, add a panel and re-spread — rather than packing existing panels
@@ -42,7 +40,36 @@ AUTO_PANEL_TAG = "AUTO"
 # it is a structural safety margin, not a per-event tuning knob.
 REBALANCE_THRESHOLD = 0.85
 
-BALANCE_PANEL_TAG = "BAL"
+
+def format_panel_id(division: DivisionCode, day_letter: str, number: int) -> str:
+    """The one canonical panel identifier: ``[DIVISION]-[DAY][N]`` (e.g.
+    ``PROGRAM-A1``, ``MEDMARDOC-B2``). DAY is ``A`` for the first event day,
+    ``B`` for the second; N counts that division's panels on that day from 1,
+    in the order they are created — the committed baseline panel is 1, each
+    panel the load-balancer splits off is the next number."""
+    return f"{division.value}-{day_letter}{number}"
+
+
+def _event_day_letters(event: EventConfig) -> dict[Date, str]:
+    """Each event day's [DAY] letter, in date order: day 1 -> ``A``, day 2 ->
+    ``B``, ..."""
+    ordered = sorted(event.days, key=lambda day: day.date)
+    return {day.date: chr(ord("A") + index) for index, day in enumerate(ordered)}
+
+
+def _next_panel_number(panels: list[PanelEntry], division: DivisionCode, day_letter: str) -> int:
+    """The next free N for ``division`` on the day ``day_letter`` names — one
+    past the highest N already taken by a same-division panel with that day
+    letter, so an id is never reused even if consolidation left a gap."""
+    prefix = f"{division.value}-{day_letter}"
+    taken = [
+        int(panel.id[len(prefix) :])
+        for panel in panels
+        if panel.division == division
+        and panel.id.startswith(prefix)
+        and panel.id[len(prefix) :].isdigit()
+    ]
+    return max(taken, default=0) + 1
 
 
 @dataclass(frozen=True)
@@ -283,23 +310,30 @@ def _try_add_capacity_panel(
     room_dates: dict[str, set[Date]],
     division: DivisionCode,
     day: Date,
-    panel_id: str,
 ) -> tuple[bool, str | None]:
     """Append one `division` panel active on `day`, keeping it only if it
     actually lifts that evening's usable capacity. A panel dropped into a room
     already at its `max_concurrent_panels` is a phantom the solver can never
     run (C4), so it is rolled back and the caller stops splitting that evening
     — this is what keeps the load-balancer from bloating the model when the
-    rooms are physically full. Returns `(kept, note)`."""
+    rooms are physically full. Returns `(kept, note)`.
+
+    The new panel is named `[DIVISION]-[DAY][N]` — the next free N for the
+    division on that day — and tagged `origin="balanced"` so consolidation
+    knows it may be removed while a committed baseline panel never is.
+    """
     rooms = settings.rooms
+    day_letter = _event_day_letters(settings.event)[day]
     before = _capacity_by_division_day(panels, rooms, grid, room_dates).get((division, day), 0)
     room_id, note = _pick_panel_room(rooms, settings.event, division, panels, room_dates, day)
+    number = _next_panel_number(panels, division, day_letter)
     panels.append(
         PanelEntry(
-            id=panel_id,
+            id=format_panel_id(division, day_letter, number),
             division=division,
             room=room_id,
             active_windows=[_day_window(settings.event, day)],
+            origin="balanced",
         )
     )
     after = _capacity_by_division_day(panels, rooms, grid, room_dates).get((division, day), 0)
@@ -374,7 +408,6 @@ def autoscale_panels(
                     room_dates,
                     division,
                     day,
-                    f"{division.value}-{AUTO_PANEL_TAG}-{added[division]}",
                 )
                 if not kept:
                     added[division] -= 1
@@ -560,7 +593,6 @@ def rebalance_panels(
             room_dates,
             division,
             day,
-            f"{division.value}-{BALANCE_PANEL_TAG}-{added[division]}",
         )
         if not kept:
             added[division] -= 1
@@ -597,9 +629,10 @@ CONSOLIDATE_MAX_INTERVIEWS = 2
 
 
 def _is_scaled_panel(panel: PanelEntry) -> bool:
-    """A panel the load-balancer added (`*-BAL-*` / `*-AUTO-*`), not a committed
-    baseline panel. Only these are ever removed by consolidation."""
-    return f"-{BALANCE_PANEL_TAG}-" in panel.id or f"-{AUTO_PANEL_TAG}-" in panel.id
+    """A panel `rebalance_panels` / `autoscale_panels` added, not a committed
+    baseline panel. Only these are ever removed by consolidation. The id no
+    longer carries a tag, so this is read off `PanelEntry.origin`."""
+    return panel.origin == "balanced"
 
 
 def _room_config_index(rooms: RoomsConfig, room_id: str) -> int:
@@ -629,8 +662,8 @@ def consolidate_panels(
     different room, per the room-exclusivity rule) still has slack. When the
     siblings can absorb that load and stay at or under `threshold` utilisation,
     drop the small panel — freeing its room for another division — keeping the
-    lower-numbered rooms. Only panels the load-balancer added (`*-BAL-*` /
-    `*-AUTO-*`) are ever removed; a committed baseline panel is never touched.
+    lower-numbered rooms. Only panels the load-balancer added (`origin ==
+    "balanced"`) are ever removed; a committed baseline panel is never touched.
 
     Purely a soft optimisation: when no clean merge exists the panel stays, so
     no hard constraint (the room ceiling from Part 1, room-exclusivity,

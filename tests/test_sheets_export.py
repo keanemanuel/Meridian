@@ -75,25 +75,25 @@ def test_one_tab_per_day_and_one_section_per_panel() -> None:
     thu = _view(
         "2016",
         THU,
-        ["LOGISTICS-T1", "LOGISTICS-T2"],
+        ["LOGISTICS-A1", "LOGISTICS-A2"],
         [
-            _row(0, {"LOGISTICS-T1": _cell("Ayu"), "LOGISTICS-T2": _cell("Bagas")}),
-            _row(1, {"LOGISTICS-T1": None, "LOGISTICS-T2": _cell("Citra")}),
+            _row(0, {"LOGISTICS-A1": _cell("Ayu"), "LOGISTICS-A2": _cell("Bagas")}),
+            _row(1, {"LOGISTICS-A1": None, "LOGISTICS-A2": _cell("Citra")}),
         ],
     )
     fri = _view(
         "2014",
         FRI,
-        ["LOGISTICS-F1"],
-        [_row(0, {"LOGISTICS-F1": _cell("Dimas")})],
+        ["LOGISTICS-B1"],
+        [_row(0, {"LOGISTICS-B1": _cell("Dimas")})],
     )
 
     tabs = build_tabs([fri, thu], "Australia/Melbourne")
 
     assert [t.title for t in tabs] == ["Thu 17 Sep", "Fri 18 Sep"]
-    assert [s.panel_id for s in tabs[0].sections] == ["LOGISTICS-T1", "LOGISTICS-T2"]
+    assert [s.panel_id for s in tabs[0].sections] == ["LOGISTICS-A1", "LOGISTICS-A2"]
     assert tabs[0].sections[0].title == (
-        "Thursday, 17 September 2026 · Room 2016 · Panel LOGISTICS-T1"
+        "Thursday, 17 September 2026 · Room 2016 · Panel LOGISTICS-A1"
     )
     # A free slot inside a running panel stays as a blank row.
     assert [r.applicant_name for r in tabs[0].sections[0].rows] == ["Ayu", ""]
@@ -103,15 +103,15 @@ def test_a_panel_with_no_interviews_that_day_is_left_out() -> None:
     view = _view(
         "2016",
         THU,
-        ["LOGISTICS-T1", "LOGISTICS-T2"],
-        [_row(0, {"LOGISTICS-T1": _cell("Ayu"), "LOGISTICS-T2": None})],
+        ["LOGISTICS-A1", "LOGISTICS-A2"],
+        [_row(0, {"LOGISTICS-A1": _cell("Ayu"), "LOGISTICS-A2": None})],
     )
     tabs = build_tabs([view], "Australia/Melbourne")
-    assert [s.panel_id for s in tabs[0].sections] == ["LOGISTICS-T1"]
+    assert [s.panel_id for s in tabs[0].sections] == ["LOGISTICS-A1"]
 
 
 def test_a_run_with_nothing_scheduled_produces_no_tabs() -> None:
-    view = _view("2016", THU, ["LOGISTICS-T1"], [_row(0, {"LOGISTICS-T1": None})])
+    view = _view("2016", THU, ["LOGISTICS-A1"], [_row(0, {"LOGISTICS-A1": None})])
     assert build_tabs([view], "Australia/Melbourne") == []
 
 
@@ -122,10 +122,10 @@ def test_layout_stacks_title_header_and_slot_rows_per_section() -> None:
     view = _view(
         "2016",
         THU,
-        ["LOGISTICS-T1", "LOGISTICS-T2"],
+        ["LOGISTICS-A1", "LOGISTICS-A2"],
         [
-            _row(0, {"LOGISTICS-T1": _cell("Ayu"), "LOGISTICS-T2": _cell("Bagas")}),
-            _row(1, {"LOGISTICS-T1": _cell("Citra", clash=True), "LOGISTICS-T2": None}),
+            _row(0, {"LOGISTICS-A1": _cell("Ayu"), "LOGISTICS-A2": _cell("Bagas")}),
+            _row(1, {"LOGISTICS-A1": _cell("Citra", clash=True), "LOGISTICS-A2": None}),
         ],
     )
     layout = layout_tab(build_tabs([view], "Australia/Melbourne")[0], "Australia/Melbourne")
@@ -143,7 +143,7 @@ def test_layout_stacks_title_header_and_slot_rows_per_section() -> None:
 
 
 def test_time_header_names_the_configured_timezone() -> None:
-    view = _view("2016", THU, ["LOGISTICS-T1"], [_row(0, {"LOGISTICS-T1": _cell("Ayu")})])
+    view = _view("2016", THU, ["LOGISTICS-A1"], [_row(0, {"LOGISTICS-A1": _cell("Ayu")})])
     tab = build_tabs([view], "Australia/Melbourne")[0]
     assert layout_tab(tab, "Australia/Melbourne").values[1][0] == "Time (AEST)"
     assert layout_tab(tab, "Asia/Jakarta").values[1][0] == "Time (WIB)"
@@ -168,10 +168,10 @@ def test_every_title_row_is_merged_and_every_clash_row_painted() -> None:
     view = _view(
         "2016",
         THU,
-        ["LOGISTICS-T1"],
+        ["LOGISTICS-A1"],
         [
-            _row(0, {"LOGISTICS-T1": _cell("Ayu", clash=True)}),
-            _row(1, {"LOGISTICS-T1": _cell("Bagas")}),
+            _row(0, {"LOGISTICS-A1": _cell("Ayu", clash=True)}),
+            _row(1, {"LOGISTICS-A1": _cell("Bagas")}),
         ],
     )
     layout = layout_tab(build_tabs([view], "Asia/Jakarta")[0], "Asia/Jakarta")
@@ -249,8 +249,8 @@ class _FakeClient:
 
 
 def _two_day_tabs() -> list[Any]:
-    thu = _view("2016", THU, ["LOGISTICS-T1"], [_row(0, {"LOGISTICS-T1": _cell("Ayu")})])
-    fri = _view("2014", FRI, ["LOGISTICS-F1"], [_row(0, {"LOGISTICS-F1": _cell("Bagas")})])
+    thu = _view("2016", THU, ["LOGISTICS-A1"], [_row(0, {"LOGISTICS-A1": _cell("Ayu")})])
+    fri = _view("2014", FRI, ["LOGISTICS-B1"], [_row(0, {"LOGISTICS-B1": _cell("Bagas")})])
     return build_tabs([thu, fri], "Asia/Jakarta")
 
 

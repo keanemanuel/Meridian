@@ -189,9 +189,9 @@ function RoomCard({
   }, [shown]);
 
   /** The panels the active division runs in this room. A division can be split
-   * across two panels sharing one room (e.g. MEDMARDOC-BAL-1 and
-   * MEDMARDOC-BAL-2 both in Room 2018); when that happens each gets its own
-   * column so their running orders never overlap in a single cell. */
+   * across two panels sharing one room (e.g. MEDMARDOC-A1 and MEDMARDOC-A2
+   * both in Room 2018); when that happens each gets its own column so their
+   * running orders never overlap in a single cell. */
   const divisionPanels = useMemo(
     () =>
       [...new Set(shown.map((a) => a.panel_id))].sort((x, y) =>
