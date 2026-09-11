@@ -15,6 +15,7 @@ from iff_scheduler.export.applicant_view import ApplicantChoiceView, ApplicantVi
 from iff_scheduler.export.room_view import RoomView, RoomViewCell, RoomViewRow
 from iff_scheduler.export.xlsx_writer import (
     APPLICANTS_TAB_HEADER,
+    _sub_division_qualifier,
     write_applicants_xlsx,
     write_rooms_xlsx,
     write_xlsx,
@@ -68,18 +69,133 @@ def _room_view(
 
 
 def test_schedule_has_one_sheet_per_division_sorted(tmp_path: Path) -> None:
+    """Rooms with no actual occupants (both here) still surface their division
+    — the sheet-count fix (bug 1) is about dropping extra Panel/Applicants/
+    Conflicts tabs, not about a division needing occupied rows to appear."""
     views = [
-        _room_view("2030", THU, "LOGISTICS-1", DivisionCode.LOGISTICS, {}),
-        _room_view("2014", THU, "CREATIVE-1", DivisionCode.CREATIVE, {}),
+        _room_view(
+            "2030",
+            THU,
+            "LOGISTICS-1",
+            DivisionCode.LOGISTICS,
+            {_SLOT_A[0]: _cell("A", "Logistics", division=DivisionCode.LOGISTICS)},
+        ),
+        _room_view(
+            "2014",
+            THU,
+            "CREATIVE-1",
+            DivisionCode.CREATIVE,
+            {_SLOT_A[0]: _cell("B", "Creative", division=DivisionCode.CREATIVE)},
+        ),
     ]
     out = tmp_path / "schedule.xlsx"
-    write_xlsx(out, views, [], [], [])
+    write_xlsx(out, views)
     assert load_workbook(out).sheetnames[:2] == ["CREATIVE", "LOGISTICS"]
+
+
+def test_schedule_has_exactly_one_sheet_per_top_level_division(tmp_path: Path) -> None:
+    """Bug 1: schedule.xlsx must contain exactly one sheet per top-level
+    division that config/divisions.yaml declares — no extra "Panel <id>",
+    Applicants or Conflicts tabs, and never a hardcoded division count."""
+    from iff_scheduler.settings import load_settings
+
+    top_level_divisions = {d.code for d in load_settings().divisions.divisions}
+
+    views = [
+        _room_view(
+            f"room-{division.value}",
+            THU,
+            f"{division.value}-1",
+            division,
+            {_SLOT_A[0]: _cell("Applicant", "Sub", division=division)},
+        )
+        for division in DivisionCode
+    ]
+    out = tmp_path / "schedule.xlsx"
+    write_xlsx(out, views)
+
+    sheetnames = load_workbook(out).sheetnames
+    assert len(sheetnames) == len(top_level_divisions)
+    assert set(sheetnames) == {d.value for d in top_level_divisions}
+    assert not any(name.startswith("Panel ") for name in sheetnames)
+    assert "Applicants" not in sheetnames
+    assert "Conflicts" not in sheetnames
+
+
+def test_division_sheet_omits_a_room_with_no_real_assignments_that_day(tmp_path: Path) -> None:
+    """Bug 2: a room configured for a division but with zero actual
+    assignments on a given day (e.g. Room 3013 idle on Thursday while Room
+    2019 is used) must not render as an empty room-panel column."""
+    views = [
+        _room_view(
+            "2019",
+            THU,
+            "LOGISTICS-1",
+            DivisionCode.LOGISTICS,
+            {_SLOT_A[0]: _cell("Amy", "Logistics", division=DivisionCode.LOGISTICS)},
+        ),
+        _room_view("3013", THU, "LOGISTICS-2", DivisionCode.LOGISTICS, {}),  # never occupied
+        _room_view(
+            "3013",
+            FRI,
+            "LOGISTICS-2",
+            DivisionCode.LOGISTICS,
+            {_SLOT_A[0]: _cell("Bo", "Logistics", division=DivisionCode.LOGISTICS)},
+        ),
+        _room_view("2019", FRI, "LOGISTICS-1", DivisionCode.LOGISTICS, {}),  # never occupied
+    ]
+    out = tmp_path / "schedule.xlsx"
+    write_xlsx(out, views)
+    ws = load_workbook(out)["LOGISTICS"]
+
+    thu_headers = [c.value for c in ws[2]]
+    assert thu_headers == ["Time", "Interviewer 1", "Interviewer 2", "Room 2019"]
+    assert "Room 3013" not in thu_headers
+
+    fri_header_row = next(
+        r
+        for r in range(1, ws.max_row + 1)
+        if ws.cell(row=r, column=1).value == "Friday, 18 September"
+    )
+    fri_headers = [c.value for c in ws[fri_header_row + 1]]
+    assert fri_headers == ["Time", "Interviewer 1", "Interviewer 2", "Room 3013"]
+    assert "Room 2019" not in fri_headers
+
+
+def test_sub_division_qualifier_drops_the_redundant_parent_name() -> None:
+    """Bug 5: on a division's own tab, a sub-division that just repeats the
+    division's own name (raw form text or the legacy short label) adds
+    nothing and is dropped."""
+    assert _sub_division_qualifier("Logistics", "LOGISTICS") is None
+    assert _sub_division_qualifier("Program", "PROGRAM") is None
+    assert _sub_division_qualifier("Liaison", "LIAISON") is None
+    assert _sub_division_qualifier("Finance and Booth", "FNB") is None
+    assert _sub_division_qualifier("Creative", "CREATIVE") is None
+
+
+def test_sub_division_qualifier_keeps_a_meaningful_distinction() -> None:
+    """A sub-division that actually distinguishes roles under one parent is
+    kept — matching the app's own short-label convention (CLAUDE.md:
+    "(Media Marketing)" vs "(Documentation)")."""
+    assert (
+        _sub_division_qualifier(
+            "Media Marketing and Documentation (Media Marketing)", "MEDMARDOC"
+        )
+        == "Media Marketing"
+    )
+    assert (
+        _sub_division_qualifier(
+            "Media Marketing and Documentation (Documentation)", "MEDMARDOC"
+        )
+        == "Documentation"
+    )
+    assert _sub_division_qualifier("Creative and Decor (WebMaster)", "CREATIVE") == "WebMaster"
+    assert _sub_division_qualifier("WebMaster", "CREATIVE") == "WebMaster"
 
 
 def test_division_sheet_lays_out_rooms_side_by_side_with_day_blocks(tmp_path: Path) -> None:
     """Two rooms run CREATIVE on Thursday (side by side); Friday adds a
-    second day block below (FR-50)."""
+    second day block below with a different room count of its own (FR-50)."""
     slot_a_id = _SLOT_A[0]
     views = [
         _room_view(
@@ -96,10 +212,16 @@ def test_division_sheet_lays_out_rooms_side_by_side_with_day_blocks(tmp_path: Pa
             DivisionCode.CREATIVE,
             {slot_a_id: _cell("Bo", "Creative", division=DivisionCode.CREATIVE, is_clash=True)},
         ),
-        _room_view("2014", FRI, "CREATIVE-1", DivisionCode.CREATIVE, {}),
+        _room_view(
+            "2014",
+            FRI,
+            "CREATIVE-1",
+            DivisionCode.CREATIVE,
+            {slot_a_id: _cell("Cara", "WebMaster", division=DivisionCode.CREATIVE)},
+        ),
     ]
     out = tmp_path / "schedule.xlsx"
-    write_xlsx(out, views, [], [], [])
+    write_xlsx(out, views)
     ws = load_workbook(out)["CREATIVE"]
 
     # Row 1: Thursday's day header, merged across the two rooms' 7 columns.
@@ -119,19 +241,27 @@ def test_division_sheet_lays_out_rooms_side_by_side_with_day_blocks(tmp_path: Pa
         "Interviewer 2",
         "Room 2018",
     ]
+    # Each room's header group carries its own distinct background colour.
+    room1_fill = ws.cell(row=2, column=4).fill.start_color.rgb
+    room2_fill = ws.cell(row=2, column=7).fill.start_color.rgb
+    assert room1_fill != room2_fill
 
     # Row 3: the 09:00 slot — Amy in room 2014's column, Bo (clashing) in 2018's.
+    # Bug 5: sub-division "Creative" duplicates the CREATIVE tab's own division
+    # name, so no "(Creative)" suffix is appended.
     assert ws.cell(row=3, column=1).value == "09:00-09:20"
-    assert ws.cell(row=3, column=4).value == "Amy (Creative)"
-    assert ws.cell(row=3, column=7).value == "Bo (Creative)"
+    assert ws.cell(row=3, column=4).value == "Amy"
+    assert ws.cell(row=3, column=7).value == "Bo"
     assert ws.cell(row=3, column=7).font.color.rgb == "009C0006"  # RED_FONT, round-tripped
     assert ws.cell(row=3, column=2).value is None  # Interviewer 1: left blank
+    assert ws.cell(row=3, column=2).border.left.style == "thin"  # blank but bordered
 
     # Row 4: the 09:20 slot — nobody in either room.
     assert ws.cell(row=4, column=4).value is None
     assert ws.cell(row=4, column=7).value is None
 
-    # Friday's block starts below a blank spacer row, with its own single-room header.
+    # Friday's block starts below a blank spacer row, with its own single-room
+    # header — independently sized from Thursday's two rooms.
     friday_header_row = next(
         r
         for r in range(1, ws.max_row + 1)
@@ -143,6 +273,9 @@ def test_division_sheet_lays_out_rooms_side_by_side_with_day_blocks(tmp_path: Pa
         "Interviewer 2",
         "Room 2014",
     ]
+    # Bug 5: a meaningful sub-division qualifier (distinguishing WebMaster from
+    # Design and Decor under CREATIVE) is kept.
+    assert ws.cell(row=friday_header_row + 2, column=4).value == "Cara (WebMaster)"
 
 
 def test_rooms_xlsx_groups_panels_by_room_and_day(tmp_path: Path) -> None:

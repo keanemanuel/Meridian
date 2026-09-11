@@ -307,9 +307,7 @@ def publish(
     panel_views = build_panel_views(assignments, panels, grid.slots)
 
     if "xlsx" in wanted:
-        write_xlsx(
-            publish_dir / "schedule.xlsx", room_views, applicant_rows, panel_views, conflicts
-        )
+        write_xlsx(publish_dir / "schedule.xlsx", room_views)
         write_applicants_xlsx(
             publish_dir / "applicants.xlsx",
             applicant_rows,

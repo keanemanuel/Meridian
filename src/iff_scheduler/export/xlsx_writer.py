@@ -2,19 +2,21 @@
 
 Three workbooks make up the web app's "Download XLSX" ZIP:
 
-* `write_xlsx` — one sheet per DIVISION, laid out the way the committee's
-  manual scheduling sheet reads: a day header ("Thursday, 17 September"),
-  then that day's rooms side by side as [Interviewer 1 | Interviewer 2 |
-  Room N] column groups, then the next day's block below it — plus an
-  Applicants sheet, a sheet per panel, and a Conflicts sheet.
+* `write_xlsx` — exactly one sheet per top-level DIVISION (whatever
+  `config/divisions.yaml` declares, never a hardcoded count), laid out the
+  way the committee's manual scheduling sheet reads: a day header ("Thursday,
+  17 September"), then that day's rooms side by side as [Interviewer 1 |
+  Interviewer 2 | Room N] column groups — one group per room the division
+  actually used that day, never a fixed or empty placeholder room — then the
+  next day's block below it. The Applicants tab, per-panel running orders and
+  the conflicts report are separate outputs, not sheets in this file.
 * `write_applicants_xlsx` — a single-sheet workbook mirroring the web app's
   Applicants tab exactly as displayed (FR-51).
 * `write_rooms_xlsx` — a room-oriented overview: for each day, which
   panels/divisions are running in each room, for someone walking the venue.
 
 Clashes are marked red (FR-54): a filled cell plus a coloured, bold font, so
-the flag survives both screen viewing and black-and-white printing. Amber
-capacity warnings on the conflicts sheet get the equivalent amber treatment.
+the flag survives both screen viewing and black-and-white printing.
 """
 
 from __future__ import annotations
@@ -26,23 +28,30 @@ from datetime import date as Date
 from pathlib import Path
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from iff_scheduler.domain.enums import Severity
-from iff_scheduler.domain.models import Assignment, Conflict, Room
+from iff_scheduler.domain.models import Assignment, Room
 from iff_scheduler.export.applicant_view import ApplicantChoiceView, ApplicantViewRow
-from iff_scheduler.export.panel_view import PanelView
 from iff_scheduler.export.room_view import RoomView
 
 RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
 RED_FONT = Font(color="9C0006", bold=True)
-AMBER_FILL = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-AMBER_FONT = Font(color="9C6500")
 HEADER_FILL = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
 HEADER_FONT = Font(bold=True)
 LOCKED_FONT = Font(italic=True)
+
+# Cycled across the rooms in a day's block so each room's column group reads
+# as its own visual unit (required final structure: "Room header cells keep
+# distinct background coloring per room"). Kept light so RED_FILL clashes and
+# black-and-white printing both still stand out against it.
+ROOM_HEADER_FILLS = [
+    PatternFill(start_color=color, end_color=color, fill_type="solid")
+    for color in ("DDEBF7", "E2EFDA", "FCE4D6", "EAD1DC", "FFF2CC", "D9D2E9")
+]
+_THIN_SIDE = Side(style="thin", color="BFBFBF")
+BLANK_COLUMN_BORDER = Border(left=_THIN_SIDE, right=_THIN_SIDE, top=_THIN_SIDE, bottom=_THIN_SIDE)
 
 _INVALID_SHEET_CHARS = set("[]:*?/\\")
 _MAX_SHEET_NAME = 31
@@ -109,6 +118,15 @@ def _day_header_label(day: Date) -> str:
     return f"{day.strftime('%A')}, {day.day} {day.strftime('%B')}"
 
 
+def _panel_has_assignments(view: RoomView, panel_id: str) -> bool:
+    """Whether this room actually hosted a real interview for `panel_id` on
+    this day. A room/panel pairing exists in `panels.yaml` independent of
+    whether the solver ever placed anyone there that specific day — rendering
+    it anyway produces a dead, empty room-panel column (bug: Room 3013 showing
+    up on a day Logistics never used it)."""
+    return any(row.cells.get(panel_id) is not None for row in view.rows)
+
+
 def _build_division_blocks(
     room_views: Sequence[RoomView],
 ) -> dict[str, dict[Date, list[tuple[str, str, RoomView]]]]:
@@ -120,17 +138,53 @@ def _build_division_blocks(
     guessed) so a division reads as one sheet with a block per day, the
     committee's manual scheduling layout. A room appears once per division
     it hosts that day — room-exclusivity means a room never runs two panels
-    of the same division at once, so this can't double up a room."""
+    of the same division at once, so this can't double up a room. A room/panel
+    that never actually held an interview that day (static panel-room config
+    with zero real assignments) is dropped rather than rendered as an empty
+    column — the room-panel count per day always reflects the real run data."""
     blocks: dict[str, dict[Date, list[tuple[str, str, RoomView]]]] = defaultdict(
         lambda: defaultdict(list)
     )
     for view in room_views:
         for panel_id, division in view.panel_divisions.items():
+            if not _panel_has_assignments(view, panel_id):
+                continue
             blocks[division.value][view.date].append((view.room_id, panel_id, view))
     for by_day in blocks.values():
         for rooms in by_day.values():
             rooms.sort(key=lambda t: _natural_key(t[0]))
     return blocks
+
+
+# Sub-divisions that are just the parent division's own name spelled out (the
+# applicant's raw form text, e.g. "Logistics" for the LOGISTICS division, or
+# the legacy short label "Creative" for CREATIVE) carry no disambiguating
+# information — showing them is the redundant "(Logistics)" suffix from
+# bug 5. A qualifier that actually distinguishes sub-divisions under one
+# parent (e.g. "Media Marketing" vs "Documentation" under MEDMARDOC, or
+# "WebMaster" vs "Design and Decor" under CREATIVE) is always kept.
+_REDUNDANT_SUB_DIVISION_LABELS: dict[str, frozenset[str]] = {
+    "LOGISTICS": frozenset({"logistics"}),
+    "LIAISON": frozenset({"liaison"}),
+    "PROGRAM": frozenset({"program"}),
+    "FNB": frozenset({"finance and booth", "finance & booth"}),
+    "CREATIVE": frozenset({"creative", "creative and decor"}),
+    "MEDMARDOC": frozenset({"media marketing and documentation"}),
+}
+_PARENTHETICAL = re.compile(r"^.*\((.+)\)\s*$")
+
+
+def _sub_division_qualifier(sub_division: str, division: str) -> str | None:
+    """The meaningful part of `sub_division` to show alongside an applicant's
+    name on their own division's tab, or `None` if it would just repeat the
+    tab's own division (bug 5). Raw form text often carries the parent name
+    as a prefix — "Creative and Decor (WebMaster)" — so the parenthetical, if
+    present, is what actually disambiguates."""
+    match = _PARENTHETICAL.match(sub_division.strip())
+    text = match.group(1).strip() if match else sub_division.strip()
+    if text.casefold() in _REDUNDANT_SUB_DIVISION_LABELS.get(division, frozenset()):
+        return None
+    return text or None
 
 
 def _write_division_sheet(
@@ -140,9 +194,16 @@ def _write_division_sheet(
 ) -> None:
     """One division's sheet: a day header row, then that day's rooms as
     [Interviewer 1 | Interviewer 2 | Room N] column groups sharing one Time
-    column, one such block per day in date order. "Interviewer 1"/"Interviewer
-    2" are blank placeholder columns for the committee to fill in by hand —
-    the data model has no interviewer names to put there."""
+    column, one such block per day in date order, sized to exactly the rooms
+    that division actually used that day (never a fixed count — see
+    `_build_division_blocks`).
+
+    "Interviewer 1"/"Interviewer 2" are blank placeholder columns for the
+    committee to fill in by hand — the data model has no interviewer names to
+    put there. They get the same bordered, header-styled treatment as the
+    reference sheet; a real data-validation dropdown would need a source list
+    of interviewer names the system doesn't track, so that's left as a
+    follow-up rather than a partial/fake dropdown."""
     ws = wb.create_sheet(_unique_sheet_name(wb, division))
     row_idx = 1
     for day in sorted(day_blocks):
@@ -156,10 +217,17 @@ def _write_division_sheet(
             ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=width)
         row_idx += 1
 
+        header_row_idx = row_idx
         headers = ["Time"]
         for room_id, _panel_id, _view in rooms:
             headers += ["Interviewer 1", "Interviewer 2", f"Room {room_id}"]
-        _write_header_at(ws, row_idx, headers)
+        _write_header_at(ws, header_row_idx, headers)
+        # One background colour per room group, cycled, so the header (and the
+        # blank Interviewer columns under it) reads as one visual unit.
+        for room_idx, _room in enumerate(rooms):
+            fill = ROOM_HEADER_FILLS[room_idx % len(ROOM_HEADER_FILLS)]
+            for col in range(2 + room_idx * 3, 5 + room_idx * 3):
+                ws.cell(row=header_row_idx, column=col).fill = fill
         row_idx += 1
 
         # Every room shares this day's slot axis (build_room_views derives it
@@ -175,14 +243,18 @@ def _write_division_sheet(
             )
             col = 2
             for (_room_id, panel_id, _view), by_slot in zip(rooms, rows_by_room, strict=True):
+                ws.cell(row=row_idx, column=col).border = BLANK_COLUMN_BORDER
+                ws.cell(row=row_idx, column=col + 1).border = BLANK_COLUMN_BORDER
                 slot_row = by_slot.get(slot.slot_id)
                 occupant = slot_row.cells.get(panel_id) if slot_row is not None else None
                 if occupant is not None:
-                    target = ws.cell(
-                        row=row_idx,
-                        column=col + 2,
-                        value=f"{occupant.full_name} ({occupant.sub_division})",
+                    qualifier = _sub_division_qualifier(occupant.sub_division, division)
+                    name = (
+                        f"{occupant.full_name} ({qualifier})"
+                        if qualifier is not None
+                        else occupant.full_name
                     )
+                    target = ws.cell(row=row_idx, column=col + 2, value=name)
                     if occupant.is_clash:
                         target.fill = RED_FILL
                         target.font = RED_FONT
@@ -195,138 +267,16 @@ def _write_division_sheet(
     _autosize(ws)
 
 
-# "Div 1" / "Div 2" are the applicant's two interviews in slot-time order, not
-# their first and second form choices — build_applicant_view orders them by
-# time so the row reads left-to-right chronologically.
-APPLICANT_HEADER = [
-    "Applicant ID",
-    "Full name",
-    "Email",
-    "Div 1 division",
-    "Div 1 sub-division",
-    "Div 1 panel",
-    "Div 1 room",
-    "Div 1 date",
-    "Div 1 start",
-    "Div 1 end",
-    "Div 2 division",
-    "Div 2 sub-division",
-    "Div 2 panel",
-    "Div 2 room",
-    "Div 2 date",
-    "Div 2 start",
-    "Div 2 end",
-]
-# 1-indexed column ranges for each interview's block, for clash highlighting.
-_CHOICE1_COLS = range(4, 11)
-_CHOICE2_COLS = range(11, 18)
+def write_xlsx(path: Path, room_views: Sequence[RoomView]) -> None:
+    """Write the schedule workbook: exactly one sheet per top-level division —
+    whatever divisions `config/divisions.yaml` actually declares, never a
+    hardcoded count — each day's rooms as a block, Thursday above Friday, the
+    committee's manual scheduling layout (FR-50, FR-54).
 
-
-def _write_applicant_sheet(wb: Workbook, rows: Sequence[ApplicantViewRow]) -> None:
-    ws = wb.create_sheet(_unique_sheet_name(wb, "Applicants"))
-    _header_row(ws, APPLICANT_HEADER)
-
-    for row in rows:
-        ws.append(
-            [
-                row.applicant_id,
-                row.full_name,
-                row.email,
-                *(
-                    [
-                        row.choice1.division.value,
-                        row.choice1.sub_division,
-                        row.choice1.panel_id,
-                        row.choice1.room,
-                        row.choice1.date.isoformat(),
-                        row.choice1.start_time.strftime("%H:%M"),
-                        row.choice1.end_time.strftime("%H:%M"),
-                    ]
-                    if row.choice1 is not None
-                    else [""] * 7
-                ),
-                *(
-                    [
-                        row.choice2.division.value,
-                        row.choice2.sub_division,
-                        row.choice2.panel_id,
-                        row.choice2.room,
-                        row.choice2.date.isoformat(),
-                        row.choice2.start_time.strftime("%H:%M"),
-                        row.choice2.end_time.strftime("%H:%M"),
-                    ]
-                    if row.choice2 is not None
-                    else [""] * 7
-                ),
-            ]
-        )
-
-    for r_idx, row in enumerate(rows, start=2):
-        if row.choice1 is not None and row.choice1.is_clash:
-            for col in _CHOICE1_COLS:
-                cell = ws.cell(row=r_idx, column=col)
-                cell.fill = RED_FILL
-                cell.font = RED_FONT
-        if row.choice2 is not None and row.choice2.is_clash:
-            for col in _CHOICE2_COLS:
-                cell = ws.cell(row=r_idx, column=col)
-                cell.fill = RED_FILL
-                cell.font = RED_FONT
-    _autosize(ws)
-
-
-def _write_panel_sheet(wb: Workbook, view: PanelView) -> None:
-    ws = wb.create_sheet(_unique_sheet_name(wb, f"Panel {view.panel_id}"))
-    _header_row(ws, ["Date", "Start", "End", "Applicant ID", "Full name", "Sub-division", "Choice"])
-    for row in view.rows:
-        ws.append(
-            [
-                row.date.isoformat(),
-                row.start_time.strftime("%H:%M"),
-                row.end_time.strftime("%H:%M"),
-                row.applicant_id,
-                row.full_name,
-                row.sub_division,
-                row.choice_index,
-            ]
-        )
-    for r_idx, row in enumerate(view.rows, start=2):
-        if row.is_clash:
-            for col in range(1, 8):
-                cell = ws.cell(row=r_idx, column=col)
-                cell.fill = RED_FILL
-                cell.font = RED_FONT
-        elif row.is_locked:
-            ws.cell(row=r_idx, column=5).font = LOCKED_FONT
-    _autosize(ws)
-
-
-def _write_conflicts_sheet(wb: Workbook, conflicts: Sequence[Conflict]) -> None:
-    ws = wb.create_sheet(_unique_sheet_name(wb, "Conflicts"))
-    _header_row(ws, ["Applicant ID", "Severity", "Type", "Message"])
-    for conflict in conflicts:
-        ws.append([conflict.applicant_id, conflict.severity.value, conflict.type, conflict.message])
-    for r_idx, conflict in enumerate(conflicts, start=2):
-        fill, font = (
-            (RED_FILL, RED_FONT) if conflict.severity == Severity.RED else (AMBER_FILL, AMBER_FONT)
-        )
-        for col in range(1, 5):
-            cell = ws.cell(row=r_idx, column=col)
-            cell.fill = fill
-            cell.font = font
-    _autosize(ws)
-
-
-def write_xlsx(
-    path: Path,
-    room_views: Sequence[RoomView],
-    applicant_rows: Sequence[ApplicantViewRow],
-    panel_views: Sequence[PanelView],
-    conflicts: Sequence[Conflict],
-) -> None:
-    """Write one workbook: a sheet per division (each day's rooms as a block,
-    Thursday above Friday — the committee's manual scheduling layout), an
-    Applicants sheet, a sheet per panel, and a Conflicts sheet (FR-50..FR-54)."""
+    The Applicants tab, per-panel running orders and the conflicts report are
+    published separately (`write_applicants_xlsx`, the panel-view HTML, and
+    `conflicts.csv`) — duplicating them into this file was the source of the
+    extra "Panel <id>" tabs bug, so schedule.xlsx carries division sheets only."""
     wb = Workbook()
     default_sheet = wb.active
     assert default_sheet is not None
@@ -335,10 +285,6 @@ def write_xlsx(
     division_blocks = _build_division_blocks(room_views)
     for division in sorted(division_blocks):
         _write_division_sheet(wb, division, division_blocks[division])
-    _write_applicant_sheet(wb, applicant_rows)
-    for panel_view in panel_views:
-        _write_panel_sheet(wb, panel_view)
-    _write_conflicts_sheet(wb, conflicts)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)
