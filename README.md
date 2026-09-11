@@ -320,10 +320,3 @@ the deploy's known limitations are in [`docs/DEPLOY.md`](docs/DEPLOY.md).
 3. Run `pytest` and the formatter before opening a PR
 4. Never commit anything from `data/`, `runs/`, `credentials/` or `.env`
 
-## License
-
-_TBD — add before the repository is made public._
-
-## Maintainers
-
-_TBD — add IFF tech team contacts._
