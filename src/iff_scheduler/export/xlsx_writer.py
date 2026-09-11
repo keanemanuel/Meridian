@@ -101,26 +101,29 @@ def _write_room_sheet(wb: Workbook, view: RoomView) -> None:
     _autosize(ws)
 
 
+# "Div 1" / "Div 2" are the applicant's two interviews in slot-time order, not
+# their first and second form choices — build_applicant_view orders them by
+# time so the row reads left-to-right chronologically.
 APPLICANT_HEADER = [
     "Applicant ID",
     "Full name",
     "Email",
-    "Choice 1 division",
-    "Choice 1 sub-division",
-    "Choice 1 panel",
-    "Choice 1 room",
-    "Choice 1 date",
-    "Choice 1 start",
-    "Choice 1 end",
-    "Choice 2 division",
-    "Choice 2 sub-division",
-    "Choice 2 panel",
-    "Choice 2 room",
-    "Choice 2 date",
-    "Choice 2 start",
-    "Choice 2 end",
+    "Div 1 division",
+    "Div 1 sub-division",
+    "Div 1 panel",
+    "Div 1 room",
+    "Div 1 date",
+    "Div 1 start",
+    "Div 1 end",
+    "Div 2 division",
+    "Div 2 sub-division",
+    "Div 2 panel",
+    "Div 2 room",
+    "Div 2 date",
+    "Div 2 start",
+    "Div 2 end",
 ]
-# 1-indexed column ranges for each choice's block, for clash highlighting.
+# 1-indexed column ranges for each interview's block, for clash highlighting.
 _CHOICE1_COLS = range(4, 11)
 _CHOICE2_COLS = range(11, 18)
 

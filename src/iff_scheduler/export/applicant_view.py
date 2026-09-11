@@ -33,10 +33,17 @@ class ApplicantChoiceView:
 
 @dataclass(frozen=True)
 class ApplicantViewRow:
-    """One applicant, both choices. Either choice may be missing — that is a
-    C1 violation the run's conflicts.csv already reports (UNFILLED); the
-    view renders it as a blank cell rather than guessing (CLAUDE.md
-    invariant 3)."""
+    """One applicant, both interviews in chronological order.
+
+    ``choice1`` is whichever interview sits in the earlier slot and
+    ``choice2`` the later one — not the applicant's first and second form
+    choices. This keeps the row reading left-to-right in time order even when
+    the second form choice was scheduled first; it is display shaping only
+    and changes nothing about which panel or slot each interview holds.
+
+    Either side may be missing — that is a C1 violation the run's
+    conflicts.csv already reports (UNFILLED); the view renders it as a blank
+    cell rather than guessing (CLAUDE.md invariant 3)."""
 
     applicant_id: str
     full_name: str
@@ -68,7 +75,12 @@ def _choice_view(a: Assignment | None) -> ApplicantChoiceView | None:
 
 
 def build_applicant_view(assignments: Sequence[Assignment]) -> list[ApplicantViewRow]:
-    """One row per applicant_id present in `assignments`, sorted for determinism."""
+    """One row per applicant_id present in `assignments`, sorted for determinism.
+
+    The two interviews are placed in ``choice1``/``choice2`` by slot time, not
+    by form choice order, so each row reads left-to-right chronologically
+    (display only — see ``ApplicantViewRow``).
+    """
     by_applicant: dict[str, dict[ChoiceIndex, Assignment]] = defaultdict(dict)
     meta: dict[str, tuple[str, str]] = {}
     for a in assignments:
@@ -77,15 +89,19 @@ def build_applicant_view(assignments: Sequence[Assignment]) -> list[ApplicantVie
 
     rows: list[ApplicantViewRow] = []
     for applicant_id in sorted(by_applicant):
-        choices = by_applicant[applicant_id]
         full_name, email = meta[applicant_id]
+        # Earlier slot first; choice_index breaks a same-slot tie deterministically.
+        placed = sorted(
+            by_applicant[applicant_id].values(),
+            key=lambda a: (a.date, a.start_time, a.choice_index),
+        )
         rows.append(
             ApplicantViewRow(
                 applicant_id=applicant_id,
                 full_name=full_name,
                 email=email,
-                choice1=_choice_view(choices.get(1)),
-                choice2=_choice_view(choices.get(2)),
+                choice1=_choice_view(placed[0] if placed else None),
+                choice2=_choice_view(placed[1] if len(placed) > 1 else None),
             )
         )
     return rows
