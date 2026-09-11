@@ -27,8 +27,7 @@ You only do this once, when the tool is first installed on a machine.
    pip install -e .
    ```
 3. Copy `.env.example` to `.env` and fill in the values someone on the
-   tech team gives you (a Google service account file path for reading the
-   applicant Sheet, and either the Gmail OAuth2 setup below or a
+   tech team gives you (either the Gmail OAuth2 setup below or a
    transactional email provider key). **Never** share this file or commit
    it to git — it stays on your machine.
 4. Open every file in `config/` and check the placeholder values (empty
@@ -87,12 +86,14 @@ next send will prompt for consent again.
 ## 1. Bring in applicants
 
 ```bash
-iffsched ingest --source csv --input data/raw/responses.csv
+iffsched ingest --input data/raw/responses.csv
 ```
 
-(Or `--source sheets` once Google Sheets access is configured.)
+Export the Google Form responses as CSV (`File → Download → Comma-separated
+values`) and drop the file at `data/raw/responses.csv`. CSV upload is the
+only supported input method.
 
-This reads the raw form export and writes two files to `data/interim/`:
+This reads the CSV export and writes two files to `data/interim/`:
 
 - `applicants.clean.csv` — everyone who passed validation
 - `validation_report.csv` — everyone who didn't, and why
@@ -156,8 +157,7 @@ coordinators and panel leads.
 ## 5. Manual adjustments (optional)
 
 If a recruiter needs to hand-move someone (e.g. swap two applicants'
-rooms), edit `runs/latest/assignments.csv` directly (or edit the
-equivalent Google Sheet if that's your workflow), then freeze the edit so
+rooms), edit `runs/latest/assignments.csv` directly, then freeze the edit so
 the solver never undoes it:
 
 ```bash
@@ -281,7 +281,7 @@ automatically.
 ## Command reference
 
 ```
-iffsched ingest --source csv --input <path>      # → applicants.clean.csv + validation_report.csv
+iffsched ingest --input <form-export.csv>        # → applicants.clean.csv + validation_report.csv
 iffsched check                                   # Capacity Advisor — run before every solve
 iffsched solve                                   # → runs/<timestamp>/
 iffsched publish --run latest                    # → room / applicant / panel views

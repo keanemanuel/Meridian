@@ -4,7 +4,7 @@ Context for Claude Code working on this repository.
 
 ## What this is
 
-An interview scheduler for IFF recruitment. Reads applicant preferences from a Google Form, solves a two-day interview timetable with constraint programming, allows manual override, and sends personalised emails.
+An interview scheduler for IFF recruitment. Reads applicant preferences from a Google Form CSV export, solves a two-day interview timetable with constraint programming, allows manual override, and sends personalised emails.
 
 Scale: **120 applicants × 2 interviews = 240 interviews** across 24 twenty-minute slots.
 
@@ -26,7 +26,9 @@ Violating any of these is a bug regardless of what else works:
 
 The core (`domain/`, `scheduling/`, `review/`) is pure — it imports no adapter, performs no I/O, and touches no network. It takes plain objects in and returns plain objects out. All I/O lives in `ingest/`, `export/` and `notify/` behind protocols.
 
-This is what makes the solver testable without Google credentials. Do not import `gspread` or `googleapiclient` from anywhere in the core.
+This is what makes the solver testable without Google credentials. Do not import `googleapiclient` from anywhere in the core.
+
+**Input and export.** CSV upload is the only supported input method — a CSV exported from the Google Form that collects applicant preferences. XLSX (plus printable HTML and `.ics`) is the only supported export. There is no Google Sheets read or write path.
 
 **Workspace support.** Every command accepts a `--workspace` flag. All data paths are namespaced under `data/workspaces/<workspace-name>/` — there is no shared, un-namespaced data directory. This isolates concurrent recruitment cycles (e.g. different divisions or intake rounds) from each other.
 
@@ -42,8 +44,8 @@ pandas           tabular wrangling in ingest/export
 jinja2           email and HTML timetable templates
 openpyxl         XLSX export
 icalendar        .ics generation
-gspread          Google Sheets read/write
-google-auth      service account credentials
+google-auth      Gmail OAuth credentials
+google-auth-oauthlib       Gmail OAuth flow
 google-api-python-client   Gmail API sending
 python-dotenv    secrets from .env
 
@@ -58,7 +60,7 @@ mypy             type checking (strict on src/iff_scheduler/domain and schedulin
 
 **No web framework in alpha.** CLI only. Beta target is **Next.js on Vercel** (frontend) + **FastAPI** (scheduler API). The core is pure Python with no I/O, so FastAPI wraps it as thin route handlers with no refactoring needed.
 
-**Beta will add a multi-workspace tab UI.** Each tab is an isolated workspace with its own Sheet, data dir, and solve history. Tab creation flow: name + Google Sheet URL + group assignment. Workspace metadata moves from `workspaces.json` to Postgres in beta. File storage moves to Supabase Storage, namespaced by `workspace_id`.
+**Beta will add a multi-workspace tab UI.** Each tab is an isolated workspace with its own data dir and solve history. Tab creation flow: name + group assignment. Workspace metadata moves from `workspaces.json` to Postgres in beta. File storage moves to Supabase Storage, namespaced by `workspace_id`.
 
 ## Repo structure
 
@@ -67,14 +69,13 @@ data/workspaces/
 ├── workspaces.json        ← workspace metadata (alpha)
 └── <workspace-name>/
     ├── interim/
-    ├── runs/
-    └── last_ingested_row.txt
+    └── runs/
 ```
 
 ## Commands
 
 ```bash
-iffsched ingest --source sheets|csv     # → applicants.clean.csv + validation_report.csv
+iffsched ingest --input <form-export.csv>   # → applicants.clean.csv + validation_report.csv
 iffsched check                          # Capacity Advisor — run before solving
 iffsched solve [--solver cpsat|greedy]  # → runs/<timestamp>/
 iffsched publish --run latest           # room / applicant / panel views
@@ -109,8 +110,8 @@ Implement in this sequence. Each milestone should be independently testable befo
 | M6 | `notify/` — invites | Dry-run renders 120 correct emails; ledger prevents duplicates |
 | M7 | `results/` + result emails | Score ingestion → decision column → three templates → audited send |
 | M8 | `docs/RUNBOOK.md` | Someone who didn't build it can run the whole thing |
-| M9 | Workspace support (`--workspace` flag, `workspace create`/`list`/`set-sheet` commands, namespaced data paths) | |
-| M10 | Incremental Google Sheets ingest (`sheets_source.py`, watermark, `--force` flag) | |
+| M9 | Workspace support (`--workspace` flag, `workspace create`/`list` commands, namespaced data paths) | |
+| ~~M10~~ | ~~Incremental Google Sheets ingest~~ — **removed.** CSV upload is the only supported input. | |
 
 `scheduling/solver_greedy.py` (MRV + backtracking + local search) is a lower-priority fallback for environments without OR-Tools. Same `Solver` protocol as CP-SAT.
 

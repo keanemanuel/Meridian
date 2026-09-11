@@ -9,7 +9,6 @@ import json
 from typing import Annotated, Any
 
 import pandas as pd
-from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -21,7 +20,6 @@ from api.dependencies import (
     resolve_run_dir,
     resolve_workspace,
     run_dir_if_present,
-    service_account_file,
     workspace_pk,
 )
 from api.services import execute_solve, read_run_metrics, run_capacity_check
@@ -39,14 +37,7 @@ from iff_scheduler.export.panel_view import build_panel_views
 from iff_scheduler.export.room_view import build_room_views
 from iff_scheduler.export.xlsx_writer import write_xlsx
 from iff_scheduler.ingest.csv_source import CsvApplicantSource
-from iff_scheduler.ingest.sheets_source import (
-    SheetsApplicantSource,
-    open_worksheet,
-    run_incremental_sheets_ingest,
-    write_watermark,
-)
 from iff_scheduler.ingest.validate import (
-    append_outputs,
     is_recoverable,
     run_ingest,
     write_outputs,
@@ -130,84 +121,42 @@ async def ingest(
     settings: SettingsDep,
     source: Annotated[str, Form()] = "csv",
     file: Annotated[UploadFile | None, File()] = None,
-    force: Annotated[bool, Form()] = False,
-    worksheet: Annotated[str | None, Form()] = None,
 ) -> dict[str, Any]:
     """Ingest + normalise + validate (FR-01..FR-07).
 
-    `source=csv` takes a multipart file upload (a Google Form CSV export) and
-    does a one-shot full read. `source=sheets` reads the workspace's linked
-    Sheet incrementally, exactly as `iffsched ingest --source sheets` does.
+    Takes a multipart file upload (a Google Form CSV export) and does a
+    one-shot full read. CSV upload is the only supported input method.
     """
     resolve_workspace(workspace_id)
+    if source != "csv":
+        raise HTTPException(
+            status_code=422, detail=f"Unknown source '{source}'. Only 'csv' is supported."
+        )
     grid = build_slot_grid(settings.event)
     interim = ws.interim_dir(workspace_id)
     interim.mkdir(parents=True, exist_ok=True)
     clean_path = interim / "applicants.clean.csv"
     report_path = interim / "validation_report.csv"
 
-    if source == "csv":
-        if file is None:
-            raise HTTPException(status_code=422, detail="source=csv requires an uploaded file.")
-        raw_dir = ws.raw_dir(workspace_id)
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        raw_path = raw_dir / "upload.csv"
-        raw_path.write_bytes(await file.read())
+    if file is None:
+        raise HTTPException(status_code=422, detail="source=csv requires an uploaded file.")
+    raw_dir = ws.raw_dir(workspace_id)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = raw_dir / "upload.csv"
+    raw_path.write_bytes(await file.read())
 
-        # A fresh import starts with a clean slate — any rows recovered against
-        # the previous upload no longer apply.
-        _recovered_rows_path(workspace_id).unlink(missing_ok=True)
+    # A fresh import starts with a clean slate — any rows recovered against
+    # the previous upload no longer apply.
+    _recovered_rows_path(workspace_id).unlink(missing_ok=True)
 
-        result = run_ingest(
-            source=CsvApplicantSource(path=raw_path),
-            event=settings.event,
-            divisions=settings.divisions,
-            grid=grid,
-        )
-        write_outputs(result, clean_path=clean_path, report_path=report_path)
-        return _ingest_summary(result.applicants, result.report)
-
-    if source != "sheets":
-        raise HTTPException(status_code=422, detail=f"Unknown source '{source}'. Use csv|sheets.")
-
-    meta = resolve_workspace(workspace_id)
-    if meta.sheet_id is None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Workspace '{workspace_id}' has no Sheet attached (set-sheet first).",
-        )
-    load_dotenv()
-    sa_file = service_account_file()
-
-    worksheet_handle = open_worksheet(sa_file, meta.sheet_id, worksheet)
-    sheets_source = SheetsApplicantSource(worksheet=worksheet_handle)
-    watermark_path = ws.last_ingested_row_path(workspace_id)
-    incremental = run_incremental_sheets_ingest(
-        source=sheets_source,
+    result = run_ingest(
+        source=CsvApplicantSource(path=raw_path),
         event=settings.event,
         divisions=settings.divisions,
         grid=grid,
-        clean_path=clean_path,
-        watermark_path=watermark_path,
-        force=force,
     )
-    if incremental.new_row_count == 0:
-        return {
-            "applicants": 0,
-            "rejected": 0,
-            "collapsed": 0,
-            "warnings": 0,
-            "report": [],
-            "new_rows": 0,
-        }
-    if force:
-        write_outputs(incremental.result, clean_path=clean_path, report_path=report_path)
-    else:
-        append_outputs(incremental.result, clean_path=clean_path, report_path=report_path)
-    write_watermark(watermark_path, incremental.watermark_after)
-    summary = _ingest_summary(incremental.result.applicants, incremental.result.report)
-    summary["new_rows"] = incremental.new_row_count
-    return summary
+    write_outputs(result, clean_path=clean_path, report_path=report_path)
+    return _ingest_summary(result.applicants, result.report)
 
 
 @router.post("/check")
@@ -384,12 +333,9 @@ _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.
 def download_xlsx(workspace_id: str, run_id: str) -> FileResponse:
     """Download the `schedule.xlsx` a prior `publish` wrote for this run.
 
-    The frontend's Google Sheets export needs a Google Workspace Shared
-    Drive (a bare service account has no Drive storage of its own —
-    docs/DEPLOY.md, "Google Drive export storage") and most committees won't
-    have one, so this is the plain download path: `schedule.xlsx` is written
-    to local disk by `publish` (which `Schedule!` already calls
-    automatically), and this endpoint just serves that file.
+    XLSX is the only supported export format: `schedule.xlsx` is written to
+    local disk by `publish` (which `Schedule!` already calls automatically),
+    and this endpoint just serves that file.
 
     404s if the run itself doesn't exist (checked against whichever store is
     live); 409s if the run exists but was never published, or its published

@@ -20,9 +20,8 @@ type Toast = {
   message: string;
   /** Audit/validation failures carry a list of specific reasons (E-12, FR-64). */
   details?: string[];
-  /** Rendered as a clickable link under the message. The Sheets export opens
-   * its result in a new tab, but that call sits after an await and so is
-   * routinely popup-blocked; the link is how the user still gets there. */
+  /** Rendered as a clickable link under the message — for a result the user
+   * may want to open when a post-await `window.open` would be popup-blocked. */
   link?: { href: string; label: string };
   /** kind + message + details, so a repeat of the same notification updates
    * the existing toast instead of stacking a fresh copy. */

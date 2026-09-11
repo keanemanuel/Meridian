@@ -7,95 +7,16 @@ resolution and lookup — no scheduling logic lives in the API layer.
 
 from __future__ import annotations
 
-import json
 import os
 from functools import lru_cache
 from pathlib import Path
 
 from fastapi import HTTPException
 
-from api.credentials_bootstrap import credential_problem
 from iff_scheduler import workspace as ws
 from iff_scheduler.db import supabase_enabled
 from iff_scheduler.settings import DEFAULT_CONFIG_DIR, Settings, load_settings
 from iff_scheduler.workspace import WorkspaceMeta, find_workspace, load_workspaces
-
-SERVICE_ACCOUNT_VAR = "GOOGLE_SERVICE_ACCOUNT_FILE"
-
-# A Google service account key always carries these. Checking them catches
-# the other common paste slip: the OAuth *client* JSON (which nests
-# everything under "installed"/"web") pasted into the service-account var.
-_SERVICE_ACCOUNT_KEYS = frozenset({"type", "client_email", "private_key", "token_uri"})
-
-
-def service_account_file() -> str:
-    """Path to a readable, well-formed Google service account key.
-
-    Everything that talks to Google as the service account — the Sheets
-    ingest and the Sheets export — goes through here, so a broken credential
-    is reported once, in terms of the variable to fix, rather than surfacing
-    as whatever `json.load` happened to say about a file the caller never
-    mentioned.
-    """
-    problem = credential_problem(SERVICE_ACCOUNT_VAR)
-    if problem is not None:
-        raise HTTPException(status_code=409, detail=problem.message)
-
-    value = os.environ.get(SERVICE_ACCOUNT_VAR)
-    if not value:
-        raise HTTPException(
-            status_code=409,
-            detail=f"{SERVICE_ACCOUNT_VAR} is not set in the environment.",
-        )
-
-    path = Path(value)
-    if not path.is_file():
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"{SERVICE_ACCOUNT_VAR} points at '{value}', which is not a readable "
-                "file. Set it to the service account key's path, or paste the key "
-                "JSON itself as the value."
-            ),
-        )
-
-    try:
-        key = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"The service account key at '{value}' is not valid JSON: {exc.msg} "
-                f"(line {exc.lineno}, column {exc.colno}). Re-paste the whole key "
-                f"file into {SERVICE_ACCOUNT_VAR}."
-            ),
-        ) from exc
-
-    missing = sorted(_SERVICE_ACCOUNT_KEYS - set(key)) if isinstance(key, dict) else ["*"]
-    if missing:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"The JSON in {SERVICE_ACCOUNT_VAR} is missing {', '.join(missing)}, so "
-                "it is not a Google service account key. The OAuth client file used for "
-                "Gmail is a different file and will not work here."
-            ),
-        )
-    return str(path)
-
-
-DRIVE_FOLDER_VAR = "GOOGLE_DRIVE_FOLDER_ID"
-
-
-def drive_folder_id() -> str | None:
-    """The Drive folder the Sheets export should create its spreadsheet in,
-    or None to fall back to the service account's own Drive root.
-
-    Trimmed, and blank collapses to None, so an env var left as `""` in a
-    dashboard behaves like an unset one rather than a folder id of ''.
-    """
-    value = os.environ.get(DRIVE_FOLDER_VAR, "").strip()
-    return value or None
 
 
 def config_dir() -> Path:

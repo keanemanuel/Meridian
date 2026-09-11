@@ -184,7 +184,7 @@ Priority: **M** = must have for alpha, **S** = should have, **C** = could have.
 
 | ID | Pri | Requirement |
 |---|---|---|
-| FR-01 | M | The system shall accept applicant data from a Google Sheet populated by a Google Form, either via direct API read or via an exported CSV/XLSX file. |
+| FR-01 | M | The system shall accept applicant data from a CSV file exported from the Google Form that collects applicant preferences. CSV upload is the only supported input method — there is no Google Sheets API read path. |
 | FR-02 | M | The system shall parse availability from **structured** form fields (checkbox grid of discrete blocks), not free text. Availability shall never be inferred or guessed. |
 | FR-03 | M | The system shall map each selected sub-division to its parent division using a configurable mapping. |
 | FR-04 | M | The system shall enforce that each applicant has exactly two **distinct sub-divisions**. Two sub-divisions sharing a parent division (e.g. Media Marketing + Media Documentation) are **valid** and shall yield two separate interviews. Records with a repeated sub-division are rejected to an error report and excluded from the solve. |
@@ -251,8 +251,8 @@ Priority: **M** = must have for alpha, **S** = should have, **C** = could have.
 |---|---|---|
 | FR-50 | M | **Room view:** one timetable per room per day — rows are slots, columns are panels, cells are applicant + division. |
 | FR-51 | M | **Applicant view:** one row per applicant with both interview times, rooms, panels and divisions. |
-| FR-52 | M | **Panel view:** one sheet per interviewer panel, being their running order for the day. |
-| FR-53 | M | Outputs shall be written back to Google Sheets and/or exported as XLSX and printable HTML. |
+| FR-52 | M | **Panel view:** one worksheet per interviewer panel, being their running order for the day. |
+| FR-53 | M | Outputs shall be exported as XLSX and printable HTML. XLSX is the only supported export format — there is no Google Sheets write path. |
 | FR-54 | S | Clashes shall be visually highlighted red in all outputs. |
 | FR-55 | C | The system shall generate `.ics` calendar files per applicant and per panel. |
 
@@ -294,8 +294,8 @@ Priority: **M** = must have for alpha, **S** = should have, **C** = could have.
                                 │
   ┌─────────────────────────────▼───────────────────────────────────┐
   │ STAGE 1 · COLLECT        Google Form (structured availability)  │
-  │ STAGE 2 · LAND           Google Sheet — raw responses           │
-  │ STAGE 3 · EXTRACT        Sheets API read  ·or·  CSV export      │
+  │ STAGE 2 · LAND           Google Form responses                  │
+  │ STAGE 3 · EXTRACT        CSV export (File → Download → CSV)     │
   └─────────────────────────────┬───────────────────────────────────┘
                                 │
   ┌─────────────────────────────▼───────────────────────────────────┐
@@ -322,7 +322,7 @@ Priority: **M** = must have for alpha, **S** = should have, **C** = could have.
                                 │
   ┌─────────────────────────────▼───────────────────────────────────┐
   │ STAGE 7 · REVIEW & MANUAL ADJUST                     ◄──┐       │
-  │  recruiter edits in Sheet/XLSX → validate → save as lock │       │
+  │  recruiter edits in XLSX → validate → save as lock       │       │
   │  re-solve with locks fixed ────────────────────────────►─┘       │
   └─────────────────────────────┬───────────────────────────────────┘
                                 │  [recruiter approves]
@@ -348,11 +348,9 @@ Priority: **M** = must have for alpha, **S** = should have, **C** = could have.
 
 **Stage 1 — Collect.** The Google Form is not a passive input; it is the first line of data quality. Availability is captured as a checkbox grid of discrete blocks; division choice is capped at exactly two and validated against collapsing pairs. See §9.
 
-**Stage 2 — Land.** Form responses land in a linked Google Sheet. This sheet is treated as **append-only raw data** and is never edited by hand.
+**Stage 2 — Land.** Form responses accumulate in the Google Form. They are treated as **append-only raw data** and are never edited by hand.
 
-**Stage 3 — Extract.** Two supported paths, both producing the same internal shape:
-- **API path (preferred):** service account reads the sheet directly. No manual export, always current.
-- **File path (fallback):** `File → Download → CSV`, dropped into `data/raw/`. Works with zero credentials — useful when someone else needs to run it.
+**Stage 3 — Extract.** Export the form responses as CSV (`File → Download → Comma-separated values`) and drop the file into `data/raw/` (CLI) or upload it in the workspace UI. CSV upload is the only supported input method — it works with zero Google credentials.
 
 **Stage 4 — Normalise & validate.** Raw rows become typed `Applicant` objects. Availability strings become a boolean bitmap over the slot grid. Everything ambiguous is **rejected loudly**, never guessed. Output is two files: clean applicants, and a validation report the recruiter must clear before proceeding.
 
@@ -496,7 +494,7 @@ Output table: division · demand · panels configured · raw supply · effective
 
 | Option | Pros | Cons | Verdict |
 |---|---|---|---|
-| **A. Python core + Google adapters** | OR-Tools available, testable, fast, portable; CSV/XLSX/Sheets all supported | Requires someone with a Python environment | **Chosen for alpha** |
+| **A. Python core + adapters** | OR-Tools available, testable, fast, portable; CSV input, XLSX/HTML/ICS output | Requires someone with a Python environment | **Chosen for alpha** |
 | B. Pure Google Apps Script | Lives in the Sheet, zero setup, easy handoff | No OR-Tools; weak algorithm; poor testing; 6-min execution limit; painful for 240 interviews | Rejected as core; may be used for a "send emails" button later |
 | C. Python core + web UI (Streamlit/React) | Drag-and-drop editing, best recruiter UX | Significant extra build | **Beta** — architecture below keeps this open |
 
@@ -515,15 +513,15 @@ The architecture deliberately isolates the core so that C is an added front-end,
 │    feasibility · solvers (cpsat | greedy) · lock engine       │
 ├───────────────────────────────────────────────────────────────┤
 │  ADAPTERS (all I/O, swappable)                                │
-│    ingest: SheetsReader | CsvReader                           │
-│    export: SheetsWriter | XlsxWriter | HtmlWriter | IcsWriter │
+│    ingest: CsvReader                                          │
+│    export: XlsxWriter | HtmlWriter | IcsWriter               │
 │    notify: GmailMailer | SmtpMailer | ResendMailer            │
 ├───────────────────────────────────────────────────────────────┤
-│  EXTERNAL           Google Forms · Sheets · Gmail/ESP         │
+│  EXTERNAL           Google Forms (CSV export) · Gmail/ESP     │
 └───────────────────────────────────────────────────────────────┘
 ```
 
-**The rule:** the core never imports an adapter. It takes plain objects in and returns plain objects out. That is what makes it testable without Google credentials, and what lets you swap Gmail for SendGrid, or CSV for Sheets, without touching the algorithm.
+**The rule:** the core never imports an adapter. It takes plain objects in and returns plain objects out. That is what makes it testable without Google credentials, and what lets you swap Gmail for SendGrid without touching the algorithm.
 
 ### 6.3 Data contracts (stable interfaces between stages)
 
@@ -562,7 +560,7 @@ send_ledger.csv
 Meridian/
 ├── README.md                         # quickstart + runbook
 ├── pyproject.toml                    # deps: ortools, pandas, pydantic,
-│                                     #       gspread, jinja2, openpyxl, typer
+│                                     #       jinja2, openpyxl, typer
 ├── .env.example                      # names of required secrets, no values
 ├── .gitignore                        # data/, .env, credentials/, runs/
 │
@@ -575,7 +573,7 @@ Meridian/
 │   └── notify.yaml                   # sender identity, throttle, template map
 │
 ├── credentials/                      # gitignored
-│   └── service_account.json
+│   └── gmail_oauth_client.json       # Gmail API sending only
 │
 ├── data/                             # gitignored — contains PII
 │   ├── raw/                          # untouched form exports
@@ -604,8 +602,7 @@ Meridian/
 │   │
 │   ├── ingest/
 │   │   ├── base.py                   # ApplicantSource protocol
-│   │   ├── sheets_source.py
-│   │   ├── csv_source.py
+│   │   ├── csv_source.py             # the only supported input
 │   │   ├── normalize.py              # dedupe, sub-div → parent, availability parse
 │   │   └── validate.py               # all rejection rules → validation_report
 │   │
@@ -627,7 +624,6 @@ Meridian/
 │   │   ├── panel_view.py
 │   │   ├── xlsx_writer.py
 │   │   ├── html_writer.py
-│   │   ├── sheets_writer.py
 │   │   └── ics_writer.py
 │   │
 │   ├── notify/
@@ -675,7 +671,7 @@ Meridian/
 ### 7.1 CLI surface
 
 ```
-iffsched ingest      --source sheets|csv     # → applicants.clean.csv + validation_report
+iffsched ingest      --input <form-export.csv>  # → applicants.clean.csv + validation_report
 iffsched check                               # → Capacity Advisor table
 iffsched solve       [--solver cpsat|greedy] # → runs/<ts>/
 iffsched publish     --run <ts>              # → room/applicant/panel views, ICS
@@ -851,8 +847,8 @@ Because same-parent pairs are **valid**, the form is simpler than it would other
 ### 9.4 Additional form hygiene
 
 - Turn on "Limit to 1 response" if your members have accounts; otherwise rely on email dedupe.
-- Set an explicit closing date and time; the pipeline should not be run against a live-changing sheet.
-- Never edit the raw response sheet by hand. Corrections go in a separate override sheet.
+- Set an explicit closing date and time; export the CSV only after the form has closed so the pipeline is not run against a live-changing response set.
+- Never edit the exported CSV by hand. Corrections go through the validation report / recover flow.
 
 ---
 
@@ -938,8 +934,7 @@ A workspace is an isolated pipeline instance. It has:
 
 - A unique name (e.g. "IFF 2026 Intake")
 - A group (e.g. "IFF Submissions" or "Test Environment")
-- An optional Google Sheet ID (source of applicant data)
-- Its own namespaced data directory
+- Its own namespaced data directory (CSV upload is the applicant data source)
 - Its own solve history
 
 ### 11.2 Workspace metadata (alpha)
@@ -950,7 +945,6 @@ Stored in `data/workspaces/workspaces.json`:
 {
   "name": "IFF 2026 Intake",
   "group": "IFF Submissions",
-  "sheet_id": "1BxiM...",
   "created_at": "2026-09-05T10:00:00"
 }
 ```
@@ -960,7 +954,6 @@ Stored in `data/workspaces/workspaces.json`:
 ```
 iffsched workspace create --name <name> --group <group>
 iffsched workspace list
-iffsched workspace set-sheet --workspace <name> --url <url>
 ```
 
 All other commands accept `--workspace <name>` (default: `"default"`).
@@ -982,7 +975,7 @@ The rule that makes the tool trustworthy: **the solver may never overwrite a hum
 solve #1  ─→  assignments.csv
                  │
                  ▼
-          recruiter edits in Sheet/XLSX
+          recruiter edits in XLSX
                  │
                  ▼
           edit_validator  ──── rejects illegal edits with a reason

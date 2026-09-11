@@ -20,7 +20,6 @@ function NewWorkspaceModal({
   const toast = useToast();
   const router = useRouter();
   const [name, setName] = useState("");
-  const [sheetUrl, setSheetUrl] = useState("");
   const [saving, setSaving] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
@@ -29,7 +28,7 @@ function NewWorkspaceModal({
     if (!trimmed) return;
     setSaving(true);
     try {
-      const created = await create(trimmed, group, sheetUrl.trim() || undefined);
+      const created = await create(trimmed, group);
       toast.success(`Workspace "${created.name}" created in ${group}.`);
       onClose();
       router.push(`/workspace/${encodeURIComponent(created.name)}`);
@@ -58,25 +57,6 @@ function NewWorkspaceModal({
             placeholder="IFF 2026 Intake"
             className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
           />
-        </div>
-        <div>
-          <label
-            htmlFor="workspace-sheet-url"
-            className="mb-1.5 block text-xs font-medium text-neutral-600"
-          >
-            Google Sheet URL <span className="text-neutral-400">(optional)</span>
-          </label>
-          <input
-            id="workspace-sheet-url"
-            value={sheetUrl}
-            onChange={(e) => setSheetUrl(e.target.value)}
-            placeholder="https://docs.google.com/spreadsheets/d/…"
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
-          />
-          <p className="mt-1 text-xs text-neutral-500">
-            Link now to enable live import from Sheets. You can add or change
-            it later.
-          </p>
         </div>
         <div>
           <p className="mb-1.5 text-xs font-medium text-neutral-600">Group</p>

@@ -23,9 +23,9 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 # Vercel's dashboard has no file upload — a deploy pastes credential JSON
-# directly into GOOGLE_SERVICE_ACCOUNT_FILE / GMAIL_OAUTH_CREDENTIALS /
-# GMAIL_TOKEN_CACHE. The core reads those as paths, so materialize any
-# JSON-shaped value to a file under /tmp before anything else runs (docs/DEPLOY.md).
+# directly into GMAIL_OAUTH_CREDENTIALS / GMAIL_TOKEN_CACHE. The core reads
+# those as paths, so materialize any JSON-shaped value to a file under /tmp
+# before anything else runs (docs/DEPLOY.md).
 from api.credentials_bootstrap import materialize_json_credentials  # noqa: E402
 
 materialize_json_credentials()
@@ -34,7 +34,7 @@ from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 
-from api.routers import export, notify, pipeline, schedule, workspaces  # noqa: E402
+from api.routers import notify, pipeline, schedule, workspaces  # noqa: E402
 
 app = FastAPI(
     title="Meridian API",
@@ -116,5 +116,4 @@ def debug() -> dict[str, Any]:
 app.include_router(workspaces.router)
 app.include_router(pipeline.router)
 app.include_router(schedule.router)
-app.include_router(export.router)
 app.include_router(notify.router)

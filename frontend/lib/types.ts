@@ -8,7 +8,6 @@
 export type WorkspaceMeta = {
   name: string;
   group: string;
-  sheet_id: string | null;
   created_at: string;
 };
 
@@ -103,7 +102,7 @@ export type IngestResult = {
 export type RejectedRow = {
   /** Internal 1-based data-row index — what `POST /recover/{row_number}` takes. */
   row_number: number;
-  /** Row number as shown in the source CSV/Sheet (header is line 1). */
+  /** Row number as shown in the source CSV (header is line 1). */
   csv_row: number;
   full_name: string;
   email: string;

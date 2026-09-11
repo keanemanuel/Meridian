@@ -27,7 +27,6 @@ def _to_meta(row: dict[str, Any]) -> WorkspaceMeta:
     return WorkspaceMeta(
         name=row["name"],
         group=row["group_name"],
-        sheet_id=row.get("sheet_id"),
         created_at=_parse_dt(row["created_at"]),
     )
 
@@ -48,15 +47,10 @@ def get_workspace_id(name: str) -> str | None:
     return resp.data[0]["id"] if resp.data else None
 
 
-def create_workspace(name: str, group: str, sheet_id: str | None = None) -> WorkspaceMeta:
+def create_workspace(name: str, group: str) -> WorkspaceMeta:
     if get_workspace(name) is not None:
         raise ValueError(f"Workspace '{name}' already exists.")
-    resp = (
-        get_client()
-        .table(_TABLE)
-        .insert({"name": name, "group_name": group, "sheet_id": sheet_id})
-        .execute()
-    )
+    resp = get_client().table(_TABLE).insert({"name": name, "group_name": group}).execute()
     return _to_meta(resp.data[0])
 
 
@@ -71,13 +65,6 @@ def rename_workspace(old_name: str, new_name: str) -> WorkspaceMeta:
     resp = get_client().table(_TABLE).update({"name": new_name}).eq("name", old_name).execute()
     if not resp.data:
         raise ValueError(f"Workspace '{old_name}' not found.")
-    return _to_meta(resp.data[0])
-
-
-def set_sheet(name: str, sheet_id: str) -> WorkspaceMeta:
-    resp = get_client().table(_TABLE).update({"sheet_id": sheet_id}).eq("name", name).execute()
-    if not resp.data:
-        raise ValueError(f"Workspace '{name}' not found.")
     return _to_meta(resp.data[0])
 
 

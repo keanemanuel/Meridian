@@ -33,7 +33,7 @@ class ValidationReportRow(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     row_number: int
-    # The row's position in the source CSV/Sheet as a human opening the file
+    # The row's position in the source CSV as a human opening the file
     # sees it: header is line 1, so the first applicant is `csv_row` 2. Lets a
     # committee member jump straight to the offending line to fix it by hand.
     csv_row: int
@@ -222,26 +222,6 @@ def _recovered_report_row(row: ParsedRow, reason_codes: list[str]) -> Validation
     )
 
 
-def _duplicate_of_existing_row(row: ParsedRow) -> ValidationReportRow:
-    """M10: an incremental batch only sees rows after the watermark, so it
-    cannot re-run FR-05's "most recent wins" dedupe against an email that was
-    already committed to applicants.clean.csv in a prior run. Rejecting it
-    loudly is the invariant-3-safe choice — silently appending a second clean
-    row for the same applicant would be a guess about which one is current."""
-    return ValidationReportRow(
-        row_number=row.row_number,
-        csv_row=row.row_number + 1,
-        email=row.email,
-        full_name=row.full_name,
-        sub_division_1=row.sub_division_1,
-        sub_division_2=row.sub_division_2,
-        outcome="REJECTED",
-        reason_code="DUPLICATE_OF_EXISTING_APPLICANT",
-        message=f"'{row.email}' already has a clean applicant record from a prior ingest run. "
-        "Re-run with --force to reprocess the whole sheet.",
-    )
-
-
 # Stand-in for a submission whose timestamp could not be read. Deliberately
 # the earliest representable datetime, matching the dedupe tie-break in
 # `dedupe_by_email`, and obvious enough in applicants.clean.csv that nobody
@@ -301,27 +281,17 @@ def run_ingest(
     divisions: DivisionsConfig,
     grid: SlotGrid,
     *,
-    row_number_offset: int = 0,
-    applicant_id_offset: int = 0,
-    known_emails: frozenset[str] = frozenset(),
     force_accept_rows: frozenset[int] = frozenset(),
 ) -> IngestResult:
-    """`row_number_offset` and `applicant_id_offset` let an incremental sheets
-    batch (M10) continue the row-number and applicant-ID sequence of an
-    existing applicants.clean.csv rather than restarting at 1 each run.
-    `known_emails` are emails already committed from a prior run — see
-    `_duplicate_of_existing_row`.
-
-    `force_accept_rows` is the set of `row_number`s a human chose to recover
+    """`force_accept_rows` is the set of `row_number`s a human chose to recover
     from the validation report: a recoverable rejection (`is_recoverable`) on
     one of these rows is downgraded to a `RECOVERED` warning and the applicant
-    is built anyway. A non-recoverable rejection still blocks.
-
-    All default to a no-op for the plain single-shot CSV path."""
+    is built anyway. A non-recoverable rejection still blocks. It defaults to a
+    no-op for the plain single-shot CSV path."""
     raw_df = source.read_raw()
     raw_rows = cast("list[dict[str, str]]", raw_df.to_dict(orient="records"))
     parsed = [
-        parse_row(raw, row_number_offset + row_number, event, divisions, grid)
+        parse_row(raw, row_number, event, divisions, grid)
         for row_number, raw in enumerate(raw_rows, start=1)
     ]
 
@@ -340,8 +310,6 @@ def run_ingest(
     applicants: list[Applicant] = []
     for row in kept:
         issues = validate_row(row)
-        if row.email and row.email in known_emails:
-            issues.append(_duplicate_of_existing_row(row))
 
         rejected = [i for i in issues if i.outcome == "REJECTED"]
         forced = row.row_number in force_accept_rows
@@ -360,7 +328,7 @@ def run_ingest(
         applicants.append(
             _build_applicant(
                 row,
-                applicant_id=f"A{applicant_id_offset + len(applicants) + 1:03d}",
+                applicant_id=f"A{len(applicants) + 1:03d}",
                 all_slot_ids=all_slot_ids,
             )
         )
@@ -429,21 +397,3 @@ def write_outputs(result: IngestResult, clean_path: Path, report_path: Path) -> 
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_rows = [row.model_dump() for row in result.report]
     pd.DataFrame(report_rows, columns=REPORT_COLUMNS).to_csv(report_path, index=False)
-
-
-def append_outputs(result: IngestResult, clean_path: Path, report_path: Path) -> None:
-    """Append one incremental batch's clean applicants and report rows onto
-    existing outputs (M10) — the header is written only the first time either
-    file is created."""
-    clean_path.parent.mkdir(parents=True, exist_ok=True)
-    clean_existed = clean_path.exists()
-    pd.DataFrame(_clean_rows(result.applicants), columns=CLEAN_COLUMNS).to_csv(
-        clean_path, index=False, mode="a", header=not clean_existed
-    )
-
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_existed = report_path.exists()
-    report_rows = [row.model_dump() for row in result.report]
-    pd.DataFrame(report_rows, columns=REPORT_COLUMNS).to_csv(
-        report_path, index=False, mode="a", header=not report_existed
-    )

@@ -1,14 +1,12 @@
 """Bridge inline-JSON credential env vars to the file paths the core expects.
 
-`iff_scheduler.ingest.sheets_source`, `iff_scheduler.export.sheets_writer` and
-`iff_scheduler.notify.gmail_mailer` all take a credentials file *path* —
-`GOOGLE_SERVICE_ACCOUNT_FILE`, `GMAIL_OAUTH_CREDENTIALS`, `GMAIL_TOKEN_CACHE`
-(see `.env.example`) — because alpha always ran on a machine with a real
-filesystem. A hosting dashboard has no place to upload a file, only env vars,
-so a deploy has to paste the JSON itself. This module reconciles the two: if
-a var's value looks like JSON rather than a path, it's written to a file under
-`/tmp` and the var is repointed at that file — every downstream read still
-just sees a path.
+`iff_scheduler.notify.gmail_mailer` takes its credentials as file *paths* —
+`GMAIL_OAUTH_CREDENTIALS`, `GMAIL_TOKEN_CACHE` (see `.env.example`) — because
+alpha always ran on a machine with a real filesystem. A hosting dashboard has
+no place to upload a file, only env vars, so a deploy has to paste the JSON
+itself. This module reconciles the two: if a var's value looks like JSON
+rather than a path, it's written to a file under `/tmp` and the var is
+repointed at that file — every downstream read still just sees a path.
 
 Deliberately narrow and additive: an unset or path-shaped var is left alone,
 so nothing changes for local dev or the CLI, which never see JSON here.
@@ -18,7 +16,7 @@ not take the whole service down with it — `/api/health` has to keep
 answering or the platform restarts the container in a loop. A value that
 cannot be used is recorded in `credential_problem()` instead, and the
 endpoint that needs it turns that into an actionable error at the point of
-use (`api.dependencies.service_account_file`).
+use.
 """
 
 from __future__ import annotations
@@ -34,7 +32,6 @@ from dataclasses import dataclass
 _TMP_DIR = os.path.join(tempfile.gettempdir(), "meridian-credentials")
 
 _JSON_SHAPED_VARS = (
-    "GOOGLE_SERVICE_ACCOUNT_FILE",
     "GMAIL_OAUTH_CREDENTIALS",
     "GMAIL_TOKEN_CACHE",
 )

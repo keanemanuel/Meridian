@@ -1,8 +1,8 @@
-"""ApplicantSource protocol — the seam between ingest and its data sources.
+"""ApplicantSource protocol — the seam between ingest and its data source.
 
-Swapping the Google Sheets adapter for the CSV fallback (FR-01, SPEC.md §4.2
-Stage 3) means providing a new class with this shape; nothing downstream of
-`read_raw` needs to change.
+A source provides a class with this shape; nothing downstream of `read_raw`
+needs to change. `CsvApplicantSource` (a Google Form CSV export) is the only
+supported input (FR-01, SPEC.md §4.2 Stage 3).
 """
 
 from __future__ import annotations

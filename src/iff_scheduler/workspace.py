@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from datetime import datetime
 from pathlib import Path
 
@@ -46,9 +45,6 @@ def workspaces_file() -> Path:
     return workspaces_root() / "workspaces.json"
 
 
-_SHEET_URL_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9_-]+)")
-
-
 class WorkspaceMeta(BaseModel):
     """One entry in `workspaces.json` (SPEC.md §11.2)."""
 
@@ -56,15 +52,7 @@ class WorkspaceMeta(BaseModel):
 
     name: str
     group: str
-    sheet_id: str | None = None
     created_at: datetime
-
-
-def extract_sheet_id(url_or_id: str) -> str:
-    """Pull the Sheet ID out of a full Google Sheets URL, or pass through a
-    bare ID unchanged."""
-    match = _SHEET_URL_ID_RE.search(url_or_id)
-    return match.group(1) if match else url_or_id
 
 
 def load_workspaces(path: Path | None = None) -> list[WorkspaceMeta]:
@@ -95,7 +83,7 @@ def create_workspace(
     workspaces = load_workspaces(path)
     if find_workspace(name, workspaces) is not None:
         raise ValueError(f"Workspace '{name}' already exists.")
-    meta = WorkspaceMeta(name=name, group=group, sheet_id=None, created_at=datetime.now())
+    meta = WorkspaceMeta(name=name, group=group, created_at=datetime.now())
     save_workspaces([*workspaces, meta], path)
     interim_dir(name, root).mkdir(parents=True, exist_ok=True)
     runs_dir(name, root).mkdir(parents=True, exist_ok=True)
@@ -140,16 +128,6 @@ def rename_workspace(
     return renamed
 
 
-def set_workspace_sheet(name: str, url_or_id: str, path: Path | None = None) -> WorkspaceMeta:
-    workspaces = load_workspaces(path)
-    existing = find_workspace(name, workspaces)
-    if existing is None:
-        raise ValueError(f"Workspace '{name}' not found. Run `iffsched workspace create` first.")
-    updated = existing.model_copy(update={"sheet_id": extract_sheet_id(url_or_id)})
-    save_workspaces([updated if w.name == name else w for w in workspaces], path)
-    return updated
-
-
 # --------------------------------------------------------- namespaced paths
 
 
@@ -179,10 +157,6 @@ def runs_dir(name: str, root: Path | None = None) -> Path:
 
 def output_dir(name: str, root: Path | None = None) -> Path:
     return workspace_root(name, root) / "output"
-
-
-def last_ingested_row_path(name: str, root: Path | None = None) -> Path:
-    return workspace_root(name, root) / "last_ingested_row.txt"
 
 
 def applicants_clean_path(name: str, root: Path | None = None) -> Path:

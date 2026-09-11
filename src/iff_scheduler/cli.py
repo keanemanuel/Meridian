@@ -30,13 +30,7 @@ from iff_scheduler.export.panel_view import build_panel_views
 from iff_scheduler.export.room_view import build_room_views
 from iff_scheduler.export.xlsx_writer import write_xlsx
 from iff_scheduler.ingest.csv_source import CsvApplicantSource
-from iff_scheduler.ingest.sheets_source import (
-    SheetsApplicantSource,
-    open_worksheet,
-    run_incremental_sheets_ingest,
-    write_watermark,
-)
-from iff_scheduler.ingest.validate import IngestResult, append_outputs, run_ingest, write_outputs
+from iff_scheduler.ingest.validate import IngestResult, run_ingest, write_outputs
 from iff_scheduler.notify.audit import (
     audit_invite_recipients,
     audit_result_recipients,
@@ -97,9 +91,8 @@ from iff_scheduler.scheduling.postprocess import (
 )
 from iff_scheduler.scheduling.solver_cpsat import CpSatSolver
 from iff_scheduler.settings import DEFAULT_CONFIG_DIR, Settings, load_settings
-from iff_scheduler.workspace import DEFAULT_WORKSPACE, find_workspace, load_workspaces
+from iff_scheduler.workspace import DEFAULT_WORKSPACE, load_workspaces
 from iff_scheduler.workspace import create_workspace as _create_workspace
-from iff_scheduler.workspace import set_workspace_sheet as _set_workspace_sheet
 
 app = typer.Typer(add_completion=False, help="IFF recruitment interview scheduler.")
 notify_app = typer.Typer(add_completion=False, help="Email notifications (SPEC.md §10).")
@@ -144,25 +137,10 @@ def workspace_list() -> None:
     table = Table(title="Workspaces")
     table.add_column("Name")
     table.add_column("Group")
-    table.add_column("Sheet ID")
     table.add_column("Created")
     for meta in sorted(workspaces, key=lambda w: (w.group, w.name)):
-        table.add_row(meta.name, meta.group, meta.sheet_id or "—", meta.created_at.isoformat())
+        table.add_row(meta.name, meta.group, meta.created_at.isoformat())
     console.print(table)
-
-
-@workspace_app.command("set-sheet")
-def workspace_set_sheet(
-    workspace: str = typer.Option(..., "--workspace", help="Workspace to update."),
-    url: str = typer.Option(..., "--url", help="Google Sheet URL or bare Sheet ID."),
-) -> None:
-    """Attach a Google Sheet to a workspace as its applicant data source (SPEC.md §11.3)."""
-    try:
-        meta = _set_workspace_sheet(workspace, url)
-    except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(code=1) from exc
-    console.print(f"Sheet for '{meta.name}' set to {meta.sheet_id}.")
 
 
 def _print_ingest_summary(result: IngestResult, clean_path: Path, report_path: Path) -> None:
@@ -184,37 +162,17 @@ def _print_ingest_summary(result: IngestResult, clean_path: Path, report_path: P
 
 @app.command()
 def ingest(
-    source: str = typer.Option("csv", "--source", help="Applicant data source: csv|sheets"),
-    input_path: Path = typer.Option(
-        None, "--input", help="Raw CSV export (required for --source csv)"
-    ),
+    input_path: Path = typer.Option(..., "--input", help="Raw Google Form CSV export"),
     config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
     out_dir: Path = typer.Option(
         None, "--out-dir", help="Default: data/workspaces/<workspace>/interim"
     ),
     workspace: str = WORKSPACE_OPTION,
-    service_account_file: Path = typer.Option(
-        None,
-        "--service-account",
-        help="Overrides GOOGLE_SERVICE_ACCOUNT_FILE from .env (--source sheets)",
-    ),
-    worksheet: str = typer.Option(
-        None, "--worksheet", help="Worksheet/tab name (--source sheets; default: first sheet)"
-    ),
-    force: bool = typer.Option(
-        False,
-        "--force",
-        help="Re-process the whole Sheet from scratch, ignoring the watermark (--source sheets)",
-    ),
 ) -> None:
     """Ingest applicant data, normalise it, and write a validation report (FR-01..FR-07).
 
-    `--source csv` is a one-shot full read of a manual export. `--source
-    sheets` reads the workspace's linked Google Sheet incrementally: only
-    rows after the watermark in `last_ingested_row.txt` are processed and the
-    result is appended to the existing applicants.clean.csv (FR-07, M10).
-    `--force` discards the watermark and re-ingests the entire Sheet,
-    overwriting the outputs instead of appending.
+    A one-shot full read of a Google Form CSV export. CSV upload is the only
+    supported input method.
     """
     resolved_out_dir = out_dir if out_dir is not None else ws.interim_dir(workspace)
     clean_path = resolved_out_dir / "applicants.clean.csv"
@@ -223,78 +181,18 @@ def ingest(
     settings = load_settings(config_dir)
     grid = build_slot_grid(settings.event)
 
-    if source == "csv":
-        if input_path is None:
-            console.print("[red]--input is required when --source csv[/red]")
-            raise typer.Exit(code=1)
-        if not input_path.exists():
-            console.print(f"[red]Input file not found: {input_path}[/red]")
-            raise typer.Exit(code=1)
-
-        result = run_ingest(
-            source=CsvApplicantSource(path=input_path),
-            event=settings.event,
-            divisions=settings.divisions,
-            grid=grid,
-        )
-        write_outputs(result, clean_path=clean_path, report_path=report_path)
-        _print_ingest_summary(result, clean_path, report_path)
-        return
-
-    if source != "sheets":
-        console.print(f"[red]Source '{source}' is not implemented. Use --source csv|sheets.[/red]")
+    if not input_path.exists():
+        console.print(f"[red]Input file not found: {input_path}[/red]")
         raise typer.Exit(code=1)
 
-    meta = find_workspace(workspace, load_workspaces())
-    if meta is None or meta.sheet_id is None:
-        console.print(
-            f"[red]Workspace '{workspace}' has no Sheet attached. Run "
-            "`iffsched workspace set-sheet --workspace ... --url ...` first.[/red]"
-        )
-        raise typer.Exit(code=1)
-
-    load_dotenv()
-    sa_file = (
-        str(service_account_file)
-        if service_account_file is not None
-        else os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
-    )
-    if not sa_file:
-        console.print(
-            "[red]No service account file. Pass --service-account or set "
-            "GOOGLE_SERVICE_ACCOUNT_FILE in .env.[/red]"
-        )
-        raise typer.Exit(code=1)
-
-    worksheet_handle = open_worksheet(sa_file, meta.sheet_id, worksheet)
-    sheets_source = SheetsApplicantSource(worksheet=worksheet_handle)
-    watermark_path = ws.last_ingested_row_path(workspace)
-
-    incremental = run_incremental_sheets_ingest(
-        source=sheets_source,
+    result = run_ingest(
+        source=CsvApplicantSource(path=input_path),
         event=settings.event,
         divisions=settings.divisions,
         grid=grid,
-        clean_path=clean_path,
-        watermark_path=watermark_path,
-        force=force,
     )
-
-    if incremental.new_row_count == 0:
-        console.print("No new rows since the last ingest. Nothing to do.")
-        return
-
-    if force:
-        write_outputs(incremental.result, clean_path=clean_path, report_path=report_path)
-    else:
-        append_outputs(incremental.result, clean_path=clean_path, report_path=report_path)
-    write_watermark(watermark_path, incremental.watermark_after)
-
-    _print_ingest_summary(incremental.result, clean_path, report_path)
-    console.print(
-        f"Watermark {incremental.watermark_before} -> {incremental.watermark_after} "
-        f"({incremental.new_row_count} new row(s) read)."
-    )
+    write_outputs(result, clean_path=clean_path, report_path=report_path)
+    _print_ingest_summary(result, clean_path, report_path)
 
 
 def _load_clean_applicants(path: Path) -> list[Applicant]:

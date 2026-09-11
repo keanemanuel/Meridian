@@ -22,11 +22,6 @@ import type {
 type Action = "import" | "check" | "solve" | "download";
 type Tab = "runs" | "rejected";
 
-/** Only the ID is stored; rebuild a usable link to the Sheet from it. */
-function sheetUrlFromId(sheetId: string): string {
-  return `https://docs.google.com/spreadsheets/d/${sheetId}/edit`;
-}
-
 export default function WorkspacePage({
   params,
 }: PageProps<"/workspace/[id]">) {
@@ -51,7 +46,6 @@ export default function WorkspacePage({
 
   const [busy, setBusy] = useState<Action | null>(null);
   const [showImport, setShowImport] = useState(false);
-  const [showEditSheet, setShowEditSheet] = useState(false);
   const [capacity, setCapacity] = useState<CapacityCheck | null>(null);
   /** Set when solve came back 409 INFEASIBLE — the user may override (E-06). */
   const [infeasible, setInfeasible] = useState<string | null>(null);
@@ -248,38 +242,6 @@ export default function WorkspacePage({
       <div className="flex items-center gap-3">
         <h1 className="text-lg font-semibold text-neutral-900">{meta.name}</h1>
         <Badge>{meta.group}</Badge>
-        {meta.sheet_id && <Badge tone="green">Sheet linked</Badge>}
-      </div>
-
-      <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
-        {meta.sheet_id ? (
-          <>
-            <span className="text-neutral-500">Google Sheet:</span>
-            <a
-              href={sheetUrlFromId(meta.sheet_id)}
-              target="_blank"
-              rel="noreferrer"
-              className="max-w-md truncate font-mono text-xs text-blue-600 hover:underline"
-            >
-              {sheetUrlFromId(meta.sheet_id)}
-            </a>
-            <button
-              type="button"
-              onClick={() => setShowEditSheet(true)}
-              className="text-xs font-medium text-neutral-500 hover:text-neutral-800"
-            >
-              Edit Sheet URL
-            </button>
-          </>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setShowEditSheet(true)}
-            className="text-xs font-medium text-neutral-500 hover:text-neutral-800"
-          >
-            + Link Google Sheet
-          </button>
-        )}
       </div>
 
       <div className="mt-6 flex flex-wrap gap-2">
@@ -438,8 +400,6 @@ export default function WorkspacePage({
       {showImport && (
         <ImportModal
           workspaceId={workspaceId}
-          sheetId={meta.sheet_id}
-          onSheetLinked={(updated) => setMeta(updated)}
           onClose={() => setShowImport(false)}
           onDone={(result) => {
             toast.success(
@@ -449,15 +409,6 @@ export default function WorkspacePage({
             void loadRejected();
             void loadIngestStatus();
           }}
-        />
-      )}
-
-      {showEditSheet && (
-        <EditSheetModal
-          workspaceId={workspaceId}
-          current={meta.sheet_id ? sheetUrlFromId(meta.sheet_id) : ""}
-          onClose={() => setShowEditSheet(false)}
-          onSaved={(updated) => setMeta(updated)}
         />
       )}
 
@@ -477,79 +428,6 @@ export default function WorkspacePage({
         </Modal>
       )}
     </div>
-  );
-}
-
-function EditSheetModal({
-  workspaceId,
-  current,
-  onClose,
-  onSaved,
-}: {
-  workspaceId: string;
-  current: string;
-  onClose: () => void;
-  onSaved: (updated: WorkspaceMeta) => void;
-}) {
-  const toast = useToast();
-  const [url, setUrl] = useState(current);
-  const [saving, setSaving] = useState(false);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = url.trim();
-    if (!trimmed) return;
-    setSaving(true);
-    try {
-      const updated = await api.setWorkspaceSheet(workspaceId, trimmed);
-      toast.success("Google Sheet linked.");
-      onSaved(updated);
-      onClose();
-    } catch (err) {
-      toast.fromError(err, "Could not update the Sheet URL.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal title="Google Sheet" onClose={onClose}>
-      <form onSubmit={submit} className="space-y-4">
-        <div>
-          <label
-            htmlFor="edit-sheet-url"
-            className="mb-1.5 block text-xs font-medium text-neutral-600"
-          >
-            Google Sheet URL
-          </label>
-          <input
-            id="edit-sheet-url"
-            autoFocus
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://docs.google.com/spreadsheets/d/…"
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
-          />
-          <p className="mt-1 text-xs text-neutral-500">
-            Paste the full share URL or just the sheet ID. This enables live
-            import from Sheets.
-          </p>
-        </div>
-        <div className="flex justify-end gap-2 pt-1">
-          <Button type="button" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            type="submit"
-            variant="primary"
-            loading={saving}
-            disabled={!url.trim()}
-          >
-            Save
-          </Button>
-        </div>
-      </form>
-    </Modal>
   );
 }
 

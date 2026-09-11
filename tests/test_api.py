@@ -110,21 +110,6 @@ def _create_ws(client: TestClient, name: str, group: str = "Test Environment"):
     return client.post("/api/workspaces", json={"name": name, "group": group})
 
 
-@pytest.fixture
-def service_account_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A well-formed (entirely fake) service account key on disk.
-
-    The export resolves and shape-checks the key before calling Google, so a
-    placeholder like /dev/null is now correctly refused; these tests need a
-    file that actually looks like a key."""
-    from tests.test_credentials_bootstrap import KEY_JSON
-
-    path = tmp_path / "service_account.json"
-    path.write_text(KEY_JSON, encoding="utf-8")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_FILE", str(path))
-    return path
-
-
 def _ingest_fixture(client: TestClient, name: str):
     with FIXTURE_CSV.open("rb") as fh:
         return client.post(
@@ -173,7 +158,7 @@ def test_workspace_crud_lifecycle(client: TestClient, wsname: str) -> None:
 
     one = client.get(f"/api/workspaces/{wsname}")
     assert one.status_code == 200
-    assert one.json()["sheet_id"] is None
+    assert one.json()["name"] == wsname
 
     deleted = client.delete(f"/api/workspaces/{wsname}")
     assert deleted.status_code == 200
@@ -193,64 +178,6 @@ def test_unknown_workspace_returns_detail_404(client: TestClient) -> None:
     resp = client.get("/api/workspaces/nope")
     assert resp.status_code == 404
     assert resp.json() == {"detail": "Workspace 'nope' not found."}
-
-
-def test_create_workspace_extracts_sheet_id_from_url(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, wsname: str
-) -> None:
-    """POST /api/workspaces accepts an optional `sheet_url` and stores just
-    the extracted ID, so the UI can link a Sheet at creation time."""
-    monkeypatch.setattr("api.routers.workspaces.supabase_enabled", lambda: False)
-    url = "https://docs.google.com/spreadsheets/d/1AbC_dE-fG123456/edit#gid=0"
-    resp = client.post(
-        "/api/workspaces",
-        json={"name": wsname, "group": "Test Environment", "sheet_url": url},
-    )
-    assert resp.status_code == 201
-    assert resp.json()["sheet_id"] == "1AbC_dE-fG123456"
-
-
-def test_create_workspace_blank_sheet_url_links_nothing(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, wsname: str
-) -> None:
-    monkeypatch.setattr("api.routers.workspaces.supabase_enabled", lambda: False)
-    resp = client.post(
-        "/api/workspaces",
-        json={"name": wsname, "group": "Test Environment", "sheet_url": "   "},
-    )
-    assert resp.status_code == 201
-    assert resp.json()["sheet_id"] is None
-
-
-def test_patch_workspace_sheet_links_and_replaces(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, wsname: str
-) -> None:
-    monkeypatch.setattr("api.routers.workspaces.supabase_enabled", lambda: False)
-    assert _create_ws(client, wsname).status_code == 201
-
-    first = client.patch(
-        f"/api/workspaces/{wsname}/sheet",
-        json={"sheet_url": "https://docs.google.com/spreadsheets/d/SHEET_ONE/edit"},
-    )
-    assert first.status_code == 200
-    assert first.json()["sheet_id"] == "SHEET_ONE"
-
-    second = client.patch(
-        f"/api/workspaces/{wsname}/sheet",
-        json={"sheet_url": "https://docs.google.com/spreadsheets/d/SHEET_TWO/edit"},
-    )
-    assert second.json()["sheet_id"] == "SHEET_TWO"
-
-
-def test_patch_workspace_sheet_unknown_workspace_is_404(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("api.routers.workspaces.supabase_enabled", lambda: False)
-    resp = client.patch(
-        "/api/workspaces/ghost/sheet",
-        json={"sheet_url": "https://docs.google.com/spreadsheets/d/ID/edit"},
-    )
-    assert resp.status_code == 404
 
 
 # --------------------------------------------------------------- pipeline
@@ -453,9 +380,7 @@ def test_toggle_assignment_lock_locks_then_unlocks(client: TestClient, wsname: s
     assert locked.json()["total_locks"] == 1
 
     after_lock = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
-    assert next(r for r in after_lock if r["assignment_id"] == first["assignment_id"])[
-        "is_locked"
-    ]
+    assert next(r for r in after_lock if r["assignment_id"] == first["assignment_id"])["is_locked"]
 
     unlocked = client.patch(
         f"/api/workspaces/{wsname}/runs/{run_id}/assignments/{first['assignment_id']}/lock",
@@ -466,17 +391,13 @@ def test_toggle_assignment_lock_locks_then_unlocks(client: TestClient, wsname: s
     assert unlocked.json()["assignment"]["is_locked"] is False
     assert unlocked.json()["total_locks"] == 0
 
-    after_unlock = client.get(
-        f"/api/workspaces/{wsname}/runs/{run_id}/assignments"
-    ).json()
-    assert not next(
-        r for r in after_unlock if r["assignment_id"] == first["assignment_id"]
-    )["is_locked"]
+    after_unlock = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    assert not next(r for r in after_unlock if r["assignment_id"] == first["assignment_id"])[
+        "is_locked"
+    ]
 
 
-def test_toggle_assignment_lock_unknown_assignment_is_404(
-    client: TestClient, wsname: str
-) -> None:
+def test_toggle_assignment_lock_unknown_assignment_is_404(client: TestClient, wsname: str) -> None:
     _create_ws(client, wsname)
     _ingest_fixture(client, wsname)
     run_id = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
@@ -539,9 +460,7 @@ def test_add_panel_creates_an_empty_deletable_panel(client: TestClient, wsname: 
     assert new_id in {p["panel_id"] for p in again["panels"]}
 
 
-def test_add_panel_rejects_a_division_already_in_that_room(
-    client: TestClient, wsname: str
-) -> None:
+def test_add_panel_rejects_a_division_already_in_that_room(client: TestClient, wsname: str) -> None:
     run_id = _solved_run(client, wsname)
     existing = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/panels").json()["panels"][0]
 
@@ -582,9 +501,10 @@ def test_delete_panel_with_interviews_is_refused(client: TestClient, wsname: str
     )
     assert moved.status_code == 200, moved.text
 
-    panels = {p["panel_id"]: p for p in client.get(
-        f"/api/workspaces/{wsname}/runs/{run_id}/panels"
-    ).json()["panels"]}
+    panels = {
+        p["panel_id"]: p
+        for p in client.get(f"/api/workspaces/{wsname}/runs/{run_id}/panels").json()["panels"]
+    }
     assert panels[new_id]["interview_count"] == 1
     assert panels[new_id]["deletable"] is False
 
@@ -605,9 +525,7 @@ def test_delete_rejects_a_non_manual_panel(client: TestClient, wsname: str) -> N
 # ------------------------------------------------ Rooms tab: move a panel's room
 
 
-def _movable_panel_and_room(
-    client: TestClient, wsname: str, run_id: str
-) -> tuple[dict, str]:
+def _movable_panel_and_room(client: TestClient, wsname: str, run_id: str) -> tuple[dict, str]:
     """A solver panel with interviews plus a room, open on every day that panel
     runs, that carries no panel of the same division — a legal drag target."""
     panels = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/panels").json()["panels"]
@@ -626,9 +544,7 @@ def _movable_panel_and_room(
     raise AssertionError("no movable panel/room pair in this run")
 
 
-def test_move_panel_relocates_it_with_every_interview(
-    client: TestClient, wsname: str
-) -> None:
+def test_move_panel_relocates_it_with_every_interview(client: TestClient, wsname: str) -> None:
     run_id = _solved_run(client, wsname)
     src, target = _movable_panel_and_room(client, wsname, run_id)
     before = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
@@ -683,9 +599,7 @@ def test_move_panel_rejects_a_room_already_running_that_division(
     assert still[src["panel_id"]] == src["room"]
 
 
-def test_move_panel_ignores_the_4_panel_room_cap(
-    client: TestClient, wsname: str
-) -> None:
+def test_move_panel_ignores_the_4_panel_room_cap(client: TestClient, wsname: str) -> None:
     """A manual panel move may overload a room past max_concurrent_panels —
     consistent with add-panel and single-interview moves (Session G4)."""
     run_id = _solved_run(client, wsname)
@@ -698,8 +612,7 @@ def test_move_panel_ignores_the_4_panel_room_cap(
     room_cfg_cap = 4
     fillers = [d for d in divisions if d not in in_target and d != src["division"]]
     while (
-        sum(1 for p in _panels(client, wsname, run_id) if p["room"] == target)
-        < room_cfg_cap
+        sum(1 for p in _panels(client, wsname, run_id) if p["room"] == target) < room_cfg_cap
         and fillers
     ):
         client.post(
@@ -712,9 +625,7 @@ def test_move_panel_ignores_the_4_panel_room_cap(
         json={"room": target},
     )
     assert resp.status_code == 200, resp.text
-    assert {p["panel_id"]: p["room"] for p in resp.json()["panels"]}[
-        src["panel_id"]
-    ] == target
+    assert {p["panel_id"]: p["room"] for p in resp.json()["panels"]}[src["panel_id"]] == target
 
 
 def _panels(client: TestClient, wsname: str, run_id: str) -> list[dict]:
@@ -967,254 +878,3 @@ def test_a_live_submission_workspace_can_still_be_renamed(client: TestClient, ws
     renamed = client.patch(f"/api/workspaces/{wsname}", json={"name": new_name})
     assert renamed.status_code == 200
     assert renamed.json()["group"] == "IFF Submissions"
-
-
-# --------------------------------------------------------------- sheets export
-
-
-def test_export_without_service_account_credentials_is_a_409(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, wsname: str
-) -> None:
-    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_FILE", raising=False)
-    _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    client.post(f"/api/workspaces/{wsname}/solve")
-
-    refused = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
-    assert refused.status_code == 409
-    assert "GOOGLE_SERVICE_ACCOUNT_FILE" in refused.json()["detail"]
-
-
-def test_export_with_a_doubled_credential_paste_still_works(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, wsname: str
-) -> None:
-    """The live failure: the key was pasted twice into the env var, json.load
-    raised "Extra data: line 14 column 1 (char 2364)", and because that is a
-    ValueError it came back as a bare 400 with no hint it was about
-    credentials at all."""
-    from tests.test_credentials_bootstrap import KEY_JSON
-    from tests.test_sheets_export import _FakeClient
-
-    import api.credentials_bootstrap as bootstrap
-    from api.credentials_bootstrap import materialize_json_credentials
-
-    monkeypatch.setattr(bootstrap, "_TMP_DIR", str(tmp_path / "creds"))
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_FILE", KEY_JSON + KEY_JSON)
-    bootstrap._PROBLEMS.clear()
-    materialize_json_credentials()
-    monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _FakeClient())
-
-    _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    client.post(f"/api/workspaces/{wsname}/solve")
-
-    exported = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
-    assert exported.status_code == 200
-    assert exported.json()["sheet_url"].startswith("https://docs.google.com/spreadsheets/d/")
-
-
-def test_export_response_is_one_clean_json_object(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path, wsname: str
-) -> None:
-    """`sheet_url` is always present, the body parses in one pass, and there
-    is nothing after the closing brace."""
-    from tests.test_sheets_export import _FakeClient
-
-    monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _FakeClient())
-
-    _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    client.post(f"/api/workspaces/{wsname}/solve")
-    exported = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
-
-    assert exported.status_code == 200
-    assert exported.headers["content-type"].startswith("application/json")
-    body, consumed = json.JSONDecoder().raw_decode(exported.text)
-    assert consumed == len(exported.text), "response must be exactly one JSON document"
-    assert set(body) == {
-        "sheet_url",
-        "sheet_id",
-        "tabs",
-        "rows_written",
-        "clashes",
-        "folder_id",
-    }
-    assert body["sheet_url"].startswith("https://docs.google.com/spreadsheets/d/")
-    assert body["folder_id"] is None
-
-
-def test_export_reports_a_disabled_google_api_as_an_actionable_409(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path, wsname: str
-) -> None:
-    """The second live blocker: the service account's project had the Sheets
-    API on but the Drive API off, so creating the spreadsheet 403'd. Passing
-    Google's paragraph straight through reads like a silent failure."""
-
-    class _DriveDisabled:
-        def create(self, title: str, folder_id: str | None = None) -> None:
-            raise RuntimeError(
-                "APIError: [403]: Google Drive API has not been used in project "
-                "198021261604 before or it is disabled. Enable it by visiting ..."
-            )
-
-    monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _DriveDisabled())
-
-    _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    client.post(f"/api/workspaces/{wsname}/solve")
-    failed = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
-
-    assert failed.status_code == 409
-    detail = failed.json()["detail"]
-    assert "Google Drive API is not enabled" in detail
-    assert "project=198021261604" in detail
-
-
-def test_export_creates_the_spreadsheet_inside_the_configured_drive_folder(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path, wsname: str
-) -> None:
-    """GOOGLE_DRIVE_FOLDER_ID, when set, is passed through to gspread's
-    create() and echoed back in the response so the committee can confirm
-    the export landed where they expect."""
-    from tests.test_sheets_export import _FakeClient
-
-    fake = _FakeClient()
-    monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "1uB8vmBvYeQIdjhsKY--qfVdSKaDyNKqy")
-    monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: fake)
-
-    _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    client.post(f"/api/workspaces/{wsname}/solve")
-    exported = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
-
-    assert exported.status_code == 200
-    assert exported.json()["folder_id"] == "1uB8vmBvYeQIdjhsKY--qfVdSKaDyNKqy"
-    assert fake.created[0].folder_id == "1uB8vmBvYeQIdjhsKY--qfVdSKaDyNKqy"
-
-
-def test_a_blank_drive_folder_id_behaves_as_unset(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path, wsname: str
-) -> None:
-    """A dashboard that leaves the variable present but empty must not send
-    an empty-string folder id to Google."""
-    from tests.test_sheets_export import _FakeClient
-
-    fake = _FakeClient()
-    monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "   ")
-    monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: fake)
-
-    _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    client.post(f"/api/workspaces/{wsname}/solve")
-    exported = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
-
-    assert exported.json()["folder_id"] is None
-    assert fake.created[0].folder_id is None
-
-
-def test_storage_quota_error_without_a_folder_configured_names_the_env_var(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path, wsname: str
-) -> None:
-    """The reported bug: exporting to the service account's own Drive root
-    always 403s with storageQuotaExceeded, because a bare service account has
-    no personal Drive storage — a platform limit, not a quota that filled up."""
-
-    class _NoStorage:
-        def create(self, title: str, folder_id: str | None = None) -> None:
-            raise RuntimeError(
-                "APIError: [403]: The user's Drive storage quota has been "
-                "exceeded. storageQuotaExceeded"
-            )
-
-    monkeypatch.delenv("GOOGLE_DRIVE_FOLDER_ID", raising=False)
-    monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _NoStorage())
-
-    _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    client.post(f"/api/workspaces/{wsname}/solve")
-    failed = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
-
-    assert failed.status_code == 409
-    detail = failed.json()["detail"]
-    assert "GOOGLE_DRIVE_FOLDER_ID" in detail
-    assert "Shared Drive" in detail
-
-
-def test_storage_quota_error_with_a_folder_configured_blames_the_folder_type(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path, wsname: str
-) -> None:
-    """If the quota error persists with a folder set, an ordinary "My Drive"
-    folder shared as Editor is the near-universal cause — Drive bills
-    storage to the file's creator, not to the parent folder's owner."""
-
-    class _NoStorage:
-        def create(self, title: str, folder_id: str | None = None) -> None:
-            raise RuntimeError(
-                "APIError: [403]: The user's Drive storage quota has been "
-                "exceeded. storageQuotaExceeded"
-            )
-
-    monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "some-folder-id")
-    monkeypatch.setattr("api.routers.export.open_export_client", lambda _p: _NoStorage())
-
-    _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    client.post(f"/api/workspaces/{wsname}/solve")
-    failed = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
-
-    assert failed.status_code == 409
-    detail = failed.json()["detail"]
-    assert "Shared Drive" in detail
-    assert "member" in detail
-
-
-def test_a_malformed_server_side_json_file_is_not_reported_as_a_bad_request(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, wsname: str
-) -> None:
-    """A JSONDecodeError is a ValueError, so main.py's handler used to answer
-    400 with its bare message. That is what "Extra data: line 14 column 1"
-    looked like to the user."""
-
-    def _boom() -> str:
-        raise json.JSONDecodeError("Extra data", "{}x", 2)
-
-    monkeypatch.setattr("api.routers.export.service_account_file", _boom)
-    _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    client.post(f"/api/workspaces/{wsname}/solve")
-
-    failed = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
-    assert failed.status_code == 500
-    assert "credentials or configuration problem" in failed.json()["detail"]
-
-
-def test_export_builds_a_shared_sheet_from_the_latest_run(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, service_account_key: Path, wsname: str
-) -> None:
-    """End to end over HTTP with gspread faked out: the point is that the run
-    resolves, the tabs come out per day, and the Sheet URL comes back."""
-    from tests.test_sheets_export import _FakeClient
-
-    fake = _FakeClient()
-    monkeypatch.setattr("api.routers.export.open_export_client", lambda _path: fake)
-
-    _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    solved = client.post(f"/api/workspaces/{wsname}/solve")
-    assert solved.status_code == 200
-
-    exported = client.post(f"/api/workspaces/{wsname}/runs/latest/export/sheets")
-    assert exported.status_code == 200
-    body = exported.json()
-    assert body["sheet_url"] == "https://docs.google.com/spreadsheets/d/sheet-123"
-    assert body["tabs"]
-    assert body["rows_written"] > 0
-    assert fake.created[0].shares == [(None, "anyone", "reader", False)]
-
-
-def test_export_of_an_unknown_run_is_a_404(
-    client: TestClient, service_account_key: Path, wsname: str
-) -> None:
-    _create_ws(client, wsname)
-    missing = client.post(f"/api/workspaces/{wsname}/runs/2020-01-01T00-00-00/export/sheets")
-    assert missing.status_code == 404

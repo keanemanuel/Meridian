@@ -101,7 +101,7 @@ type RequestInitEx = RequestInit & {
   retry?: boolean;
   onRetry?: (attempt: number, maxAttempts: number) => void;
   /** Overrides REQUEST_TIMEOUT_MS for calls that legitimately take longer
-   * than a normal request, such as creating and formatting a Google Sheet. */
+   * than a normal request, such as a full solve. */
   timeoutMs?: number;
 };
 
@@ -196,9 +196,8 @@ export type RetryHooks = {
   onRetry?: (attempt: number, maxAttempts: number) => void;
 };
 
-/** `createWorkspace` extras: an optional Google Sheet URL to link in the
- * same request, plus the cold-start retry hook. */
-export type CreateWorkspaceOpts = RetryHooks & { sheetUrl?: string };
+/** `createWorkspace` extras: the cold-start retry hook. */
+export type CreateWorkspaceOpts = RetryHooks;
 
 export const api = {
   health: () => request<{ status: string }>("/health"),
@@ -211,24 +210,13 @@ export const api = {
 
   createWorkspace: (name: string, group: string, opts?: CreateWorkspaceOpts) =>
     request<WorkspaceMeta>("/workspaces", {
-      ...json({
-        name,
-        group,
-        sheet_url: opts?.sheetUrl?.trim() || null,
-      }),
+      ...json({ name, group }),
       retry: true,
       onRetry: opts?.onRetry,
     }),
 
   getWorkspace: (id: string) =>
     request<WorkspaceMeta>(`/workspaces/${seg(id)}`),
-
-  /** Attach or replace the workspace's linked Google Sheet (URL or bare ID). */
-  setWorkspaceSheet: (id: string, sheetUrl: string) =>
-    request<WorkspaceMeta>(`/workspaces/${seg(id)}/sheet`, {
-      method: "PATCH",
-      body: JSON.stringify({ sheet_url: sheetUrl }),
-    }),
 
   /** Rename a workspace. The name is its id, so every later call must use
    * the new one. */
@@ -243,21 +231,11 @@ export const api = {
       method: "DELETE",
     }),
 
-  /** `source=csv` needs a file upload; `source=sheets` reads the linked Sheet. */
+  /** CSV upload is the only supported input method — a Google Form CSV export. */
   ingestCsv: (id: string, file: File) => {
     const form = new FormData();
     form.append("source", "csv");
     form.append("file", file);
-    return request<IngestResult>(`/workspaces/${seg(id)}/ingest`, {
-      method: "POST",
-      body: form,
-    });
-  },
-
-  ingestSheets: (id: string, force = false) => {
-    const form = new FormData();
-    form.append("source", "sheets");
-    form.append("force", String(force));
     return request<IngestResult>(`/workspaces/${seg(id)}/ingest`, {
       method: "POST",
       body: form,

@@ -17,13 +17,13 @@ This tool does the tetris. It **guarantees** every applicant gets both of their 
 
 ## What it does
 
-- **Ingests** form responses from Google Sheets (API or CSV export)
+- **Ingests** form responses from a Google Form CSV export (CSV upload only)
 - **Validates** everything and refuses to guess — bad data is reported, never inferred
 - **Checks capacity** before solving, and tells you how many interviewer panels each division actually needs
 - **Solves** the timetable with constraint programming (Google OR-Tools CP-SAT), proving optimality rather than approximating
 - **Flags clashes** in red where an applicant had to be placed outside their stated availability
 - **Respects manual edits** — recruiter decisions become locks that survive every re-solve
-- **Exports** room, applicant and panel views to Sheets, XLSX, printable HTML and `.ics`
+- **Exports** room, applicant and panel views to XLSX, printable HTML and `.ics`
 - **Emails** personalised invites and results, with a send ledger so a crash never causes duplicates
 
 ## Core guarantees
@@ -45,7 +45,7 @@ This tool does the tetris. It **guarantees** every applicant gets both of their 
 ### Requirements
 
 - Python 3.11+
-- A Google service account with read access to the responses sheet (or just a CSV export)
+- A CSV export of the Google Form responses (CSV upload is the only supported input)
 - Google Workspace account for sending email, **or** a transactional provider API key
 
 ### Install
@@ -64,8 +64,8 @@ cp .env.example .env               # then fill in your secrets
 ### Run the pipeline
 
 ```bash
-# 1. Pull and clean form responses
-iffsched ingest --source sheets          # or: --source csv --path data/raw/responses.csv
+# 1. Clean the Google Form CSV export
+iffsched ingest --input data/raw/responses.csv
 
 # 2. Check you have enough interviewer panels BEFORE solving
 iffsched check
@@ -76,7 +76,7 @@ iffsched solve
 # 4. Generate room / applicant / panel views
 iffsched publish --run latest
 
-# 5. Make manual edits in the exported sheet, then freeze them
+# 5. Make manual edits in the exported XLSX, then freeze them
 iffsched lock --from runs/latest/assignments.csv
 iffsched solve                            # re-solves around your locked rows
 
@@ -210,7 +210,7 @@ data/                    gitignored — contains applicant PII
 runs/                    gitignored — one immutable directory per solve
 src/iff_scheduler/
   domain/                models, enums, slot grid
-  ingest/                sheets/csv sources, normalisation, validation
+  ingest/                csv source, normalisation, validation
   scheduling/            feasibility, CP-SAT solver, greedy solver, objectives
   review/                lock engine, manual-edit validator
   export/                room/applicant/panel views, xlsx, html, ics
@@ -221,7 +221,7 @@ tests/                   unit tests + anonymised fixtures
 docs/                    SPEC.md, RUNBOOK.md, FORM_DESIGN.md
 ```
 
-**Architectural rule:** the core (`domain/`, `scheduling/`, `review/`) never imports an adapter. It takes plain objects in and returns plain objects out. That's what makes it testable without Google credentials, and what lets you swap Gmail for SendGrid, or CSV for Sheets, without touching the algorithm.
+**Architectural rule:** the core (`domain/`, `scheduling/`, `review/`) never imports an adapter. It takes plain objects in and returns plain objects out. That's what makes it testable without Google credentials, and what lets you swap Gmail for SendGrid without touching the algorithm.
 
 ## Tech Stack
 
@@ -235,8 +235,7 @@ docs/                    SPEC.md, RUNBOOK.md, FORM_DESIGN.md
 | Email templates | `jinja2` | Personalised invite and result emails |
 | XLSX export | `openpyxl` | Room, applicant and panel view spreadsheets |
 | Calendar export | `icalendar` | `.ics` files per applicant and per panel |
-| Google Sheets | `gspread` + `google-auth` | Read form responses; write published timetables |
-| Gmail sending | `google-api-python-client` | Automated email dispatch via Gmail API |
+| Gmail sending | `google-api-python-client` + `google-auth` + `google-auth-oauthlib` | Automated email dispatch via Gmail API |
 | Secrets | `python-dotenv` | Loads credentials from `.env`, never from code |
 | Testing | `pytest` | Unit tests — each hard constraint C1–C8 has a dedicated test |
 | Lint & format | `ruff` | Enforced code style |

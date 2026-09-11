@@ -17,7 +17,7 @@ export default function Home() {
         {[
           [
             "Import Data",
-            "Read applicants from a CSV export or the linked Google Sheet.",
+            "Upload a CSV export of the Google Form responses.",
           ],
           [
             "Check Capacity",
