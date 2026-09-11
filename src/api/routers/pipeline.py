@@ -37,7 +37,7 @@ from iff_scheduler.export.html_writer import (
 )
 from iff_scheduler.export.panel_view import build_panel_views
 from iff_scheduler.export.room_view import build_room_views
-from iff_scheduler.export.xlsx_writer import write_applicants_xlsx, write_xlsx
+from iff_scheduler.export.xlsx_writer import write_applicants_xlsx, write_rooms_xlsx, write_xlsx
 from iff_scheduler.ingest.csv_source import CsvApplicantSource
 from iff_scheduler.ingest.validate import (
     is_recoverable,
@@ -315,6 +315,7 @@ def publish(
             applicant_rows,
             applicant_preferences(applicants, grid.slots),
         )
+        write_rooms_xlsx(publish_dir / "rooms.xlsx", assignments)
     if "html" in wanted:
         html_dir = publish_dir / "html"
         write_room_view_html(room_views, html_dir)
@@ -333,22 +334,25 @@ def publish(
     }
 
 
-_BUNDLE_MEMBERS = ("schedule.xlsx", "applicants.xlsx")
+_BUNDLE_MEMBERS = ("schedule.xlsx", "applicants.xlsx", "rooms.xlsx")
 
 
 @router.get("/runs/{run_id}/xlsx")
 def download_bundle(workspace_id: str, run_id: str) -> Response:
     """Download this run's published spreadsheets as a single ZIP:
 
-    * ``schedule.xlsx`` — the room / applicant / panel / conflicts workbook,
-      its room-and-day sheets ordered day-then-division; and
+    * ``schedule.xlsx`` — one sheet per division, each day's rooms laid out
+      as the committee's manual scheduling sheet (Interviewer 1/2 blanks for
+      hand-filled names, plus the room and applicant);
     * ``applicants.xlsx`` — the Applicants tab exactly as the web app shows
       it (row number, declared preference, both interviews in slot-time
-      order).
+      order); and
+    * ``rooms.xlsx`` — a room-by-room, day-by-day overview of which
+      panels/divisions run where, for someone walking the venue.
 
-    Both are written to local disk by `publish` (which `Schedule!` calls
-    automatically), and this endpoint just zips them together so one click
-    yields both files.
+    All three are written to local disk by `publish` (which `Schedule!`
+    calls automatically), and this endpoint just zips them together so one
+    click yields all three files.
 
     404s if the run itself doesn't exist (checked against whichever store is
     live); 409s if the run exists but was never published, or its published
@@ -366,7 +370,7 @@ def download_bundle(workspace_id: str, run_id: str) -> Response:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"No published {' and '.join(missing)} for run '{resolved_run_id}'. "
+                f"No published {', '.join(missing)} for run '{resolved_run_id}'. "
                 "Publish this run (Schedule! does this automatically) and try again."
             ),
         )

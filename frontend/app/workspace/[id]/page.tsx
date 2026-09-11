@@ -281,7 +281,7 @@ export default function WorkspacePage({
           disabled={busy !== null || schedule === null}
           title={
             schedule
-              ? "Download the schedule and applicants spreadsheets (one ZIP)"
+              ? "Download the schedule, rooms and applicants spreadsheets (one ZIP)"
               : "Schedule first, then there is something to download"
           }
         >

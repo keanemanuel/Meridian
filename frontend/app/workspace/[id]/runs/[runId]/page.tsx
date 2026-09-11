@@ -314,7 +314,7 @@ export default function RunPage({
               onClick={downloadXlsx}
               loading={downloading}
               disabled={busy || assignments.length === 0}
-              title="Download the schedule and applicants spreadsheets (one ZIP)"
+              title="Download the schedule, rooms and applicants spreadsheets (one ZIP)"
             >
               Download XLSX
             </Button>
