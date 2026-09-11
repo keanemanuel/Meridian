@@ -5,12 +5,14 @@ command; the heavy lifting stays in `iff_scheduler` and `api.services`.
 
 from __future__ import annotations
 
+import io
 import json
+import zipfile
 from typing import Annotated, Any
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from api.cli_helpers import conflicts_frame, load_assignments, load_clean_applicants
@@ -27,7 +29,7 @@ from iff_scheduler import workspace as ws
 from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.enums import Severity
 from iff_scheduler.domain.grid import build_slot_grid
-from iff_scheduler.export.applicant_view import build_applicant_view
+from iff_scheduler.export.applicant_view import applicant_preferences, build_applicant_view
 from iff_scheduler.export.html_writer import (
     write_applicant_view_html,
     write_panel_view_html,
@@ -35,7 +37,7 @@ from iff_scheduler.export.html_writer import (
 )
 from iff_scheduler.export.panel_view import build_panel_views
 from iff_scheduler.export.room_view import build_room_views
-from iff_scheduler.export.xlsx_writer import write_xlsx
+from iff_scheduler.export.xlsx_writer import write_applicants_xlsx, write_xlsx
 from iff_scheduler.ingest.csv_source import CsvApplicantSource
 from iff_scheduler.ingest.validate import (
     is_recoverable,
@@ -308,6 +310,11 @@ def publish(
         write_xlsx(
             publish_dir / "schedule.xlsx", room_views, applicant_rows, panel_views, conflicts
         )
+        write_applicants_xlsx(
+            publish_dir / "applicants.xlsx",
+            applicant_rows,
+            applicant_preferences(applicants, grid.slots),
+        )
     if "html" in wanted:
         html_dir = publish_dir / "html"
         write_room_view_html(room_views, html_dir)
@@ -326,16 +333,22 @@ def publish(
     }
 
 
-_XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_BUNDLE_MEMBERS = ("schedule.xlsx", "applicants.xlsx")
 
 
 @router.get("/runs/{run_id}/xlsx")
-def download_xlsx(workspace_id: str, run_id: str) -> FileResponse:
-    """Download the `schedule.xlsx` a prior `publish` wrote for this run.
+def download_bundle(workspace_id: str, run_id: str) -> Response:
+    """Download this run's published spreadsheets as a single ZIP:
 
-    XLSX is the only supported export format: `schedule.xlsx` is written to
-    local disk by `publish` (which `Schedule!` already calls automatically),
-    and this endpoint just serves that file.
+    * ``schedule.xlsx`` — the room / applicant / panel / conflicts workbook,
+      its room-and-day sheets ordered day-then-division; and
+    * ``applicants.xlsx`` — the Applicants tab exactly as the web app shows
+      it (row number, declared preference, both interviews in slot-time
+      order).
+
+    Both are written to local disk by `publish` (which `Schedule!` calls
+    automatically), and this endpoint just zips them together so one click
+    yields both files.
 
     404s if the run itself doesn't exist (checked against whichever store is
     live); 409s if the run exists but was never published, or its published
@@ -346,19 +359,27 @@ def download_xlsx(workspace_id: str, run_id: str) -> FileResponse:
     """
     resolve_workspace(workspace_id)
     resolved_run_id = ensure_run_exists(workspace_id, run_id)
-    xlsx_path = ws.output_dir(workspace_id) / resolved_run_id / "schedule.xlsx"
-    if not xlsx_path.is_file():
+    run_out = ws.output_dir(workspace_id) / resolved_run_id
+    members = [run_out / name for name in _BUNDLE_MEMBERS]
+    missing = [p.name for p in members if not p.is_file()]
+    if missing:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"No published schedule.xlsx for run '{resolved_run_id}'. "
+                f"No published {' and '.join(missing)} for run '{resolved_run_id}'. "
                 "Publish this run (Schedule! does this automatically) and try again."
             ),
         )
-    return FileResponse(
-        xlsx_path,
-        media_type=_XLSX_MEDIA_TYPE,
-        filename=f"{workspace_id} schedule {resolved_run_id}.xlsx",
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for member in members:
+            zf.write(member, arcname=member.name)
+    filename = f"{workspace_id} schedule {resolved_run_id}.zip"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

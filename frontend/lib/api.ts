@@ -341,10 +341,13 @@ export const api = {
       timeoutMs: SOLVE_TIMEOUT_MS,
     }),
 
-  /** The `schedule.xlsx` a prior Publish wrote for this run (Schedule!
-   * publishes automatically, so it's usually already there). Not routed
-   * through `request()`: the response is a binary file, not JSON, so this
-   * fetches directly and mirrors `request()`'s own error handling by hand.
+  /** This run's published spreadsheets as one ZIP: `schedule.xlsx` (room /
+   * applicant / panel / conflicts, sheets ordered day-then-division) and
+   * `applicants.xlsx` (the Applicants tab as displayed). Publish writes both
+   * (Schedule! does it automatically), so they're usually already there. Not
+   * routed through `request()`: the response is a binary file, not JSON, so
+   * this fetches directly and mirrors `request()`'s own error handling by
+   * hand.
    *
    * `runId` should be a concrete run id, not "latest" — every caller already
    * has one (the just-solved run, or the run page's own id), and the
@@ -366,7 +369,7 @@ export const api = {
       }
       throw parseDetail(res.status, body);
     }
-    return { blob: await res.blob(), filename: `${id} schedule ${runId}.xlsx` };
+    return { blob: await res.blob(), filename: `${id} schedule ${runId}.zip` };
   },
 };
 

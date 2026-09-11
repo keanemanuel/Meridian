@@ -20,7 +20,7 @@ from iff_scheduler import workspace as ws
 from iff_scheduler.domain.enums import Decision, DivisionCode, SendStatus, Severity
 from iff_scheduler.domain.grid import build_slot_grid
 from iff_scheduler.domain.models import Applicant, Assignment, Conflict, SendLedgerEntry
-from iff_scheduler.export.applicant_view import build_applicant_view
+from iff_scheduler.export.applicant_view import applicant_preferences, build_applicant_view
 from iff_scheduler.export.html_writer import (
     write_applicant_view_html,
     write_panel_view_html,
@@ -28,7 +28,7 @@ from iff_scheduler.export.html_writer import (
 )
 from iff_scheduler.export.panel_view import build_panel_views
 from iff_scheduler.export.room_view import build_room_views
-from iff_scheduler.export.xlsx_writer import write_xlsx
+from iff_scheduler.export.xlsx_writer import write_applicants_xlsx, write_xlsx
 from iff_scheduler.ingest.csv_source import CsvApplicantSource
 from iff_scheduler.ingest.validate import IngestResult, run_ingest, write_outputs
 from iff_scheduler.notify.audit import (
@@ -674,6 +674,11 @@ def publish(
     if "xlsx" in wanted_formats:
         write_xlsx(
             publish_dir / "schedule.xlsx", room_views, applicant_rows, panel_views, conflicts
+        )
+        write_applicants_xlsx(
+            publish_dir / "applicants.xlsx",
+            applicant_rows,
+            applicant_preferences(applicants, grid.slots),
         )
     if "html" in wanted_formats:
         html_dir = publish_dir / "html"

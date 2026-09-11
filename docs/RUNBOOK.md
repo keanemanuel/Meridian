@@ -148,9 +148,12 @@ iffsched publish --run latest
 ```
 
 Writes `data/output/<run>/schedule.xlsx` (one workbook, multiple tabs:
-room views, the full applicant list, panel views) and matching HTML pages.
-Clashes are highlighted **red** in the spreadsheet. Share this with room
-coordinators and panel leads.
+room views ordered day-then-division, the full applicant list, panel views)
+plus `data/output/<run>/applicants.xlsx` (the Applicants tab on its own —
+row number, declared preference, both interviews in time order) and matching
+HTML pages. The web app's "Download XLSX" hands you both spreadsheets zipped
+together. Clashes are highlighted **red** in the spreadsheets. Share these
+with room coordinators and panel leads.
 
 ---
 
