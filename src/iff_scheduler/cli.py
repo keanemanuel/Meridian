@@ -28,7 +28,7 @@ from iff_scheduler.export.html_writer import (
 )
 from iff_scheduler.export.panel_view import build_panel_views
 from iff_scheduler.export.room_view import build_room_views
-from iff_scheduler.export.xlsx_writer import write_applicants_xlsx, write_xlsx
+from iff_scheduler.export.xlsx_writer import write_applicants_xlsx, write_rooms_xlsx, write_xlsx
 from iff_scheduler.ingest.csv_source import CsvApplicantSource
 from iff_scheduler.ingest.validate import IngestResult, run_ingest, write_outputs
 from iff_scheduler.notify.audit import (
@@ -680,6 +680,7 @@ def publish(
             applicant_rows,
             applicant_preferences(applicants, grid.slots),
         )
+        write_rooms_xlsx(publish_dir / "rooms.xlsx", assignments)
     if "html" in wanted_formats:
         html_dir = publish_dir / "html"
         write_room_view_html(room_views, html_dir)

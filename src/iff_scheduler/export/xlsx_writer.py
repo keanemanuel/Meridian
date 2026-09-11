@@ -1,10 +1,16 @@
 """XLSX export (FR-53).
 
-`write_xlsx` builds the combined workbook — a sheet per room/day, an
-Applicants sheet, a sheet per panel, a Conflicts sheet — with the room/day
-sheets ordered day-then-division. `write_applicants_xlsx` builds a separate,
-single-sheet workbook that mirrors the web app's Applicants tab exactly as
-displayed (FR-51). The web "Download XLSX" action ships both in one ZIP.
+Three workbooks make up the web app's "Download XLSX" ZIP:
+
+* `write_xlsx` — one sheet per DIVISION, laid out the way the committee's
+  manual scheduling sheet reads: a day header ("Thursday, 17 September"),
+  then that day's rooms side by side as [Interviewer 1 | Interviewer 2 |
+  Room N] column groups, then the next day's block below it — plus an
+  Applicants sheet, a sheet per panel, and a Conflicts sheet.
+* `write_applicants_xlsx` — a single-sheet workbook mirroring the web app's
+  Applicants tab exactly as displayed (FR-51).
+* `write_rooms_xlsx` — a room-oriented overview: for each day, which
+  panels/divisions are running in each room, for someone walking the venue.
 
 Clashes are marked red (FR-54): a filled cell plus a coloured, bold font, so
 the flag survives both screen viewing and black-and-white printing. Amber
@@ -14,7 +20,9 @@ capacity warnings on the conflicts sheet get the equivalent amber treatment.
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from collections.abc import Sequence
+from datetime import date as Date
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -23,7 +31,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from iff_scheduler.domain.enums import Severity
-from iff_scheduler.domain.models import Conflict
+from iff_scheduler.domain.models import Assignment, Conflict
 from iff_scheduler.export.applicant_view import ApplicantChoiceView, ApplicantViewRow
 from iff_scheduler.export.panel_view import PanelView
 from iff_scheduler.export.room_view import RoomView
@@ -81,43 +89,109 @@ def _header_row(ws: Worksheet, values: list[str]) -> None:
         cell.fill = HEADER_FILL
 
 
+def _write_header_at(ws: Worksheet, row_idx: int, values: list[str]) -> None:
+    """Like `_header_row`, but for a header that doesn't start at row 1 — the
+    division and rooms sheets stack several day sections in one sheet."""
+    for c_idx, value in enumerate(values, start=1):
+        cell = ws.cell(row=row_idx, column=c_idx, value=value)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+
+
 def _natural_key(text: str) -> list[object]:
     """Sort key that reads embedded numbers as numbers ("Room 9" < "Room 10")."""
     return [int(tok) if tok.isdigit() else tok.lower() for tok in re.split(r"(\d+)", text)]
 
 
-def _room_view_order(view: RoomView) -> tuple[object, ...]:
-    """Day first (chronological — Thursday before Friday), then division
-    (alphabetical by code), then room. The schedule workbook walks its
-    room/day sheets in this order (FR-50)."""
-    divisions = sorted(d.value for d in view.panel_divisions.values())
-    return (view.date, divisions[0] if divisions else "", _natural_key(view.room_id))
+def _day_header_label(day: Date) -> str:
+    """ "Thursday, 17 September" — the day-block header above a division's or
+    the rooms overview's per-day section."""
+    return f"{day.strftime('%A')}, {day.day} {day.strftime('%B')}"
 
 
-def _write_room_sheet(wb: Workbook, view: RoomView) -> None:
-    ws = wb.create_sheet(_unique_sheet_name(wb, f"{view.room_id} {view.day_label}"))
-    _header_row(
-        ws,
-        ["Slot"] + [f"{pid} ({view.panel_divisions[pid].value})" for pid in view.panel_ids],
+def _build_division_blocks(
+    room_views: Sequence[RoomView],
+) -> dict[str, dict[Date, list[tuple[str, str, RoomView]]]]:
+    """division -> day -> [(room_id, panel_id, that room's day view), ...],
+    rooms sorted naturally within each day.
+
+    Regroups the same per-room-per-day views the timetable is built from
+    (CLAUDE.md invariant 2: the solver's own panel/division data, nothing
+    guessed) so a division reads as one sheet with a block per day, the
+    committee's manual scheduling layout. A room appears once per division
+    it hosts that day — room-exclusivity means a room never runs two panels
+    of the same division at once, so this can't double up a room."""
+    blocks: dict[str, dict[Date, list[tuple[str, str, RoomView]]]] = defaultdict(
+        lambda: defaultdict(list)
     )
-    for row in view.rows:
-        line = [f"{row.start_time.strftime('%H:%M')}-{row.end_time.strftime('%H:%M')}"]
-        for pid in view.panel_ids:
-            cell = row.cells[pid]
-            line.append(f"{cell.full_name} ({cell.sub_division})" if cell is not None else "")
-        ws.append(line)
+    for view in room_views:
+        for panel_id, division in view.panel_divisions.items():
+            blocks[division.value][view.date].append((view.room_id, panel_id, view))
+    for by_day in blocks.values():
+        for rooms in by_day.values():
+            rooms.sort(key=lambda t: _natural_key(t[0]))
+    return blocks
 
-    for r_idx, row in enumerate(view.rows, start=2):
-        for c_idx, pid in enumerate(view.panel_ids, start=2):
-            cell = row.cells[pid]
-            if cell is None:
-                continue
-            xl_cell = ws.cell(row=r_idx, column=c_idx)
-            if cell.is_clash:
-                xl_cell.fill = RED_FILL
-                xl_cell.font = RED_FONT
-            elif cell.is_locked:
-                xl_cell.font = LOCKED_FONT
+
+def _write_division_sheet(
+    wb: Workbook,
+    division: str,
+    day_blocks: dict[Date, list[tuple[str, str, RoomView]]],
+) -> None:
+    """One division's sheet: a day header row, then that day's rooms as
+    [Interviewer 1 | Interviewer 2 | Room N] column groups sharing one Time
+    column, one such block per day in date order. "Interviewer 1"/"Interviewer
+    2" are blank placeholder columns for the committee to fill in by hand —
+    the data model has no interviewer names to put there."""
+    ws = wb.create_sheet(_unique_sheet_name(wb, division))
+    row_idx = 1
+    for day in sorted(day_blocks):
+        rooms = day_blocks[day]
+        width = 1 + 3 * len(rooms)
+
+        day_cell = ws.cell(row=row_idx, column=1, value=_day_header_label(day))
+        day_cell.font = HEADER_FONT
+        day_cell.fill = HEADER_FILL
+        if width > 1:
+            ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=width)
+        row_idx += 1
+
+        headers = ["Time"]
+        for room_id, _panel_id, _view in rooms:
+            headers += ["Interviewer 1", "Interviewer 2", f"Room {room_id}"]
+        _write_header_at(ws, row_idx, headers)
+        row_idx += 1
+
+        # Every room shares this day's slot axis (build_room_views derives it
+        # from the same grid), so any room's row list gives the time column.
+        slot_axis = rooms[0][2].rows
+        rows_by_room = [{r.slot_id: r for r in view.rows} for _rid, _pid, view in rooms]
+
+        for slot in slot_axis:
+            ws.cell(
+                row=row_idx,
+                column=1,
+                value=f"{slot.start_time.strftime('%H:%M')}-{slot.end_time.strftime('%H:%M')}",
+            )
+            col = 2
+            for (_room_id, panel_id, _view), by_slot in zip(rooms, rows_by_room, strict=True):
+                slot_row = by_slot.get(slot.slot_id)
+                occupant = slot_row.cells.get(panel_id) if slot_row is not None else None
+                if occupant is not None:
+                    target = ws.cell(
+                        row=row_idx,
+                        column=col + 2,
+                        value=f"{occupant.full_name} ({occupant.sub_division})",
+                    )
+                    if occupant.is_clash:
+                        target.fill = RED_FILL
+                        target.font = RED_FONT
+                    elif occupant.is_locked:
+                        target.font = LOCKED_FONT
+                col += 3
+            row_idx += 1
+
+        row_idx += 1  # blank row between day blocks
     _autosize(ws)
 
 
@@ -250,16 +324,17 @@ def write_xlsx(
     panel_views: Sequence[PanelView],
     conflicts: Sequence[Conflict],
 ) -> None:
-    """Write one workbook: a sheet per room/day (ordered day-then-division),
-    an Applicants sheet, a sheet per panel, and a Conflicts sheet
-    (FR-50..FR-54)."""
+    """Write one workbook: a sheet per division (each day's rooms as a block,
+    Thursday above Friday — the committee's manual scheduling layout), an
+    Applicants sheet, a sheet per panel, and a Conflicts sheet (FR-50..FR-54)."""
     wb = Workbook()
     default_sheet = wb.active
     assert default_sheet is not None
     wb.remove(default_sheet)
 
-    for room_view in sorted(room_views, key=_room_view_order):
-        _write_room_sheet(wb, room_view)
+    division_blocks = _build_division_blocks(room_views)
+    for division in sorted(division_blocks):
+        _write_division_sheet(wb, division, division_blocks[division])
     _write_applicant_sheet(wb, applicant_rows)
     for panel_view in panel_views:
         _write_panel_sheet(wb, panel_view)
@@ -360,5 +435,65 @@ def write_applicants_xlsx(
                 cell.font = RED_FONT
     _autosize(ws)
 
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+
+
+_ROOMS_HEADER = ["Room", "Divisions running"]
+
+
+_RoomsByDay = dict[Date, dict[str, list[tuple[str, str]]]]
+
+
+def _rooms_by_day(assignments: Sequence[Assignment]) -> _RoomsByDay:
+    """day -> room -> sorted [(division, panel_id), ...] actually interviewing
+    there that day, straight from the run's own assignments (CLAUDE.md
+    invariant 3 — nothing guessed from a room/panel's static configuration)."""
+    grouped: dict[Date, dict[str, set[tuple[str, str]]]] = defaultdict(lambda: defaultdict(set))
+    for a in assignments:
+        grouped[a.date][a.room].add((a.division.value, a.panel_id))
+    return {
+        day: {room: sorted(pairs) for room, pairs in rooms.items()}
+        for day, rooms in grouped.items()
+    }
+
+
+def write_rooms_xlsx(path: Path, assignments: Sequence[Assignment]) -> None:
+    """Write a room-oriented overview, one section per day: every room that
+    has an interview that day, and which panels/divisions are running there.
+
+    A quick-scan reference for someone walking the venue — "what's happening
+    in this room today" — not a duplicate of the per-division timetables, so
+    it deliberately carries only room + division/panel, no times or names.
+    """
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = _sheet_name("Rooms")
+
+    by_day = _rooms_by_day(assignments)
+    row_idx = 1
+    for day in sorted(by_day):
+        day_cell = ws.cell(row=row_idx, column=1, value=_day_header_label(day))
+        day_cell.font = HEADER_FONT
+        day_cell.fill = HEADER_FILL
+        ws.merge_cells(
+            start_row=row_idx, start_column=1, end_row=row_idx, end_column=len(_ROOMS_HEADER)
+        )
+        row_idx += 1
+
+        _write_header_at(ws, row_idx, _ROOMS_HEADER)
+        row_idx += 1
+
+        rooms = by_day[day]
+        for room_id in sorted(rooms, key=_natural_key):
+            summary = ", ".join(f"{division} ({panel_id})" for division, panel_id in rooms[room_id])
+            ws.cell(row=row_idx, column=1, value=room_id)
+            ws.cell(row=row_idx, column=2, value=summary)
+            row_idx += 1
+
+        row_idx += 1  # blank row between days
+
+    _autosize(ws)
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)

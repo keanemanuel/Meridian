@@ -147,13 +147,22 @@ finishes, it writes an immutable folder under `runs/<timestamp>/` — the
 iffsched publish --run latest
 ```
 
-Writes `data/output/<run>/schedule.xlsx` (one workbook, multiple tabs:
-room views ordered day-then-division, the full applicant list, panel views)
-plus `data/output/<run>/applicants.xlsx` (the Applicants tab on its own —
-row number, declared preference, both interviews in time order) and matching
-HTML pages. The web app's "Download XLSX" hands you both spreadsheets zipped
-together. Clashes are highlighted **red** in the spreadsheets. Share these
-with room coordinators and panel leads.
+Writes three spreadsheets under `data/output/<run>/` plus matching HTML
+pages:
+
+* `schedule.xlsx` — one tab per division, laid out like the committee's
+  manual scheduling sheet: Thursday's rooms as column groups (Interviewer 1
+  / Interviewer 2 blanks to fill in by hand, plus the room and applicant),
+  Friday's block below it. Also carries the full applicant list and panel
+  tabs.
+* `applicants.xlsx` — the Applicants tab on its own (row number, declared
+  preference, both interviews in time order).
+* `rooms.xlsx` — a room-by-room, day-by-day overview of which
+  panels/divisions run where, for whoever's walking the venue.
+
+The web app's "Download XLSX" hands you all three zipped together. Clashes
+are highlighted **red** in the spreadsheets. Share these with room
+coordinators and panel leads.
 
 ---
 

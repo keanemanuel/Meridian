@@ -341,13 +341,13 @@ export const api = {
       timeoutMs: SOLVE_TIMEOUT_MS,
     }),
 
-  /** This run's published spreadsheets as one ZIP: `schedule.xlsx` (room /
-   * applicant / panel / conflicts, sheets ordered day-then-division) and
-   * `applicants.xlsx` (the Applicants tab as displayed). Publish writes both
-   * (Schedule! does it automatically), so they're usually already there. Not
-   * routed through `request()`: the response is a binary file, not JSON, so
-   * this fetches directly and mirrors `request()`'s own error handling by
-   * hand.
+  /** This run's published spreadsheets as one ZIP: `schedule.xlsx` (one
+   * sheet per division, each day's rooms as a block), `rooms.xlsx` (a
+   * room-by-room, day-by-day overview), and `applicants.xlsx` (the
+   * Applicants tab as displayed). Publish writes all three (Schedule! does
+   * it automatically), so they're usually already there. Not routed through
+   * `request()`: the response is a binary file, not JSON, so this fetches
+   * directly and mirrors `request()`'s own error handling by hand.
    *
    * `runId` should be a concrete run id, not "latest" — every caller already
    * has one (the just-solved run, or the run page's own id), and the

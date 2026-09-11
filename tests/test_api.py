@@ -311,9 +311,9 @@ def test_solve_without_applicants_is_404(client: TestClient, wsname: str) -> Non
     assert resp.status_code == 404
 
 
-def test_download_bundle_zips_schedule_and_applicants(client: TestClient, wsname: str) -> None:
-    """One "Download XLSX" click yields a ZIP holding both spreadsheets
-    (schedule + the Applicants tab export)."""
+def test_download_bundle_zips_all_three_spreadsheets(client: TestClient, wsname: str) -> None:
+    """One "Download XLSX" click yields a ZIP holding all three spreadsheets
+    (schedule, rooms, and the Applicants tab export)."""
     import io
     import zipfile
 
@@ -332,7 +332,7 @@ def test_download_bundle_zips_schedule_and_applicants(client: TestClient, wsname
     assert resp.headers["content-type"] == "application/zip"
     assert run_id in resp.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-        assert sorted(zf.namelist()) == ["applicants.xlsx", "schedule.xlsx"]
+        assert sorted(zf.namelist()) == ["applicants.xlsx", "rooms.xlsx", "schedule.xlsx"]
         assert all(zf.read(name)[:2] == b"PK" for name in zf.namelist())
 
 
