@@ -9,12 +9,10 @@ import type {
   CapacityCheck,
   IngestResult,
   IngestStatus,
-  InvitePreview,
   PatchAssignmentResult,
   PublishResult,
   RecoverResult,
   RejectedRow,
-  ResultPreview,
   RoomPanel,
   RunPanels,
   RunSummary,
@@ -370,30 +368,6 @@ export const api = {
     }
     return { blob: await res.blob(), filename: `${id} schedule ${runId}.xlsx` };
   },
-
-  invitePreview: (id: string, runId: string) =>
-    request<InvitePreview>(
-      `/workspaces/${seg(id)}/runs/${seg(runId)}/notify/invite/preview`,
-      { method: "POST" },
-    ),
-
-  inviteSend: (id: string, runId: string, confirmCount: number) =>
-    request<{ sent_total?: number; failed_total?: number; attempted?: number; message?: string }>(
-      `/workspaces/${seg(id)}/runs/${seg(runId)}/notify/invite/send`,
-      json({ confirm_count: confirmCount }),
-    ),
-
-  resultPreview: (id: string, runId: string) =>
-    request<ResultPreview>(
-      `/workspaces/${seg(id)}/runs/${seg(runId)}/notify/result/preview`,
-      { method: "POST" },
-    ),
-
-  resultSend: (id: string, runId: string, confirmCount: number, verifiedBy: string) =>
-    request<{ sent_total?: number; attempted?: number; message?: string }>(
-      `/workspaces/${seg(id)}/runs/${seg(runId)}/notify/result/send`,
-      json({ confirm_count: confirmCount, verified_by: verifiedBy }),
-    ),
 };
 
 /** Trigger the browser's native "Save As" for a blob already in memory —
@@ -411,13 +385,4 @@ export function saveBlob(blob: Blob, filename: string): void {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
-}
-
-/** The send endpoints reject a `confirm_count` that no longer matches the
- * ledger-filtered pending count, and put the real number in the message
- * (FR-62/FR-64). Pull it out so the UI can re-confirm against it instead of
- * making the user guess. */
-export function pendingCountFromError(err: ApiError): number | null {
-  const m = /!=\s*(\d+)\s*pending/.exec(err.message);
-  return m ? Number(m[1]) : null;
 }

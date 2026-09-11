@@ -130,20 +130,6 @@ export type PublishResult = {
   formats: string[];
 };
 
-export type InvitePreview = {
-  total: number;
-  auto_sendable: number;
-  held_for_manual: number;
-  emails_dir: string;
-  samples: { applicant_id: string; to_email: string; subject: string }[];
-};
-
-export type ResultPreview = {
-  counts: Record<string, number>;
-  emails_dir: string;
-  samples: { applicant_id: string; to_email: string; subject: string }[];
-};
-
 export type PatchAssignmentResult = {
   assignment: Assignment;
   locked: boolean;

@@ -9,7 +9,6 @@ import { MoveModal } from "@/components/MoveModal";
 import { PanelsView } from "@/components/PanelsView";
 import { RoomView, type MoveRequest } from "@/components/RoomView";
 import { RoomsView } from "@/components/RoomsView";
-import { SendModal } from "@/components/SendModal";
 import { useToast } from "@/components/Toast";
 import { Badge, Button, Spinner } from "@/components/ui";
 import { ApiError, api, saveBlob } from "@/lib/api";
@@ -56,7 +55,6 @@ export default function RunPage({
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [selected, setSelected] = useState<Assignment | null>(null);
-  const [sendKind, setSendKind] = useState<"invite" | "result" | null>(null);
   const [resolving, setResolving] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [moving, setMoving] = useState(false);
@@ -405,12 +403,6 @@ export default function RunPage({
         <span className="mr-auto text-xs text-neutral-500">
           Keeps all {locks} lock{locks === 1 ? "" : "s"} and re-optimises the rest.
         </span>
-        <Button onClick={() => setSendKind("invite")} disabled={busy}>
-          Send Invites
-        </Button>
-        <Button onClick={() => setSendKind("result")} disabled={busy}>
-          Send Results
-        </Button>
       </div>
 
       {selected && (
@@ -421,15 +413,6 @@ export default function RunPage({
           assignments={assignments}
           onClose={() => setSelected(null)}
           onMoved={load}
-        />
-      )}
-
-      {sendKind && (
-        <SendModal
-          kind={sendKind}
-          workspaceId={workspaceId}
-          runId={runId}
-          onClose={() => setSendKind(null)}
         />
       )}
 

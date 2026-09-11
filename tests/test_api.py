@@ -801,35 +801,6 @@ def test_move_onto_a_load_balanced_panel_survives_lost_run_metadata(
     assert resp.json()["assignment"]["panel_id"] == target["panel_id"]
 
 
-# --------------------------------------------------------------- notify
-
-
-def test_notify_invite_preview_renders(client: TestClient, wsname: str) -> None:
-    _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
-        "run_id"
-    ]
-
-    resp = client.post(f"/api/workspaces/{wsname}/runs/{run_id}/notify/invite/preview")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["total"] >= 1
-    assert body["auto_sendable"] + body["held_for_manual"] == body["total"]
-
-
-def test_notify_result_preview_without_scores_is_404(client: TestClient, wsname: str) -> None:
-    _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
-        "run_id"
-    ]
-
-    resp = client.post(f"/api/workspaces/{wsname}/runs/{run_id}/notify/result/preview")
-    assert resp.status_code == 404
-    assert "scores" in resp.json()["detail"].lower()
-
-
 # --------------------------------------------------------------- rename / delete
 
 
