@@ -836,6 +836,49 @@ def test_move_onto_a_load_balanced_panel_survives_lost_run_metadata(
     assert resp.json()["assignment"]["panel_id"] == target["panel_id"]
 
 
+def test_schedule_xlsx_renders_every_room_a_load_balanced_division_used(
+    client: TestClient, wsname: str
+) -> None:
+    """Regression: publish resolved panels from committed `panels.yaml` alone,
+    so a division `rebalance_panels`/`autoscale_panels` grew from one room to
+    several (real ids like `CREATIVE-A2`, each in its own room, SPEC.md §5.5)
+    rendered only its baseline room in schedule.xlsx — the extra rooms it
+    actually used that day never appeared, not even empty. 16 applicants
+    packed onto CREATIVE Thursday forces a real multi-panel, multi-room split
+    at solve time; the exported sheet must show a room-panel column for every
+    distinct room the run's own assignments actually used that day."""
+    import io
+    import zipfile
+
+    from openpyxl import load_workbook
+
+    _create_ws(client, wsname)
+    _write_concentrated_creative_applicants(wsname)
+
+    solved = client.post(f"/api/workspaces/{wsname}/solve", json={})
+    assert solved.status_code == 200, solved.text
+    run_id = solved.json()["run_id"]
+
+    rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    creative_rows = [r for r in rows if r["division"] == "CREATIVE"]
+    thu_rooms = sorted({r["room"] for r in creative_rows if r["slot_id"] in _THU_SLOTS})
+    assert len(thu_rooms) >= 2, f"expected a real multi-room split; rows: {creative_rows}"
+
+    published = client.post(
+        f"/api/workspaces/{wsname}/publish", json={"run": "latest", "formats": ["xlsx"]}
+    )
+    assert published.status_code == 200, published.text
+
+    resp = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/xlsx")
+    assert resp.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        wb = load_workbook(io.BytesIO(zf.read("schedule.xlsx")))
+    ws_creative = wb["CREATIVE"]
+    header = [c.value for c in ws_creative[2]]
+    rendered_rooms = {v for v in header if isinstance(v, str) and v.startswith("Room ")}
+    assert rendered_rooms == {f"Room {r}" for r in thu_rooms}
+
+
 # --------------------------------------------------------------- rename / delete
 
 

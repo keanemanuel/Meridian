@@ -22,6 +22,7 @@ from api.cli_helpers import (
     load_assignments,
     load_clean_applicants,
     load_locks,
+    resolve_run_panels,
     write_locks,
 )
 from api.dependencies import (
@@ -40,8 +41,8 @@ from iff_scheduler.domain.grid import SlotGrid, build_slot_grid
 from iff_scheduler.domain.models import Assignment, Panel
 from iff_scheduler.review.edit_validator import validate_edits
 from iff_scheduler.review.locks import lock_from_assignment, merge_locks
-from iff_scheduler.scheduling.base import resolve_panels, resolve_rooms
-from iff_scheduler.settings import PanelsConfig, Settings
+from iff_scheduler.scheduling.base import resolve_rooms
+from iff_scheduler.settings import Settings
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/runs/{run_id}", tags=["schedule"])
 
@@ -162,36 +163,16 @@ def _run_panels(
     re-solve never fixes it because the next solve regenerates the same extra
     panels and still never writes them to config.
 
-    Two layers, so the answer is right no matter what metadata survived:
-
-    1. The recorded solved set — ``metrics["solved_panels"]`` (this session
-       onward), else the legacy ``autoscale.json``, else committed config.
-       This carries the exact active-slot windows the solver used, so C4/C7
-       edit checks stay accurate for panels it covers.
-    2. A backfill from the run's *own assignments* for any panel id they place
-       an interview on that layer 1 missed — a pre-fix run, a run whose
-       directory a redeploy wiped and whose DB row predates ``solved_panels``,
-       or any other stale/absent record. These are the CURRENT live panels by
-       definition; nothing the run actually scheduled can be "unknown". Their
-       active slots are every grid slot on the day(s) the panel runs, within
-       its room's open days — matching how a load-balanced (`origin="balanced"`)
-       panel is resolved from its full-evening active window.
+    Built on top of `_resolve_run_panels` (the recorded solved set — this
+    session's `metrics["solved_panels"]`, else the legacy `autoscale.json`,
+    else committed config — plus a backfill from the run's own assignments
+    for any panel id even that record missed), so C4/C7 edit checks and
+    schedule.xlsx's room-panel layout can never disagree about which panels
+    a run actually used.
     """
-    entries: list[dict[str, Any]] | None = None
-
-    metrics = run_metrics
-    if metrics is None and run_dir is not None:
-        metrics_path = run_dir / "metrics.json"
-        if metrics_path.exists():
-            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-    if metrics and metrics.get("solved_panels"):
-        entries = metrics["solved_panels"]
-    elif run_dir is not None and (run_dir / "autoscale.json").exists():
-        legacy = json.loads((run_dir / "autoscale.json").read_text(encoding="utf-8"))
-        entries = legacy.get("panels") or None
-
-    panels_config = PanelsConfig.model_validate({"panels": entries}) if entries else settings.panels
-    panels = resolve_panels(panels_config, settings.rooms, grid)
+    panels = resolve_run_panels(
+        settings, grid, assignments, run_dir=run_dir, run_metrics=run_metrics
+    )
 
     known = {p.id for p in panels}
     all_dates = {slot.date for slot in grid.slots}
@@ -212,26 +193,6 @@ def _run_panels(
             )
         )
         known.add(entry["id"])
-
-    missing: dict[str, dict[str, Any]] = {}
-    for a in assignments:
-        if a.panel_id in known:
-            continue
-        meta = missing.setdefault(
-            a.panel_id, {"division": a.division, "room": a.room, "dates": set()}
-        )
-        meta["dates"].add(a.date)
-    for panel_id, meta in missing.items():
-        allowed = room_days.get(meta["room"], set(all_dates)) & meta["dates"]
-        active = [slot.slot_id for slot in grid.slots if slot.date in allowed]
-        panels.append(
-            Panel(
-                id=panel_id,
-                division=meta["division"],
-                room=meta["room"],
-                active_slot_ids=active,
-            )
-        )
 
     # Manual panel-to-room moves (Rooms tab drag-and-drop). Only the room
     # changes; the active-slot window is kept — the move endpoint only allows a

@@ -8,7 +8,7 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pandas as pd
 import typer
@@ -18,8 +18,8 @@ from rich.table import Table
 
 from iff_scheduler import workspace as ws
 from iff_scheduler.domain.enums import Decision, DivisionCode, SendStatus, Severity
-from iff_scheduler.domain.grid import build_slot_grid
-from iff_scheduler.domain.models import Applicant, Assignment, Conflict, SendLedgerEntry
+from iff_scheduler.domain.grid import SlotGrid, build_slot_grid
+from iff_scheduler.domain.models import Applicant, Assignment, Conflict, Panel, SendLedgerEntry
 from iff_scheduler.export.applicant_view import applicant_preferences, build_applicant_view
 from iff_scheduler.export.html_writer import (
     write_applicant_view_html,
@@ -90,7 +90,7 @@ from iff_scheduler.scheduling.postprocess import (
     diff_schedules,
 )
 from iff_scheduler.scheduling.solver_cpsat import CpSatSolver
-from iff_scheduler.settings import DEFAULT_CONFIG_DIR, Settings, load_settings
+from iff_scheduler.settings import DEFAULT_CONFIG_DIR, PanelsConfig, Settings, load_settings
 from iff_scheduler.workspace import DEFAULT_WORKSPACE, load_workspaces
 from iff_scheduler.workspace import create_workspace as _create_workspace
 
@@ -397,6 +397,75 @@ def _build_problem(
     )
 
 
+def _resolve_run_panels(
+    settings: Settings,
+    grid: SlotGrid,
+    assignments: list[Assignment],
+    *,
+    run_dir: Path | None = None,
+    run_metrics: dict[str, Any] | None = None,
+) -> list[Panel]:
+    """The panel set a solved run was actually placed against — for exporting
+    or re-validating that run, never for building a fresh `SolveProblem`
+    (`_build_problem` above solves against committed config; the panels
+    below are what that solve, plus the load-balancer, ended up using).
+
+    `rebalance_panels`/`autoscale_panels` add panels beyond committed config
+    before CP-SAT ever runs (SPEC.md §5.5) — ids like `MEDMARDOC-A2`, each in
+    its own room. Publishing against the bare committed config silently
+    drops every room those added: a division that grew from one room to
+    three renders only its baseline room's panel, with the other rooms it
+    actually used never appearing at all (not even as an empty placeholder —
+    `build_room_views` never learns those rooms host a panel of this
+    division on this day).
+
+    Two layers, so the answer is right no matter what metadata survived:
+
+    1. The recorded solved set — `metrics["solved_panels"]` (this session
+       onward), else the legacy `autoscale.json`, else committed config.
+    2. A backfill from the run's own assignments for any panel id even that
+       record missed (a pre-fix run, or a run directory a redeploy wiped).
+       These are the CURRENT live panels by definition — nothing the run
+       actually scheduled can be "unknown". Active slots are every grid slot
+       on the day(s) the assignment's own room is open that the panel was
+       actually used on, matching how a load-balanced panel is resolved.
+    """
+    entries: list[dict[str, Any]] | None = None
+    metrics = run_metrics
+    if metrics is None and run_dir is not None:
+        metrics_path = run_dir / "metrics.json"
+        if metrics_path.exists():
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    if metrics and metrics.get("solved_panels"):
+        entries = metrics["solved_panels"]
+    elif run_dir is not None and (run_dir / "autoscale.json").exists():
+        legacy = json.loads((run_dir / "autoscale.json").read_text(encoding="utf-8"))
+        entries = legacy.get("panels") or None
+
+    panels_config = PanelsConfig.model_validate({"panels": entries}) if entries else settings.panels
+    panels = resolve_panels(panels_config, settings.rooms, grid)
+
+    known = {p.id for p in panels}
+    all_dates = {slot.date for slot in grid.slots}
+    room_days = {r.id: (set(r.days) if r.days else set(all_dates)) for r in settings.rooms.rooms}
+
+    missing: dict[str, dict[str, Any]] = {}
+    for a in assignments:
+        if a.panel_id in known:
+            continue
+        meta = missing.setdefault(
+            a.panel_id, {"division": a.division, "room": a.room, "dates": set()}
+        )
+        meta["dates"].add(a.date)
+    for panel_id, meta in missing.items():
+        allowed = room_days.get(meta["room"], set(all_dates)) & meta["dates"]
+        active = [slot.slot_id for slot in grid.slots if slot.date in allowed]
+        panels.append(
+            Panel(id=panel_id, division=meta["division"], room=meta["room"], active_slot_ids=active)
+        )
+    return panels
+
+
 @app.command()
 def solve(
     input_path: Path = typer.Option(
@@ -656,9 +725,12 @@ def publish(
     settings = load_settings(config_dir)
     grid = build_slot_grid(settings.event)
     applicants = _load_clean_applicants(resolved_input_path)
-    panels = resolve_panels(settings.panels, settings.rooms, grid)
-    rooms = resolve_rooms(settings.rooms, grid)
     assignments = _load_assignments(assignments_path)
+    # The run's actual solved panel set, not the bare committed config — a
+    # division the load-balancer grew from one room to several would
+    # otherwise render only its baseline room (see _resolve_run_panels).
+    panels = _resolve_run_panels(settings, grid, assignments, run_dir=run_dir)
+    rooms = resolve_rooms(settings.rooms, grid)
 
     resolved_run_id = run_dir.resolve().name
     publish_dir = out_dir if out_dir is not None else ws.output_dir(workspace) / resolved_run_id

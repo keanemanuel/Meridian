@@ -15,7 +15,12 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from api.cli_helpers import conflicts_frame, load_assignments, load_clean_applicants
+from api.cli_helpers import (
+    conflicts_frame,
+    load_assignments,
+    load_clean_applicants,
+    resolve_run_panels,
+)
 from api.dependencies import (
     ensure_run_exists,
     get_settings,
@@ -44,7 +49,7 @@ from iff_scheduler.ingest.validate import (
     run_ingest,
     write_outputs,
 )
-from iff_scheduler.scheduling.base import resolve_panels, resolve_rooms
+from iff_scheduler.scheduling.base import resolve_rooms
 from iff_scheduler.scheduling.postprocess import build_conflicts
 from iff_scheduler.settings import Settings
 
@@ -291,9 +296,12 @@ def publish(
 
     grid = build_slot_grid(settings.event)
     applicants = load_clean_applicants(applicants_path)
-    panels = resolve_panels(settings.panels, settings.rooms, grid)
-    rooms = resolve_rooms(settings.rooms, grid)
     assignments = load_assignments(assignments_path)
+    # The run's actual solved panel set, not the bare committed config — a
+    # division the load-balancer grew from one room to several would
+    # otherwise render only its baseline room (see _resolve_run_panels).
+    panels = resolve_run_panels(settings, grid, assignments, run_dir=run_dir)
+    rooms = resolve_rooms(settings.rooms, grid)
 
     resolved_run_id = run_dir.resolve().name
     publish_dir = ws.output_dir(workspace_id) / resolved_run_id
