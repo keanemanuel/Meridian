@@ -233,16 +233,9 @@ def test_recover_refuses_a_non_recoverable_row(client: TestClient, wsname: str) 
     assert resp.status_code == 409
 
 
-def test_check_before_ingest_is_404(client: TestClient, wsname: str) -> None:
-    _create_ws(client, wsname)
-    resp = client.post(f"/api/workspaces/{wsname}/check")
-    assert resp.status_code == 404
-    assert "detail" in resp.json()
-
-
 def test_ingest_status_reflects_whether_applicants_exist(client: TestClient, wsname: str) -> None:
-    """The UI gates Check / Schedule on this so it never fires them just to
-    get "Run ingest first" back."""
+    """The UI gates Schedule! on this so it never fires it just to get "Run
+    ingest first" back."""
     _create_ws(client, wsname)
     before = client.get(f"/api/workspaces/{wsname}/ingest-status")
     assert before.status_code == 200
@@ -254,17 +247,6 @@ def test_ingest_status_reflects_whether_applicants_exist(client: TestClient, wsn
     body = after.json()
     assert body["ingested"] is True
     assert body["applicants"] >= 1
-
-
-def test_check_after_ingest_returns_advisor_table(client: TestClient, wsname: str) -> None:
-    _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    resp = client.post(f"/api/workspaces/{wsname}/check")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert isinstance(body["feasible"], bool)
-    assert len(body["rows"]) >= 1
-    assert {"division", "demand", "verdict"} <= set(body["rows"][0])
 
 
 def test_solve_publish_and_assignments_flow(client: TestClient, wsname: str) -> None:
@@ -894,7 +876,9 @@ def test_rename_workspace_moves_its_data_with_it(client: TestClient, wsname: str
     assert client.get(f"/api/workspaces/{wsname}").status_code == 404
     assert client.get(f"/api/workspaces/{new_name}").status_code == 200
     # The applicants moved too, so the pipeline still works under the new name.
-    assert client.post(f"/api/workspaces/{new_name}/check").status_code == 200
+    status = client.get(f"/api/workspaces/{new_name}/ingest-status")
+    assert status.status_code == 200
+    assert status.json()["ingested"] is True
 
 
 def test_rename_onto_an_existing_name_is_a_409(client: TestClient, wsname: str) -> None:

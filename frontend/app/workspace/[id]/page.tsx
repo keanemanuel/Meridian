@@ -12,14 +12,13 @@ import { ApiError, api, saveBlob } from "@/lib/api";
 import { formatRunId } from "@/lib/schedule";
 import type {
   Assignment,
-  CapacityCheck,
   RejectedRow,
   RunSummary,
   SolveResult,
   WorkspaceMeta,
 } from "@/lib/types";
 
-type Action = "import" | "check" | "solve" | "download";
+type Action = "import" | "solve" | "download";
 type Tab = "runs" | "rejected";
 
 export default function WorkspacePage({
@@ -40,13 +39,11 @@ export default function WorkspacePage({
   const [loadError, setLoadError] = useState<string | null>(null);
   /** Whether applicants have been ingested for this workspace. `null` = not
    * known yet (still loading, or the status call failed) — only an explicit
-   * `false` disables Check Capacity / Schedule!, so a status hiccup never
-   * locks the controls. */
+   * `false` disables Schedule!, so a status hiccup never locks the control. */
   const [ingested, setIngested] = useState<boolean | null>(null);
 
   const [busy, setBusy] = useState<Action | null>(null);
   const [showImport, setShowImport] = useState(false);
-  const [capacity, setCapacity] = useState<CapacityCheck | null>(null);
   /** Set when solve came back 409 INFEASIBLE — the user may override (E-06). */
   const [infeasible, setInfeasible] = useState<string | null>(null);
   /** Latest run's assignments, shown inline below. Publish runs as part of
@@ -72,7 +69,7 @@ export default function WorkspacePage({
       const status = await api.ingestStatus(workspaceId);
       setIngested(status.ingested);
     } catch {
-      // A status hiccup shouldn't lock Check / Schedule — leave it "unknown".
+      // A status hiccup shouldn't lock Schedule — leave it "unknown".
       setIngested(null);
     }
   }, [workspaceId]);
@@ -103,8 +100,7 @@ export default function WorkspacePage({
     let cancelled = false;
     void (async () => {
       setLoading(true);
-      // A capacity table and schedule belong to the workspace they were run for.
-      setCapacity(null);
+      // The schedule belongs to the workspace it was run for.
       setSchedule(null);
       setIngested(null);
       try {
@@ -140,25 +136,6 @@ export default function WorkspacePage({
       toast.fromError(err, "Recover failed.");
     } finally {
       setRecovering(null);
-    }
-  };
-
-  const runCheck = async () => {
-    setBusy("check");
-    try {
-      const result = await api.check(workspaceId);
-      setCapacity(result);
-      if (result.feasible) {
-        toast.success("Capacity looks feasible for every division.");
-      } else {
-        toast.error(
-          `INFEASIBLE for ${result.infeasible_divisions.join(", ")}. Add panels before solving.`,
-        );
-      }
-    } catch (err) {
-      toast.fromError(err, "Capacity check failed.");
-    } finally {
-      setBusy(null);
     }
   };
 
@@ -253,18 +230,6 @@ export default function WorkspacePage({
           Import Data
         </Button>
         <Button
-          onClick={runCheck}
-          loading={busy === "check"}
-          disabled={busy !== null || ingested === false}
-          title={
-            ingested === false
-              ? "Import applicant data first"
-              : "Run the Capacity Advisor before solving"
-          }
-        >
-          Check Capacity
-        </Button>
-        <Button
           variant="primary"
           onClick={() => runSolve(false)}
           loading={busy === "solve"}
@@ -291,7 +256,7 @@ export default function WorkspacePage({
 
       {ingested === false && (
         <p className="mt-2 text-xs text-neutral-500">
-          Import applicant data to enable Check Capacity and Schedule.
+          Import applicant data to enable Schedule.
         </p>
       )}
 
@@ -315,8 +280,6 @@ export default function WorkspacePage({
           </span>
         </div>
       )}
-
-      {capacity && <CapacityTable check={capacity} />}
 
       <section className="mt-10">
         <div className="mb-3 flex items-center gap-1 border-b border-neutral-200">
@@ -554,60 +517,3 @@ function RejectedTable({
   );
 }
 
-function CapacityTable({ check }: { check: CapacityCheck }) {
-  return (
-    <section className="mt-6 overflow-hidden rounded-lg border border-neutral-200 bg-white">
-      <div className="flex items-center gap-2 border-b border-neutral-200 px-4 py-2.5">
-        <h2 className="text-sm font-semibold text-neutral-900">
-          Capacity Advisor
-        </h2>
-        <Badge tone={check.feasible ? "green" : "red"}>
-          {check.feasible ? "FEASIBLE" : "INFEASIBLE"}
-        </Badge>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500">
-            <tr>
-              {["Division", "Demand", "Panels", "Raw supply", "Effective", "Recommended", "Verdict"].map(
-                (h) => (
-                  <th key={h} className="px-4 py-2 text-left font-medium">
-                    {h}
-                  </th>
-                ),
-              )}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-neutral-100">
-            {check.rows.map((row) => {
-              const bad = row.verdict === "INFEASIBLE";
-              return (
-                <tr key={row.division} className={bad ? "bg-red-100" : ""}>
-                  <td className="px-4 py-2 font-medium text-neutral-800">
-                    {row.division}
-                  </td>
-                  <td className="px-4 py-2 text-neutral-700">{row.demand}</td>
-                  <td className="px-4 py-2 text-neutral-700">
-                    {row.panels_configured}
-                  </td>
-                  <td className="px-4 py-2 text-neutral-700">{row.raw_supply}</td>
-                  <td className="px-4 py-2 text-neutral-700">
-                    {row.effective_supply}
-                  </td>
-                  <td className="px-4 py-2 text-neutral-700">
-                    {row.recommended_panels}
-                  </td>
-                  <td
-                    className={`px-4 py-2 font-medium ${bad ? "text-red-600" : "text-neutral-700"}`}
-                  >
-                    {row.verdict}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}

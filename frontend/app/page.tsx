@@ -20,10 +20,6 @@ export default function Home() {
             "Upload a CSV export of the Google Form responses.",
           ],
           [
-            "Check Capacity",
-            "Per-division demand against supply, before any scheduling.",
-          ],
-          [
             "Schedule!",
             "Place every applicant's two interviews on the grid.",
           ],
