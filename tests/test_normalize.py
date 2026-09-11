@@ -79,6 +79,34 @@ def test_preferred_dates_blank_or_unmatched_is_empty() -> None:
     assert parse_preferred_dates("Sometime next week", _two_day_event()) == {}
 
 
+def test_preferred_dates_reads_short_day_labels_without_collapsing_to_thursday() -> None:
+    # The committee's Applicants tab stores the same short form this codebase
+    # renders (summarise_availability): "Thu 17 Sep" / "Fri 18 Sep". Each must
+    # round-trip to exactly the day chosen — a "Fri 18 Sep" cell is Friday
+    # only, never a silent fall-back to the first/Thursday day.
+    thu = _two_day_event()
+    assert parse_preferred_dates("Thu 17 Sep", thu) == {
+        date(2026, 9, 17): [(time(18, 0), time(19, 0))]
+    }
+    assert parse_preferred_dates("Fri 18 Sep", thu) == {
+        date(2026, 9, 18): [(time(17, 0), time(18, 0))]
+    }
+    assert set(parse_preferred_dates("Thu 17 Sep; Fri 18 Sep", thu)) == {
+        date(2026, 9, 17),
+        date(2026, 9, 18),
+    }
+
+
+def test_preferred_dates_short_label_does_not_cross_match_full_name() -> None:
+    # "Thu" is matched on a word boundary, so a bare "Thursday" cell resolves
+    # via the weekday name and does not also drag in a "Thu"-labelled day by
+    # substring, nor vice versa.
+    assert set(parse_preferred_dates("Thursday", _two_day_event())) == {date(2026, 9, 17)}
+    assert parse_preferred_dates("Friday only please", _two_day_event()) == {
+        date(2026, 9, 18): [(time(17, 0), time(18, 0))]
+    }
+
+
 def test_parse_row_full_day_availability_covers_every_slot_that_day() -> None:
     event = _two_day_event()
     grid = build_slot_grid(event)
@@ -92,6 +120,25 @@ def test_parse_row_full_day_availability_covers_every_slot_that_day() -> None:
     }
     row = parse_row(raw, 1, event, DIVISIONS, grid)
     assert row.submitted_at == datetime(2026, 8, 20, 15, 45)
+    assert row.availability_slots == ["2026-09-18_1700", "2026-09-18_1720", "2026-09-18_1740"]
+
+
+def test_parse_row_short_friday_label_yields_friday_slots_only() -> None:
+    # Regression: a "Fri 18 Sep" cell (the Applicants-tab short form) must feed
+    # the solver Friday availability only. Before the fix it parsed to nothing,
+    # tripped the NO_AVAILABILITY full-event fall-back, and made the applicant
+    # look available all of Thursday too.
+    event = _two_day_event()
+    grid = build_slot_grid(event)
+    raw = {
+        "Timestamp": "8/20/2026 15:45:00",
+        "Email Address": "ayu@example.com",
+        "Full Name": "Ayu",
+        "First Preference": "Creative",
+        "Second Preference": "WebMaster",
+        "Preferred Interview Date": "Fri 18 Sep",
+    }
+    row = parse_row(raw, 1, event, DIVISIONS, grid)
     assert row.availability_slots == ["2026-09-18_1700", "2026-09-18_1720", "2026-09-18_1740"]
 
 

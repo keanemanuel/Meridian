@@ -118,17 +118,6 @@ def resolve_columns(raw: Mapping[str, str]) -> dict[str, str]:
     return resolved
 
 
-_WEEKDAYS = (
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
-)
-
-
 @dataclass
 class ParsedRow:
     """One CSV row after parsing, before any rejection rule is applied."""
@@ -170,22 +159,32 @@ def parse_preferred_dates(raw: str, event: EventConfig) -> dict[Date, list[tuple
     """Turn a "Preferred Interview Date" cell into per-day availability windows.
 
     Cells look like "Thursday, 18 September 2025" (a single value, or several
-    comma-joined if the form allowed multiple picks). Every weekday name found
-    that matches an event day makes that whole day available — the window is
+    comma-joined if the form allowed multiple picks). The committee's Applicants
+    tab also stores the short form this codebase renders elsewhere —
+    "Thu 17 Sep", "Fri 18 Sep", or "Thu 17 Sep; Fri 18 Sep" (see
+    `domain/availability.summarise_availability`) — so both the full weekday
+    name *and* the configured day label (e.g. "Thu"/"Fri") are matched, each on
+    a whole-word boundary so "Thu" does not also fire on "Thursday" and vice
+    versa. Every event day named makes that whole day available — the window is
     the day's configured opening hours, so the solver may place the interview
-    in any slot that day. An empty or unrecognised cell yields no availability,
-    which `validate.py` turns into a NO_AVAILABILITY rejection (E-02) rather
-    than a guess.
+    in any slot that day. Days not named are left out entirely: a "Fri 18 Sep"
+    cell yields Friday only, never a fallback to the first/Thursday day. An
+    empty or unrecognised cell yields no availability, which `validate.py`
+    turns into a NO_AVAILABILITY warning (E-02) rather than a guess.
     """
     text = (raw or "").lower()
     if not text:
         return {}
-    named = {w for w in _WEEKDAYS if re.search(rf"\b{re.escape(w)}\b", text)}
-    return {
-        day.date: [(day.start, day.end)]
-        for day in event.days
-        if day.date.strftime("%A").lower() in named
-    }
+
+    def named(token: str) -> bool:
+        token = token.strip().lower()
+        return bool(token) and re.search(rf"\b{re.escape(token)}\b", text) is not None
+
+    windows: dict[Date, list[tuple[Time, Time]]] = {}
+    for day in event.days:
+        if named(day.date.strftime("%A")) or named(day.label):
+            windows[day.date] = [(day.start, day.end)]
+    return windows
 
 
 def merge_windows(windows: list[tuple[Time, Time]]) -> list[tuple[Time, Time]]:
