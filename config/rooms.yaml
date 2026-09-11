@@ -1,58 +1,74 @@
 # Real IFF room allocation. Different rooms are available on each evening;
-# 2018 and 2019 are the only rooms booked for both. `days` empty would mean
-# "every day" — here every room states its day(s) explicitly.
+# 2019 is the only room booked for both (2018 was too, until it was converted
+# to a waiting room below — see that entry's comment).
 #
-# Every room can host any division (there is no per-room division split in the
-# real booking), so `divisions` lists all of them.
+# Every interview room can host any division (there is no per-room division
+# split in the real booking), so `divisions` lists all of them.
 #
 # `max_concurrent_panels` is a HARD CEILING, not a target. Physically every
-# room here fits up to 4 interview stations running at once, so every room is
-# set to 4 and the solver / load-balancer picks the actual number per evening
-# (typically 3-4, sometimes fewer) from real applicant demand — nothing is
-# hard-coded lower. 4 is the absolute maximum: `settings.RoomEntry` refuses to
-# load a value above `ROOM_CONCURRENCY_CEILING` (4), and CP-SAT enforces it as
-# a hard constraint (C4, solver_cpsat.py) so no solved schedule ever exceeds it.
+# room here fits up to 5 interview stations running at once, so every
+# interview room is set to 5 and the solver / load-balancer picks the actual
+# number per evening (typically 3-4, sometimes fewer, occasionally a 5th when
+# genuinely needed) from real applicant demand — nothing is hard-coded lower.
+# 5 is the absolute maximum: `settings.RoomEntry` refuses to load a value
+# above `ROOM_CONCURRENCY_CEILING` (5), and CP-SAT enforces it as a hard
+# constraint (C4, solver_cpsat.py) so no solved schedule ever exceeds it.
+# Ceiling was raised 4 -> 5 when Room 2018 dropped out of the interview pool
+# (Thursday 6 -> 5 rooms, Friday 5 -> 4 rooms) to give the remaining rooms
+# headroom to absorb the lost capacity.
 #
-# If a specific room genuinely cannot fit 4 (a real physical limit — furniture,
+# If a specific room genuinely cannot fit 5 (a real physical limit — furniture,
 # power, noise), drop that one room's value and add a comment saying so: it is
 # then a deliberate exception, not an accidental default. None apply today.
 rooms:
   # ---- Thursday 2026-09-17 ----
   - id: "2016"
-    max_concurrent_panels: 4
+    max_concurrent_panels: 5
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-17]
   - id: "2017"
-    max_concurrent_panels: 4
+    max_concurrent_panels: 5
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-17]
   - id: "2020"
-    max_concurrent_panels: 4
+    max_concurrent_panels: 5
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-17]
   - id: "3013"
-    max_concurrent_panels: 4
+    max_concurrent_panels: 5
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-17]
   # ---- Friday 2026-09-18 ----
   - id: "2014"
-    max_concurrent_panels: 4
+    max_concurrent_panels: 5
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-18]
   - id: "2015"
-    max_concurrent_panels: 4
+    max_concurrent_panels: 5
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-18]
   - id: "3033"
-    max_concurrent_panels: 4
+    max_concurrent_panels: 5
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-18]
   # ---- Both evenings ----
-  - id: "2018"
-    max_concurrent_panels: 4
+  - id: "2019"
+    max_concurrent_panels: 5
     divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
     days: [2026-09-17, 2026-09-18]
-  - id: "2019"
-    max_concurrent_panels: 4
-    divisions: [MEDMARDOC, CREATIVE, LOGISTICS, LIAISON, FNB, PROGRAM]
+
+  # ---- Waiting room (permanent — not part of the interview pool) ----
+  # Room 2018 is converted to a waiting room for BOTH event days: no panel,
+  # no interview, no schedule of any kind is ever placed here. `divisions: []`
+  # + `interview_room: false` together keep it out of `_pick_panel_room` /
+  # `rebalance_panels` / `autoscale_panels` / CP-SAT entirely (settings.py
+  # rejects a waiting room with a non-empty `divisions`, so this can't drift
+  # back into the pool by accident). It still appears in Rooms.xlsx / Room
+  # View / the Rooms tab as a venue landmark, labelled "Waiting Room", with
+  # zero schedule — see `export/room_view.py` / `export/xlsx_writer.py`.
+  - id: "2018"
+    label: "Waiting Room"
+    interview_room: false
+    max_concurrent_panels: 1
+    divisions: []
     days: [2026-09-17, 2026-09-18]

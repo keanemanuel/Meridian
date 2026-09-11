@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Room {{ room_id }} — {{ day_label }}</title>
+<title>{{ room_label or ("Room " ~ room_id) }} — {{ day_label }}</title>
 <style>
   body { font-family: Arial, Helvetica, sans-serif; margin: 24px; color: #111; }
   h1 { font-size: 18px; margin-bottom: 4px; }
@@ -17,8 +17,9 @@
 </style>
 </head>
 <body>
-  <h1>Room {{ room_id }} — {{ day_label }}</h1>
+  <h1>{{ room_label or ("Room " ~ room_id) }} — {{ day_label }}</h1>
   <h2>{{ date }}</h2>
+  {% if not panel_ids %}<p><em>Waiting room — no interviews scheduled here.</em></p>{% endif %}
   <table>
     <thead>
       <tr>

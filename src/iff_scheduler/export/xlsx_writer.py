@@ -31,7 +31,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from iff_scheduler.domain.enums import Severity
-from iff_scheduler.domain.models import Assignment, Conflict
+from iff_scheduler.domain.models import Assignment, Conflict, Room
 from iff_scheduler.export.applicant_view import ApplicantChoiceView, ApplicantViewRow
 from iff_scheduler.export.panel_view import PanelView
 from iff_scheduler.export.room_view import RoomView
@@ -458,13 +458,22 @@ def _rooms_by_day(assignments: Sequence[Assignment]) -> _RoomsByDay:
     }
 
 
-def write_rooms_xlsx(path: Path, assignments: Sequence[Assignment]) -> None:
+def write_rooms_xlsx(
+    path: Path,
+    assignments: Sequence[Assignment],
+    rooms: Sequence[Room] | None = None,
+) -> None:
     """Write a room-oriented overview, one section per day: every room that
     has an interview that day, and which panels/divisions are running there.
 
     A quick-scan reference for someone walking the venue — "what's happening
     in this room today" — not a duplicate of the per-division timetables, so
     it deliberately carries only room + division/panel, no times or names.
+
+    `rooms` (optional, e.g. `resolve_rooms(settings.rooms, grid)`) adds one row
+    per day for every room outside the interview pool (`interview_room=False`,
+    e.g. a waiting room) so it still appears — labelled, with an empty summary
+    — instead of silently vanishing because it never has an assignment.
     """
     wb = Workbook()
     ws = wb.active
@@ -472,8 +481,11 @@ def write_rooms_xlsx(path: Path, assignments: Sequence[Assignment]) -> None:
     ws.title = _sheet_name("Rooms")
 
     by_day = _rooms_by_day(assignments)
+    landmark_rooms = [r for r in (rooms or []) if not r.interview_room]
+    all_days = set(by_day) | {day for r in landmark_rooms for day in r.days}
+
     row_idx = 1
-    for day in sorted(by_day):
+    for day in sorted(all_days):
         day_cell = ws.cell(row=row_idx, column=1, value=_day_header_label(day))
         day_cell.font = HEADER_FONT
         day_cell.fill = HEADER_FILL
@@ -485,11 +497,18 @@ def write_rooms_xlsx(path: Path, assignments: Sequence[Assignment]) -> None:
         _write_header_at(ws, row_idx, _ROOMS_HEADER)
         row_idx += 1
 
-        rooms = by_day[day]
-        for room_id in sorted(rooms, key=_natural_key):
-            summary = ", ".join(f"{division} ({panel_id})" for division, panel_id in rooms[room_id])
-            ws.cell(row=row_idx, column=1, value=room_id)
-            ws.cell(row=row_idx, column=2, value=summary)
+        room_rows = dict(by_day.get(day, {}))
+        labels = {room_id: room_id for room_id in room_rows}
+        for room in landmark_rooms:
+            if day in room.days:
+                room_rows.setdefault(room.id, [])
+                labels[room.id] = room.label or room.id
+        for room_id in sorted(room_rows, key=_natural_key):
+            summary = ", ".join(
+                f"{division} ({panel_id})" for division, panel_id in room_rows[room_id]
+            )
+            ws.cell(row=row_idx, column=1, value=labels[room_id])
+            ws.cell(row=row_idx, column=2, value=summary or "— Waiting Room, no interviews —")
             row_idx += 1
 
         row_idx += 1  # blank row between days

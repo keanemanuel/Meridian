@@ -439,13 +439,32 @@ def test_committed_rooms_stay_within_the_hard_concurrency_ceiling() -> None:
 
 
 def test_rooms_config_rejects_a_concurrency_above_the_ceiling() -> None:
-    """A rooms.yaml value over 4 fails at load, not deep in the solver
-    (CLAUDE.md: fail loudly on malformed config)."""
+    """A rooms.yaml value over the ceiling (5) fails at load, not deep in the
+    solver (CLAUDE.md: fail loudly on malformed config)."""
     with pytest.raises(ValidationError):
         RoomsConfig.model_validate(
             {
                 "rooms": [
-                    {"id": "X", "max_concurrent_panels": 5, "divisions": ["FNB"]},
+                    {"id": "X", "max_concurrent_panels": 6, "divisions": ["FNB"]},
+                ]
+            }
+        )
+
+
+def test_rooms_config_rejects_a_waiting_room_with_divisions() -> None:
+    """`interview_room: false` (a waiting room) plus a non-empty `divisions`
+    is a contradiction — the load-balancer both can and cannot place a panel
+    there — and is rejected at load rather than silently ignored."""
+    with pytest.raises(ValidationError):
+        RoomsConfig.model_validate(
+            {
+                "rooms": [
+                    {
+                        "id": "X",
+                        "max_concurrent_panels": 1,
+                        "divisions": ["FNB"],
+                        "interview_room": False,
+                    },
                 ]
             }
         )

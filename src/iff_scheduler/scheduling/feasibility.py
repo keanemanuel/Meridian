@@ -239,7 +239,9 @@ def _rooms_for_division_on_day(
     return [
         r
         for r in rooms.rooms
-        if division in r.divisions and day in room_dates.get(r.id, set(event_dates))
+        if r.interview_room
+        and division in r.divisions
+        and day in room_dates.get(r.id, set(event_dates))
     ]
 
 

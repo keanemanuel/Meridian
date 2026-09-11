@@ -41,6 +41,7 @@ def write_room_view_html(
     for view in room_views:
         html = template.render(
             room_id=view.room_id,
+            room_label=view.room_label,
             date=view.date.isoformat(),
             day_label=view.day_label,
             panel_ids=view.panel_ids,

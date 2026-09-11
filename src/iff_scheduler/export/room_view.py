@@ -51,6 +51,11 @@ class RoomView:
     panel_ids: list[str]  # column order, deterministic
     panel_divisions: dict[str, DivisionCode]
     rows: list[RoomViewRow]
+    # False for a room outside the interview pool (e.g. a waiting room) —
+    # `panel_ids`/`rows` are always empty on those; it exists purely as a venue
+    # landmark. Friendly display name in `room_label` (falls back to `room_id`).
+    interview_room: bool = True
+    room_label: str | None = None
 
 
 def build_room_views(
@@ -59,7 +64,10 @@ def build_room_views(
     rooms: Sequence[Room],
     slots: Sequence[Slot],
 ) -> list[RoomView]:
-    """Build one `RoomView` per (room, day) that has at least one panel."""
+    """Build one `RoomView` per (room, day) that has at least one panel, plus
+    one empty landmark `RoomView` per day for every room outside the interview
+    pool (`interview_room=False`, e.g. a waiting room) — so it still shows up
+    in room-oriented exports with zero schedule instead of vanishing."""
     panels_by_room: dict[str, list[Panel]] = defaultdict(list)
     for panel in panels:
         panels_by_room[panel.room].append(panel)
@@ -74,6 +82,27 @@ def build_room_views(
     for room in rooms:
         room_panels = sorted(panels_by_room.get(room.id, []), key=lambda p: p.id)
         if not room_panels:
+            if not room.interview_room:
+                for day in dates:
+                    if room.days and day not in room.days:
+                        continue
+                    day_slots = sorted(
+                        (s for s in slots if s.date == day), key=lambda s: s.slot_index
+                    )
+                    if not day_slots:
+                        continue
+                    views.append(
+                        RoomView(
+                            room_id=room.id,
+                            date=day,
+                            day_label=day_slots[0].day_label,
+                            panel_ids=[],
+                            panel_divisions={},
+                            rows=[],
+                            interview_room=False,
+                            room_label=room.label,
+                        )
+                    )
             continue
         panel_ids = [p.id for p in room_panels]
         panel_divisions = {p.id: p.division for p in room_panels}
@@ -118,6 +147,7 @@ def build_room_views(
                     panel_ids=panel_ids,
                     panel_divisions=panel_divisions,
                     rows=rows,
+                    room_label=room.label,
                 )
             )
 
