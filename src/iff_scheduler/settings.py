@@ -24,7 +24,14 @@ DEFAULT_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 # A room may host fewer — the load-balancer and CP-SAT decide the real number
 # per evening from demand — but never more, under any circumstance. Enforced at
 # config load so a mis-edited rooms.yaml fails loudly here, not deep in a solve.
-ROOM_CONCURRENCY_CEILING = 4
+#
+# Raised 4 -> 5 when Room 2018 was converted to a waiting room (Thursday 6->5
+# rooms, Friday 5->4 rooms): the load-balancer still targets 3-4 panels per
+# room wherever demand allows it (that's emergent from `_pick_panel_room`
+# filling rooms one at a time, not a separate target constant), but with one
+# fewer room per evening it now needs headroom to a 5th panel in a room on the
+# rare evening where 3-4 genuinely isn't enough to avoid infeasibility.
+ROOM_CONCURRENCY_CEILING = 5
 
 
 class BreakWindow(BaseModel):
@@ -130,19 +137,42 @@ class RoomEntry(BaseModel):
     # every day. A room listed for Thursday only cannot host a Friday slot, and
     # `resolve_panels` shrinks any panel in it to that day's slots accordingly.
     days: list[Date] = []
+    # False = this room is not part of the interview room pool (e.g. a waiting
+    # room) — the load-balancer/autoscaler/solver never place a panel here
+    # (`_rooms_for_division_on_day`), but it still appears in room-oriented
+    # exports as a venue landmark with zero schedule. Must carry `divisions: []`
+    # — a waiting room hosting a division is a contradiction, rejected below.
+    interview_room: bool = True
+    # Friendly display name for exports (e.g. "Waiting Room"); falls back to
+    # `id` when unset.
+    label: str | None = None
 
     @model_validator(mode="after")
     def _within_concurrency_ceiling(self) -> RoomEntry:
         """`max_concurrent_panels` is a hard ceiling: at least 1, never above
-        `ROOM_CONCURRENCY_CEILING` (4). A lower value is a deliberate physical
-        limit for that one room; anything above 4 is rejected here rather than
-        silently handed to the solver (CLAUDE.md: "fail loudly on malformed
-        config")."""
+        `ROOM_CONCURRENCY_CEILING`. A lower value is a deliberate physical
+        limit for that one room; anything above the ceiling is rejected here
+        rather than silently handed to the solver (CLAUDE.md: "fail loudly on
+        malformed config")."""
         if not 1 <= self.max_concurrent_panels <= ROOM_CONCURRENCY_CEILING:
             raise ValueError(
                 f"room {self.id}: max_concurrent_panels must be between 1 and "
                 f"{ROOM_CONCURRENCY_CEILING} (the hard ceiling); got "
                 f"{self.max_concurrent_panels}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _waiting_room_has_no_divisions(self) -> RoomEntry:
+        """A room excluded from the interview pool (`interview_room: false`)
+        cannot also be configured to host a division — that would mean the
+        load-balancer both can and cannot place a panel there. Fail loudly
+        rather than silently ignoring `divisions` (CLAUDE.md invariant 3)."""
+        if not self.interview_room and self.divisions:
+            raise ValueError(
+                f"room {self.id}: interview_room is false (a waiting room) but "
+                f"divisions is non-empty ({[d.value for d in self.divisions]}); "
+                "a waiting room must list no divisions."
             )
         return self
 

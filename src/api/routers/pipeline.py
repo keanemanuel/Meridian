@@ -315,7 +315,7 @@ def publish(
             applicant_rows,
             applicant_preferences(applicants, grid.slots),
         )
-        write_rooms_xlsx(publish_dir / "rooms.xlsx", assignments)
+        write_rooms_xlsx(publish_dir / "rooms.xlsx", assignments, rooms)
     if "html" in wanted:
         html_dir = publish_dir / "html"
         write_room_view_html(room_views, html_dir)

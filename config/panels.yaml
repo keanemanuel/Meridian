@@ -16,22 +16,26 @@
 # share a room (bounded by the room's `max_concurrent_panels`, FR-24).
 # `autoscale_panels` is the INFEASIBLE backstop on top of that.
 #
-# Rooms per evening (config/rooms.yaml): Thursday 6 (2016, 2017, 2020, 3013,
-# 2018, 2019), Friday 5 (2014, 2015, 3033, 2018, 2019). A division can grow
-# to one panel in every room that evening before the rare same-room fallback
-# is ever considered.
+# Rooms per evening (config/rooms.yaml): Thursday 5 (2016, 2017, 2020, 3013,
+# 2019), Friday 4 (2014, 2015, 3033, 2019). Room 2018 is a permanent waiting
+# room (`interview_room: false`) and is never a panel's room. A division can
+# grow to one panel in every room that evening before the rare same-room
+# fallback is ever considered.
 #
 # Panels in a room that only runs one evening inherit that day automatically;
-# panels in 2018 / 2019 (both evenings) pin their day with `active_windows`.
+# panels in 2019 (both evenings) pin their day with `active_windows`.
 panels:
   # ---------------- Thursday 2026-09-17 — one per division ----------------
+  # 5 rooms for 6 divisions: 2019 hosts two baseline panels (different
+  # divisions freely share a room — room-exclusivity only forbids two panels
+  # of the SAME division in one room).
   - {id: PROGRAM-A1,   division: PROGRAM,   room: "2016"}
   - {id: MEDMARDOC-A1, division: MEDMARDOC, room: "2017"}
   - {id: FNB-A1,       division: FNB,       room: "2020"}
   - {id: LOGISTICS-A1, division: LOGISTICS, room: "3013"}
   - id: CREATIVE-A1
     division: CREATIVE
-    room: "2018"
+    room: "2019"
     active_windows: [{date: 2026-09-17, start: "18:30", end: "21:30"}]
   - id: LIAISON-A1
     division: LIAISON
@@ -39,12 +43,13 @@ panels:
     active_windows: [{date: 2026-09-17, start: "18:30", end: "21:30"}]
 
   # ----------------- Friday 2026-09-18 — one per division -----------------
+  # 4 rooms for 6 divisions: 2014 and 2019 each host two baseline panels.
   - {id: PROGRAM-B1,   division: PROGRAM,   room: "2014"}
   - {id: MEDMARDOC-B1, division: MEDMARDOC, room: "2015"}
   - {id: FNB-B1,       division: FNB,       room: "3033"}
   - id: LOGISTICS-B1
     division: LOGISTICS
-    room: "2018"
+    room: "2019"
     active_windows: [{date: 2026-09-18, start: "17:30", end: "21:30"}]
   - id: CREATIVE-B1
     division: CREATIVE

@@ -48,6 +48,12 @@ class Room(BaseModel):
     # Event days this room is available on, resolved from config (empty in
     # config means "every day"; `resolve_rooms` fills it with the actual dates).
     days: list[Date] = []
+    # False = a physical room that is not part of the interview room pool (e.g.
+    # a waiting room). It still exists as a venue landmark in exports, but the
+    # load-balancer/solver never place a panel in it (settings.RoomEntry).
+    interview_room: bool = True
+    # Friendly display name for exports; falls back to `id` when unset.
+    label: str | None = None
 
 
 class Panel(BaseModel):

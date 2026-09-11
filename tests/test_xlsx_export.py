@@ -10,7 +10,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 from iff_scheduler.domain.enums import DivisionCode
-from iff_scheduler.domain.models import Assignment
+from iff_scheduler.domain.models import Assignment, Room
 from iff_scheduler.export.applicant_view import ApplicantChoiceView, ApplicantViewRow
 from iff_scheduler.export.room_view import RoomView, RoomViewCell, RoomViewRow
 from iff_scheduler.export.xlsx_writer import (
@@ -189,6 +189,102 @@ def test_rooms_xlsx_groups_panels_by_room_and_day(tmp_path: Path) -> None:
     )
     assert ws.cell(row=friday_header_row + 2, column=1).value == "2016"
     assert ws.cell(row=friday_header_row + 2, column=2).value == "FNB (FNB-A1)"
+
+
+def test_rooms_xlsx_shows_a_waiting_room_as_a_landmark_with_no_schedule(tmp_path: Path) -> None:
+    """A room outside the interview pool (`interview_room=False`, e.g. Room
+    2018 converted to a waiting room) still gets a row on every day it's open
+    — labelled, with an empty summary — instead of silently vanishing because
+    it never has an assignment."""
+    waiting_room = Room(
+        id="2018",
+        max_concurrent_panels=1,
+        divisions=[],
+        days=[THU, FRI],
+        interview_room=False,
+        label="Waiting Room",
+    )
+    assignments = [
+        Assignment(
+            applicant_id="A",
+            full_name="A",
+            email="a@example.com",
+            choice_index=1,
+            sub_division="Sub",
+            division=DivisionCode.PROGRAM,
+            panel_id="PROGRAM-A1",
+            room="2016",
+            slot_id=f"{THU.isoformat()}_0900",
+            date=THU,
+            start_time=time(9, 0),
+            end_time=time(9, 20),
+            is_clash=False,
+            is_locked=False,
+            same_parent_pair=False,
+        )
+    ]
+    out = tmp_path / "rooms.xlsx"
+    write_rooms_xlsx(out, assignments, [waiting_room])
+    ws = load_workbook(out).active
+
+    thursday_ids = {
+        ws.cell(row=r, column=1).value
+        for r in range(3, ws.max_row + 1)
+        if ws.cell(row=r, column=1).value not in (None, "Friday, 18 September")
+    }
+    assert "Waiting Room" in thursday_ids
+    waiting_row = next(
+        r
+        for r in range(1, ws.max_row + 1)
+        if ws.cell(row=r, column=1).value == "Waiting Room"
+    )
+    assert ws.cell(row=waiting_row, column=2).value == "— Waiting Room, no interviews —"
+
+
+def test_build_room_views_adds_an_empty_landmark_for_a_waiting_room() -> None:
+    """`build_room_views` emits one panel-less, row-less `RoomView` per day for
+    a room with `interview_room=False`, so it still surfaces in room-oriented
+    exports (Room View / rooms.xlsx) without ever carrying a schedule."""
+    from iff_scheduler.domain.models import Slot
+    from iff_scheduler.export.room_view import build_room_views
+
+    waiting_room = Room(
+        id="2018",
+        max_concurrent_panels=1,
+        divisions=[],
+        days=[THU, FRI],
+        interview_room=False,
+        label="Waiting Room",
+    )
+    slots = [
+        Slot(
+            slot_id=f"{THU.isoformat()}_0900",
+            date=THU,
+            day_label="Thu",
+            start_time=time(9, 0),
+            end_time=time(9, 20),
+            slot_index=0,
+        ),
+        Slot(
+            slot_id=f"{FRI.isoformat()}_0900",
+            date=FRI,
+            day_label="Fri",
+            start_time=time(9, 0),
+            end_time=time(9, 20),
+            slot_index=0,
+        ),
+    ]
+
+    views = build_room_views(assignments=[], panels=[], rooms=[waiting_room], slots=slots)
+
+    assert len(views) == 2
+    assert {v.date for v in views} == {THU, FRI}
+    for view in views:
+        assert view.room_id == "2018"
+        assert view.room_label == "Waiting Room"
+        assert view.interview_room is False
+        assert view.panel_ids == []
+        assert view.rows == []
 
 
 def _choice(

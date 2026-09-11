@@ -116,6 +116,8 @@ def resolve_rooms(rooms: RoomsConfig, grid: SlotGrid) -> list[Room]:
             max_concurrent_panels=r.max_concurrent_panels,
             divisions=list(r.divisions),
             days=sorted(room_days[r.id]),
+            interview_room=r.interview_room,
+            label=r.label,
         )
         for r in rooms.rooms
     ]
