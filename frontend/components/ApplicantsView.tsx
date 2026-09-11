@@ -43,6 +43,7 @@ export function ApplicantsView({ assignments }: { assignments: Assignment[] }) {
   }
 
   const headers = [
+    "#",
     "Name",
     "Preference",
     "Div 1",
@@ -102,8 +103,11 @@ export function ApplicantsView({ assignments }: { assignments: Assignment[] }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-neutral-100">
-            {rows.map((r) => (
+            {rows.map((r, i) => (
               <tr key={r.applicant_id} className={r.hasClash ? "bg-red-50" : ""}>
+                <td className="px-4 py-2 text-right tabular-nums text-neutral-400">
+                  {i + 1}
+                </td>
                 <td className="px-4 py-2">
                   <span className="block font-medium text-neutral-800">
                     {r.full_name}
