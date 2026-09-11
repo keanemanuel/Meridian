@@ -18,15 +18,6 @@ import type { WorkspaceMeta } from "@/lib/types";
  * unexpected. */
 export const FIXED_GROUPS = ["Test Environment", "IFF Submissions"] as const;
 
-/** Groups holding live recruitment submissions. Renaming one of these
- * workspaces asks for a stronger confirmation, and deleting one is refused
- * outright (the API enforces the same rule in
- * `api/routers/workspaces.py:PROTECTED_GROUPS`). */
-export const PROTECTED_GROUPS: readonly string[] = ["IFF Submissions"];
-
-export const isProtectedGroup = (group: string) =>
-  PROTECTED_GROUPS.includes(group);
-
 type WorkspacesContextValue = {
   workspaces: WorkspaceMeta[];
   groups: string[];

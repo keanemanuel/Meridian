@@ -66,9 +66,9 @@ def _hard_delete_workspace(name: str) -> None:
     """Drop a workspace from whichever store is live.
 
     Goes straight to the backend rather than through ``DELETE
-    /api/workspaces/{id}`` so a protected "IFF Submissions" workspace — which
-    that route refuses (403) — is still cleaned up. Best-effort: a failure
-    here must never fail the test that already passed.
+    /api/workspaces/{id}`` so cleanup does not depend on the route's own
+    behaviour. Best-effort: a failure here must never fail the test that
+    already passed.
     """
     try:
         from iff_scheduler.db import supabase_enabled
@@ -833,17 +833,17 @@ def test_rename_unknown_workspace_is_a_404(client: TestClient) -> None:
     assert missing.status_code == 404
 
 
-def test_live_submission_workspaces_cannot_be_deleted(client: TestClient, wsname: str) -> None:
-    """The UI hides the button; the rule is enforced here so it cannot be
-    clicked past from outside the UI."""
+def test_iff_submissions_workspace_can_be_deleted(client: TestClient, wsname: str) -> None:
+    """No workspace is special any more: the "IFF Submissions" group carries
+    no delete protection now that live Google Sheets ingest is gone."""
     _create_ws(client, wsname, group="IFF Submissions")
-    refused = client.delete(f"/api/workspaces/{wsname}")
-    assert refused.status_code == 403
-    assert refused.json()["detail"] == "Live submission workspaces cannot be deleted."
-    assert client.get(f"/api/workspaces/{wsname}").status_code == 200
+    deleted = client.delete(f"/api/workspaces/{wsname}")
+    assert deleted.status_code == 200
+    assert deleted.json() == {"deleted": wsname}
+    assert client.get(f"/api/workspaces/{wsname}").status_code == 404
 
 
-def test_a_live_submission_workspace_can_still_be_renamed(client: TestClient, wsname: str) -> None:
+def test_an_iff_submissions_workspace_can_be_renamed(client: TestClient, wsname: str) -> None:
     new_name = f"{wsname}-renamed"
     _create_ws(client, wsname, group="IFF Submissions")
     renamed = client.patch(f"/api/workspaces/{wsname}", json={"name": new_name})

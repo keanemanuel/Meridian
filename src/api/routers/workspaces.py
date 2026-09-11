@@ -43,14 +43,6 @@ class WorkspaceRename(BaseModel):
     name: str
 
 
-# Groups whose workspaces hold live recruitment submissions. Renaming one is
-# allowed (the UI warns first); deleting one is not, because the applicant
-# data and every solve under it go with it and there is no undo.
-PROTECTED_GROUPS = frozenset({"IFF Submissions"})
-
-CANNOT_DELETE_LIVE = "Live submission workspaces cannot be deleted."
-
-
 def _scaffold_dirs(name: str) -> None:
     interim_dir(name).mkdir(parents=True, exist_ok=True)
     runs_dir(name).mkdir(parents=True, exist_ok=True)
@@ -160,12 +152,9 @@ def patch_workspace_name(workspace_id: str, body: WorkspaceRename) -> WorkspaceM
 def delete_workspace(workspace_id: str) -> dict[str, str]:
     """Delete a workspace and its data directory.
 
-    Refused for a workspace in a protected group: that data is a live intake
-    round and removing it is not recoverable. The UI hides the button too,
-    but the rule is enforced here so it cannot be clicked past."""
-    if resolve_workspace(workspace_id).group in PROTECTED_GROUPS:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=CANNOT_DELETE_LIVE)
-
+    Every workspace behaves the same way — imported applicants, every solve
+    and the send ledger under it go with it and there is no undo, which the
+    UI's confirmation dialog spells out."""
     if supabase_enabled():
         from iff_scheduler.db import workspace_repo
 

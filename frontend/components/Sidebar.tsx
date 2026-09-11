@@ -7,7 +7,7 @@ import type { WorkspaceMeta } from "@/lib/types";
 import { Modal } from "./Modal";
 import { useToast } from "./Toast";
 import { Button, Spinner } from "./ui";
-import { isProtectedGroup, useWorkspaces } from "./WorkspacesProvider";
+import { useWorkspaces } from "./WorkspacesProvider";
 
 function NewWorkspaceModal({
   group,
@@ -88,9 +88,9 @@ function NewWorkspaceModal({
   );
 }
 
-/** Rename dialog. A workspace in a live submissions group gets a stronger
- * confirmation before the field is even editable: its name is the id every
- * run, ledger and data path is keyed on. */
+/** Rename dialog. The workspace name is the id every run, ledger and data
+ * path is keyed on, so a rename moves the data directory with it (the API
+ * handles that); a page still pointed at the old name is redirected below. */
 function RenameWorkspaceModal({
   workspace,
   onClose,
@@ -102,9 +102,7 @@ function RenameWorkspaceModal({
   const toast = useToast();
   const router = useRouter();
   const params = useParams<{ id?: string }>();
-  const live = isProtectedGroup(workspace.group);
 
-  const [acknowledged, setAcknowledged] = useState(!live);
   const [name, setName] = useState(workspace.name);
   const [saving, setSaving] = useState(false);
 
@@ -130,28 +128,6 @@ function RenameWorkspaceModal({
       setSaving(false);
     }
   };
-
-  if (live && !acknowledged) {
-    return (
-      <Modal title="Rename a live workspace?" onClose={onClose}>
-        <p className="rounded border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm leading-relaxed text-amber-900">
-          This is the live IFF recruitment workspace. Are you absolutely sure
-          you want to rename it?
-        </p>
-        <p className="mt-3 text-xs leading-relaxed text-neutral-600">
-          The name identifies the workspace everywhere: its data directory, its
-          run history and its send ledger all move with it. Anyone holding a
-          link to the old name will need the new one.
-        </p>
-        <div className="mt-4 flex justify-end gap-2">
-          <Button onClick={onClose}>Cancel</Button>
-          <Button variant="danger" onClick={() => setAcknowledged(true)}>
-            Yes, let me rename it
-          </Button>
-        </div>
-      </Modal>
-    );
-  }
 
   return (
     <Modal title={`Rename "${workspace.name}"`} onClose={onClose}>
@@ -236,8 +212,8 @@ function DeleteWorkspaceModal({
   );
 }
 
-/** The "…" menu on a workspace row. Delete is absent for a live submissions
- * workspace; picking it anyway is impossible, and the API refuses it too. */
+/** The "…" menu on a workspace row: rename or delete, the same for every
+ * workspace. */
 function RowMenu({
   workspace,
   onRename,
@@ -247,10 +223,8 @@ function RowMenu({
   onRename: () => void;
   onDelete: () => void;
 }) {
-  const toast = useToast();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const live = isProtectedGroup(workspace.group);
 
   useEffect(() => {
     if (!open) return;
@@ -287,30 +261,16 @@ function RowMenu({
           >
             Rename
           </button>
-          {live ? (
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                toast.error("Live submission workspaces cannot be deleted.");
-              }}
-              className="block w-full cursor-not-allowed px-3 py-1.5 text-left text-sm text-neutral-400"
-              title="Live submission workspaces cannot be deleted."
-            >
-              Delete
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                onDelete();
-              }}
-              className="block w-full px-3 py-1.5 text-left text-sm text-red-600 hover:bg-red-50"
-            >
-              Delete
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              onDelete();
+            }}
+            className="block w-full px-3 py-1.5 text-left text-sm text-red-600 hover:bg-red-50"
+          >
+            Delete
+          </button>
         </div>
       )}
     </div>
