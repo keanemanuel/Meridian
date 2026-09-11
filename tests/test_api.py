@@ -311,6 +311,41 @@ def test_solve_without_applicants_is_404(client: TestClient, wsname: str) -> Non
     assert resp.status_code == 404
 
 
+def test_download_bundle_zips_schedule_and_applicants(client: TestClient, wsname: str) -> None:
+    """One "Download XLSX" click yields a ZIP holding both spreadsheets
+    (schedule + the Applicants tab export)."""
+    import io
+    import zipfile
+
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
+        "run_id"
+    ]
+    published = client.post(
+        f"/api/workspaces/{wsname}/publish", json={"run": "latest", "formats": ["xlsx"]}
+    )
+    assert published.status_code == 200, published.text
+
+    resp = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/xlsx")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+    assert run_id in resp.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        assert sorted(zf.namelist()) == ["applicants.xlsx", "schedule.xlsx"]
+        assert all(zf.read(name)[:2] == b"PK" for name in zf.namelist())
+
+
+def test_download_bundle_before_publish_is_409(client: TestClient, wsname: str) -> None:
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
+        "run_id"
+    ]
+    resp = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/xlsx")
+    assert resp.status_code == 409
+
+
 # --------------------------------------------------------------- schedule edits
 
 
