@@ -1,6 +1,6 @@
-"""Pipeline stages: ingest -> check -> solve -> publish, plus run listing
-(SPEC.md §4). Each endpoint is a thin translation of the matching CLI
-command; the heavy lifting stays in `iff_scheduler` and `api.services`.
+"""Pipeline stages: ingest -> solve -> publish, plus run listing (SPEC.md
+§4). Each endpoint is a thin translation of the matching CLI command; the
+heavy lifting stays in `iff_scheduler` and `api.services`.
 """
 
 from __future__ import annotations
@@ -15,7 +15,12 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from api.cli_helpers import conflicts_frame, load_assignments, load_clean_applicants
+from api.cli_helpers import (
+    conflicts_frame,
+    load_assignments,
+    load_clean_applicants,
+    resolve_run_panels,
+)
 from api.dependencies import (
     ensure_run_exists,
     get_settings,
@@ -24,7 +29,7 @@ from api.dependencies import (
     run_dir_if_present,
     workspace_pk,
 )
-from api.services import execute_solve, read_run_metrics, run_capacity_check
+from api.services import execute_solve, read_run_metrics
 from iff_scheduler import workspace as ws
 from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.enums import Severity
@@ -44,7 +49,7 @@ from iff_scheduler.ingest.validate import (
     run_ingest,
     write_outputs,
 )
-from iff_scheduler.scheduling.base import resolve_panels, resolve_rooms
+from iff_scheduler.scheduling.base import resolve_rooms
 from iff_scheduler.scheduling.postprocess import build_conflicts
 from iff_scheduler.settings import Settings
 
@@ -161,21 +166,14 @@ async def ingest(
     return _ingest_summary(result.applicants, result.report)
 
 
-@router.post("/check")
-def check(workspace_id: str, settings: SettingsDep) -> dict[str, Any]:
-    resolve_workspace(workspace_id)
-    return run_capacity_check(settings, workspace_id)
-
-
 @router.get("/ingest-status")
 def ingest_status(workspace_id: str) -> dict[str, Any]:
     """Whether this workspace has an ingested applicant list yet.
 
-    The UI gates Check Capacity / Schedule! on this. Both endpoints 404 with
-    "Run ingest first" when `applicants.clean.csv` is absent (as on a
-    freshly created workspace), and firing them on click only to surface
-    that error stacks error toasts for no reason. Cheap — reads one CSV's
-    row count and nothing else.
+    The UI gates Schedule! on this. It 404s with "Run ingest first" when
+    `applicants.clean.csv` is absent (as on a freshly created workspace), and
+    firing it on click only to surface that error stacks error toasts for no
+    reason. Cheap — reads one CSV's row count and nothing else.
     """
     resolve_workspace(workspace_id)
     path = ws.applicants_clean_path(workspace_id)
@@ -291,9 +289,12 @@ def publish(
 
     grid = build_slot_grid(settings.event)
     applicants = load_clean_applicants(applicants_path)
-    panels = resolve_panels(settings.panels, settings.rooms, grid)
-    rooms = resolve_rooms(settings.rooms, grid)
     assignments = load_assignments(assignments_path)
+    # The run's actual solved panel set, not the bare committed config — a
+    # division the load-balancer grew from one room to several would
+    # otherwise render only its baseline room (see _resolve_run_panels).
+    panels = resolve_run_panels(settings, grid, assignments, run_dir=run_dir)
+    rooms = resolve_rooms(settings.rooms, grid)
 
     resolved_run_id = run_dir.resolve().name
     publish_dir = ws.output_dir(workspace_id) / resolved_run_id

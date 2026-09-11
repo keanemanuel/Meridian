@@ -49,27 +49,11 @@ export type Assignment = {
 };
 
 /** `GET /ingest-status` — has this workspace had applicants ingested yet?
- * The workspace page gates Check Capacity / Schedule! on it so neither is
- * fired just to get a "Run ingest first" 404 back. */
+ * The workspace page gates Schedule! on it so it isn't fired just to get a
+ * "Run ingest first" 404 back. */
 export type IngestStatus = {
   ingested: boolean;
   applicants: number;
-};
-
-export type CapacityRow = {
-  division: string;
-  demand: number;
-  panels_configured: number;
-  raw_supply: number;
-  effective_supply: number;
-  recommended_panels: number;
-  verdict: string;
-};
-
-export type CapacityCheck = {
-  feasible: boolean;
-  infeasible_divisions: string[];
-  rows: CapacityRow[];
 };
 
 export type SolveResult = {

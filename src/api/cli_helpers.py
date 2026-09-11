@@ -16,6 +16,7 @@ from iff_scheduler.cli import (
     _load_assignments,
     _load_clean_applicants,
     _load_locks,
+    _resolve_run_panels,
     _write_locks,
 )
 
@@ -27,6 +28,7 @@ __all__ = [
     "load_assignments",
     "load_clean_applicants",
     "load_locks",
+    "resolve_run_panels",
     "write_locks",
 ]
 
@@ -35,4 +37,5 @@ conflicts_frame = _conflicts_frame
 load_assignments = _load_assignments
 load_clean_applicants = _load_clean_applicants
 load_locks = _load_locks
+resolve_run_panels = _resolve_run_panels
 write_locks = _write_locks

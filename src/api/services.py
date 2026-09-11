@@ -42,45 +42,6 @@ from iff_scheduler.scheduling.solver_cpsat import CpSatSolver
 from iff_scheduler.settings import Settings
 
 
-def run_capacity_check(settings: Settings, workspace_id: str) -> dict[str, Any]:
-    """Capacity Advisor table + verdict (mirrors `iffsched check`, SPEC.md §5.5).
-
-    Unlike the CLI this never hard-exits; the caller decides what INFEASIBLE means.
-    """
-    applicants_path = ws.applicants_clean_path(workspace_id)
-    if not applicants_path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"No applicants at {applicants_path}. Run ingest first.",
-        )
-    grid = build_slot_grid(settings.event)
-    applicants = _load_clean_applicants(applicants_path)
-    rows = compute_capacity_advisor(
-        applicants=applicants,
-        panels=settings.panels,
-        grid=grid,
-        target_utilisation=settings.solver.target_utilisation,
-        rooms=settings.rooms,
-    )
-    serialised = [
-        {
-            "division": row.division.value,
-            "demand": row.demand,
-            "panels_configured": row.panels_configured,
-            "raw_supply": row.raw_supply,
-            "effective_supply": row.effective_supply,
-            "recommended_panels": row.recommended_panels,
-            "verdict": row.verdict,
-        }
-        for row in rows
-    ]
-    return {
-        "feasible": is_feasible(rows),
-        "infeasible_divisions": [r.division.value for r in rows if r.verdict == "INFEASIBLE"],
-        "rows": serialised,
-    }
-
-
 def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) -> dict[str, Any]:
     """Solve the timetable and write an immutable run dir (mirrors `iffsched solve`)."""
     applicants_path = ws.applicants_clean_path(workspace_id)

@@ -233,16 +233,9 @@ def test_recover_refuses_a_non_recoverable_row(client: TestClient, wsname: str) 
     assert resp.status_code == 409
 
 
-def test_check_before_ingest_is_404(client: TestClient, wsname: str) -> None:
-    _create_ws(client, wsname)
-    resp = client.post(f"/api/workspaces/{wsname}/check")
-    assert resp.status_code == 404
-    assert "detail" in resp.json()
-
-
 def test_ingest_status_reflects_whether_applicants_exist(client: TestClient, wsname: str) -> None:
-    """The UI gates Check / Schedule on this so it never fires them just to
-    get "Run ingest first" back."""
+    """The UI gates Schedule! on this so it never fires it just to get "Run
+    ingest first" back."""
     _create_ws(client, wsname)
     before = client.get(f"/api/workspaces/{wsname}/ingest-status")
     assert before.status_code == 200
@@ -254,17 +247,6 @@ def test_ingest_status_reflects_whether_applicants_exist(client: TestClient, wsn
     body = after.json()
     assert body["ingested"] is True
     assert body["applicants"] >= 1
-
-
-def test_check_after_ingest_returns_advisor_table(client: TestClient, wsname: str) -> None:
-    _create_ws(client, wsname)
-    _ingest_fixture(client, wsname)
-    resp = client.post(f"/api/workspaces/{wsname}/check")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert isinstance(body["feasible"], bool)
-    assert len(body["rows"]) >= 1
-    assert {"division", "demand", "verdict"} <= set(body["rows"][0])
 
 
 def test_solve_publish_and_assignments_flow(client: TestClient, wsname: str) -> None:
@@ -836,6 +818,49 @@ def test_move_onto_a_load_balanced_panel_survives_lost_run_metadata(
     assert resp.json()["assignment"]["panel_id"] == target["panel_id"]
 
 
+def test_schedule_xlsx_renders_every_room_a_load_balanced_division_used(
+    client: TestClient, wsname: str
+) -> None:
+    """Regression: publish resolved panels from committed `panels.yaml` alone,
+    so a division `rebalance_panels`/`autoscale_panels` grew from one room to
+    several (real ids like `CREATIVE-A2`, each in its own room, SPEC.md §5.5)
+    rendered only its baseline room in schedule.xlsx — the extra rooms it
+    actually used that day never appeared, not even empty. 16 applicants
+    packed onto CREATIVE Thursday forces a real multi-panel, multi-room split
+    at solve time; the exported sheet must show a room-panel column for every
+    distinct room the run's own assignments actually used that day."""
+    import io
+    import zipfile
+
+    from openpyxl import load_workbook
+
+    _create_ws(client, wsname)
+    _write_concentrated_creative_applicants(wsname)
+
+    solved = client.post(f"/api/workspaces/{wsname}/solve", json={})
+    assert solved.status_code == 200, solved.text
+    run_id = solved.json()["run_id"]
+
+    rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    creative_rows = [r for r in rows if r["division"] == "CREATIVE"]
+    thu_rooms = sorted({r["room"] for r in creative_rows if r["slot_id"] in _THU_SLOTS})
+    assert len(thu_rooms) >= 2, f"expected a real multi-room split; rows: {creative_rows}"
+
+    published = client.post(
+        f"/api/workspaces/{wsname}/publish", json={"run": "latest", "formats": ["xlsx"]}
+    )
+    assert published.status_code == 200, published.text
+
+    resp = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/xlsx")
+    assert resp.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        wb = load_workbook(io.BytesIO(zf.read("schedule.xlsx")))
+    ws_creative = wb["CREATIVE"]
+    header = [c.value for c in ws_creative[2]]
+    rendered_rooms = {v for v in header if isinstance(v, str) and v.startswith("Room ")}
+    assert rendered_rooms == {f"Room {r}" for r in thu_rooms}
+
+
 # --------------------------------------------------------------- rename / delete
 
 
@@ -851,7 +876,9 @@ def test_rename_workspace_moves_its_data_with_it(client: TestClient, wsname: str
     assert client.get(f"/api/workspaces/{wsname}").status_code == 404
     assert client.get(f"/api/workspaces/{new_name}").status_code == 200
     # The applicants moved too, so the pipeline still works under the new name.
-    assert client.post(f"/api/workspaces/{new_name}/check").status_code == 200
+    status = client.get(f"/api/workspaces/{new_name}/ingest-status")
+    assert status.status_code == 200
+    assert status.json()["ingested"] is True
 
 
 def test_rename_onto_an_existing_name_is_a_409(client: TestClient, wsname: str) -> None:

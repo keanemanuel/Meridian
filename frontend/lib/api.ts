@@ -6,7 +6,6 @@
 
 import type {
   Assignment,
-  CapacityCheck,
   IngestResult,
   IngestStatus,
   PatchAssignmentResult,
@@ -240,15 +239,10 @@ export const api = {
     });
   },
 
-  /** Has this workspace had applicants ingested yet? Gates Check / Schedule
-   * in the UI — both 404 with "Run ingest first" otherwise. */
+  /** Has this workspace had applicants ingested yet? Gates Schedule in the
+   * UI — it 404s with "Run ingest first" otherwise. */
   ingestStatus: (id: string) =>
     request<IngestStatus>(`/workspaces/${seg(id)}/ingest-status`),
-
-  check: (id: string) =>
-    request<CapacityCheck>(`/workspaces/${seg(id)}/check`, {
-      method: "POST",
-    }),
 
   /** Rejected rows of the latest validation report (Rejected tab). */
   listRejected: (id: string) =>
