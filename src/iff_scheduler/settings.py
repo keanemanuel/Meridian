@@ -349,3 +349,49 @@ def load_settings(config_dir: Path = DEFAULT_CONFIG_DIR) -> Settings:
         solver=load_solver_config(config_dir / "solver.yaml"),
         notify=load_notify_config(config_dir / "notify.yaml"),
     )
+
+
+# Name of the committed, default room layout (2018 the only waiting room;
+# Thursday 5 interview rooms, Friday 4). Never a subdirectory under
+# `scenarios/` — it means "just use `config_dir` as committed".
+DEFAULT_ROOM_SCENARIO = "default"
+
+
+def room_scenarios_dir(config_dir: Path = DEFAULT_CONFIG_DIR) -> Path:
+    """Where alternate room-layout presets live, alongside the default config
+    (SPEC.md §3.3/§5.5). Each subdirectory is a complete, self-contained
+    config directory `load_settings` can be pointed at directly — the
+    scenario mechanism is "swap the whole config dir", the same trick
+    `--config-dir` already uses for tests, so no new loading path is needed."""
+    return config_dir / "scenarios"
+
+
+def known_room_scenarios(config_dir: Path = DEFAULT_CONFIG_DIR) -> list[str]:
+    """Every room-scenario name selectable for a solve: `"default"` plus one
+    entry per subdirectory of `config_dir/scenarios/`. Used to validate a
+    requested scenario name and to list choices in the CLI/API (no file
+    editing required to pick one — CLAUDE.md invariant 5)."""
+    scenarios_dir = room_scenarios_dir(config_dir)
+    names = [DEFAULT_ROOM_SCENARIO]
+    if scenarios_dir.is_dir():
+        names += sorted(p.name for p in scenarios_dir.iterdir() if p.is_dir())
+    return names
+
+
+def resolve_room_scenario_dir(config_dir: Path, room_scenario: str | None) -> Path:
+    """Map a room-scenario name to the config directory a solve should load
+    settings from.
+
+    `None` or `"default"` means "use `config_dir` exactly as committed" — the
+    existing default layout is untouched by this function and remains
+    reachable exactly as it works today. Any other name must be a
+    subdirectory of `config_dir/scenarios/`; an unknown name fails loudly
+    (CLAUDE.md invariant 3) rather than silently falling back to default.
+    """
+    if room_scenario is None or room_scenario == DEFAULT_ROOM_SCENARIO:
+        return config_dir
+    scenario_dir = room_scenarios_dir(config_dir) / room_scenario
+    if not scenario_dir.is_dir():
+        available = ", ".join(known_room_scenarios(config_dir))
+        raise ValueError(f"Unknown room scenario '{room_scenario}'. Available: {available}.")
+    return scenario_dir

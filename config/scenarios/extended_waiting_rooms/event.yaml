@@ -1,0 +1,26 @@
+# Room-scenario "extended_waiting_rooms" (see rooms.yaml in this dir).
+# Identical to config/event.yaml — copied, not overridden, because Settings
+# loads one whole config dir at a time (settings.py:load_settings). If
+# config/event.yaml changes, mirror the change here too
+# (test_room_scenarios.py::test_extended_waiting_rooms_shares_non_room_config
+# fails loudly if the two drift apart).
+event_name: "IFF Recruitment 2026"
+timezone: "Asia/Jakarta"          # confirm; drives ICS and all displayed times
+interview_duration_minutes: 20    # change to 30 and the whole grid regenerates
+min_gap_slots: 0                  # slots required between an applicant's 2 interviews
+availability_matching: strict     # strict = interview must sit fully inside ticked blocks;
+                                   # lenient = >=50% overlap counts (SPEC.md §9.2, E-05)
+# Real IFF schedule: two evenings, different start times. At 20-minute
+# interviews this is 9 slots Thursday (18:30-21:30) + 12 slots Friday
+# (17:30-21:30) = 21 slots.
+days:
+  - date: 2026-09-17
+    label: "Thu"
+    start: "18:30"
+    end:   "21:30"
+    breaks: []                    # e.g. [{start: "19:40", end: "20:00"}]
+  - date: 2026-09-18
+    label: "Fri"
+    start: "17:30"
+    end:   "21:30"
+    breaks: []

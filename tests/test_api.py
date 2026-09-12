@@ -287,6 +287,53 @@ def test_solve_publish_and_assignments_flow(client: TestClient, wsname: str) -> 
     assert any(r["declared_availability"] in {"Thu 17 Sep", "Fri 18 Sep"} for r in rows)
 
 
+def test_room_scenarios_endpoint_lists_default_and_extended(client: TestClient) -> None:
+    resp = client.get("/api/workspaces/any-workspace/room-scenarios")
+    assert resp.status_code == 200
+    scenarios = resp.json()["scenarios"]
+    assert scenarios[0] == "default"
+    assert "extended_waiting_rooms" in scenarios
+
+
+def test_solve_accepts_an_alternate_room_scenario(client: TestClient, wsname: str) -> None:
+    """A solve-time choice (SPEC.md §3.3 "extended waiting rooms") — no file
+    edited by hand, and it never touches the default (see
+    `test_solve_with_room_scenario_default_is_unaffected` below)."""
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+
+    solved = client.post(
+        f"/api/workspaces/{wsname}/solve",
+        json={"skip_check": True, "room_scenario": "extended_waiting_rooms"},
+    )
+    assert solved.status_code == 200, solved.text
+    assert solved.json()["room_scenario"] == "extended_waiting_rooms"
+    assert solved.json()["interviews_placed"] == solved.json()["interviews_required"]
+
+
+def test_solve_rejects_an_unknown_room_scenario(client: TestClient, wsname: str) -> None:
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+
+    resp = client.post(
+        f"/api/workspaces/{wsname}/solve",
+        json={"skip_check": True, "room_scenario": "made_up_scenario"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "Unknown room scenario" in resp.json()["detail"]
+
+
+def test_solve_with_room_scenario_default_is_unaffected(client: TestClient, wsname: str) -> None:
+    """Explicitly asking for the default scenario is identical to not asking
+    at all — this feature is additive, not a change to existing behaviour."""
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+
+    implicit = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True})
+    assert implicit.status_code == 200, implicit.text
+    assert implicit.json()["room_scenario"] == "default"
+
+
 def test_solve_without_applicants_is_404(client: TestClient, wsname: str) -> None:
     _create_ws(client, wsname)
     resp = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True})

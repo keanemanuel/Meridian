@@ -42,8 +42,21 @@ from iff_scheduler.scheduling.solver_cpsat import CpSatSolver
 from iff_scheduler.settings import Settings
 
 
-def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) -> dict[str, Any]:
-    """Solve the timetable and write an immutable run dir (mirrors `iffsched solve`)."""
+def execute_solve(
+    settings: Settings,
+    workspace_id: str,
+    *,
+    skip_check: bool,
+    config_dir_for_snapshot: Path | None = None,
+    room_scenario: str = "default",
+) -> dict[str, Any]:
+    """Solve the timetable and write an immutable run dir (mirrors `iffsched solve`).
+
+    `config_dir_for_snapshot` is the directory `settings` was actually loaded
+    from — defaults to the app-wide `config_dir()` but is the room-scenario's
+    directory when the caller resolved one (SPEC.md §3.3 "extended waiting
+    rooms"), so `config_snapshot/` always matches what was really solved.
+    """
     applicants_path = ws.applicants_clean_path(workspace_id)
     if not applicants_path.exists():
         raise HTTPException(
@@ -110,6 +123,7 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
     conflicts = build_conflicts(result.assignments, problem.applicants, problem.panels)
     metrics = compute_metrics(result, problem) | {
         "run_id": run_id,
+        "room_scenario": room_scenario,
         "panel_adjustments": capacity_warnings,
         # The exact panel set this run was solved with — committed panels.yaml
         # plus whatever `rebalance_panels`/`autoscale_panels` added (ids like
@@ -123,7 +137,7 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
     _conflicts_frame(conflicts).to_csv(run_dir / "conflicts.csv", index=False)
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     (run_dir / "solve.log").write_text("\n".join(result.log) + "\n", encoding="utf-8")
-    _snapshot_config(config_dir(), run_dir)
+    _snapshot_config(config_dir_for_snapshot or config_dir(), run_dir)
     if capacity_warnings:
         # The config snapshot above is the committed files; record what
         # autoscale actually solved with so the run stays reproducible.
@@ -164,6 +178,7 @@ def execute_solve(settings: Settings, workspace_id: str, *, skip_check: bool) ->
         "changed_vs_previous": diff_count,
         "conflicts": len(conflicts),
         "warnings": capacity_warnings,
+        "room_scenario": room_scenario,
     }
 
 

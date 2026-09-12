@@ -22,6 +22,7 @@ from api.cli_helpers import (
     resolve_run_panels,
 )
 from api.dependencies import (
+    config_dir,
     ensure_run_exists,
     get_settings,
     resolve_run_dir,
@@ -51,7 +52,13 @@ from iff_scheduler.ingest.validate import (
 )
 from iff_scheduler.scheduling.base import resolve_rooms
 from iff_scheduler.scheduling.postprocess import build_conflicts
-from iff_scheduler.settings import Settings
+from iff_scheduler.settings import (
+    DEFAULT_ROOM_SCENARIO,
+    Settings,
+    known_room_scenarios,
+    load_settings,
+    resolve_room_scenario_dir,
+)
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["pipeline"])
 
@@ -252,6 +259,11 @@ def recover(workspace_id: str, row_number: int, settings: SettingsDep) -> dict[s
 
 class SolveBody(BaseModel):
     skip_check: bool = False
+    # "default" (the committed rooms.yaml/panels.yaml) or a name under
+    # config/scenarios/ (e.g. "extended_waiting_rooms") — see
+    # settings.resolve_room_scenario_dir. Selecting one is a per-solve-run
+    # choice; it never touches committed config.
+    room_scenario: str = DEFAULT_ROOM_SCENARIO
 
 
 @router.post("/solve")
@@ -260,7 +272,24 @@ def solve(
 ) -> dict[str, Any]:
     resolve_workspace(workspace_id)
     body = body or SolveBody()
-    return execute_solve(settings, workspace_id, skip_check=body.skip_check)
+    scenario_config_dir = resolve_room_scenario_dir(config_dir(), body.room_scenario)
+    if scenario_config_dir != config_dir():
+        settings = load_settings(scenario_config_dir)
+    return execute_solve(
+        settings,
+        workspace_id,
+        skip_check=body.skip_check,
+        config_dir_for_snapshot=scenario_config_dir,
+        room_scenario=body.room_scenario,
+    )
+
+
+@router.get("/room-scenarios")
+def room_scenarios() -> dict[str, Any]:
+    """Room layouts selectable for a solve on this workspace (§ new feature:
+    extended waiting rooms). Lets the UI offer a dropdown without hand-editing
+    any file."""
+    return {"scenarios": known_room_scenarios(config_dir())}
 
 
 class PublishBody(BaseModel):
