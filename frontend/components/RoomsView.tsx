@@ -6,6 +6,7 @@ import {
   dayAxis,
   formatDayLabel,
   formatTime,
+  panelDayLetter,
   roomSummaries,
   type RoomSummary,
   type SlotAxis,
@@ -64,13 +65,6 @@ export function RoomsView({
   const [rawDay, setRawDay] = useState(0);
   const [query, setQuery] = useState("");
 
-  /** Run-wide summary per room, looked up by the selected day's cards. */
-  const summaryByRoom = useMemo(() => {
-    const map = new Map<string, RoomSummary>();
-    for (const s of roomSummaries(assignments)) map.set(s.room, s);
-    return map;
-  }, [assignments]);
-
   if (days.length === 0) {
     return <EmptyState title="This run has no assignments to show." />;
   }
@@ -78,6 +72,16 @@ export function RoomsView({
   const dayIndex = Math.min(rawDay, days.length - 1);
   const date = days[dayIndex];
   const onDay = assignments.filter((a) => a.date === date);
+  // "CREATIVE-A1" is Thursday, "CREATIVE-B1" is Friday (config/panels.yaml's
+  // `[DIVISION]-[DAY][N]` convention) — the Nth day selected here is day
+  // letter N (A, B, ...), independent of the actual calendar dates.
+  const dayLetter = String.fromCharCode(65 + dayIndex);
+
+  /** This day's summary per room — interview count, panels and divisions
+   * scoped to `onDay` so switching days never mixes Thursday's "A" panels
+   * with Friday's "B" ones in the same card. */
+  const summaryByRoom = new Map<string, RoomSummary>();
+  for (const s of roomSummaries(onDay)) summaryByRoom.set(s.room, s);
   // Rooms with an interview today, plus any room that now holds only a
   // manually-added (possibly empty) panel — so a room a recruiter just added a
   // panel to still gets a card to drag into.
@@ -135,6 +139,7 @@ export function RoomsView({
               summary={summaryByRoom.get(room)}
               assignments={onDay.filter((a) => a.room === room)}
               roomPanels={panels.filter((p) => p.room === room)}
+              dayLetter={dayLetter}
               allDivisions={divisions}
               slots={daySlots}
               query={query}
@@ -161,6 +166,7 @@ function RoomCard({
   summary,
   assignments,
   roomPanels,
+  dayLetter,
   allDivisions,
   slots,
   query,
@@ -172,8 +178,14 @@ function RoomCard({
   room: string;
   summary: RoomSummary | undefined;
   assignments: Assignment[];
-  /** Every panel this run has in this room (solver + manually added). */
+  /** Every panel this run has in this room (solver + manually added), both
+   * event days. Used as-is for room-exclusivity (the "+" menu greys out a
+   * division already running here on either day, matching the backend); the
+   * header badges filter this down to `dayLetter` below. */
   roomPanels: RoomPanel[];
+  /** The currently selected day's letter ("A" or "B") — panel badges and
+   * everything derived from them are scoped to this. */
+  dayLetter: string;
   /** All division codes, for the "add panel" dropdown. */
   allDivisions: string[];
   /** The whole day's slot axis, shared by every card. Rows are drawn for all
@@ -190,30 +202,39 @@ function RoomCard({
   const interviewCount = summary?.interviewCount ?? assignments.length;
   const clashes = summary?.clashes ?? 0;
 
-  /** Panel badges for the header. Prefer the run's real panel list (carries
+  /** Panel badges for the header, scoped to the selected day (FR-32 bugfix —
+   * a room's card must show only "-A" panels on Thursday, only "-B" on
+   * Friday, never both at once). Prefer the run's real panel list (carries
    * `manual` / `deletable`); fall back to the ids seen in assignments/summary
-   * when the panel fetch has not landed. */
+   * when the panel fetch has not landed — both are already day-scoped by the
+   * caller (`roomPanels` filtered here, `summary`/`assignments` built from
+   * that day's assignments only). */
   const badgePanels: RoomPanel[] = useMemo(() => {
-    if (roomPanels.length > 0) {
-      return [...roomPanels].sort((x, y) =>
+    const onThisDay = roomPanels.filter(
+      (p) => panelDayLetter(p.panel_id) === dayLetter,
+    );
+    if (onThisDay.length > 0) {
+      return [...onThisDay].sort((x, y) =>
         x.panel_id.localeCompare(y.panel_id, undefined, { numeric: true }),
       );
     }
     const ids =
       summary?.panels ?? [...new Set(assignments.map((a) => a.panel_id))];
-    return ids.map((id) => ({
-      panel_id: id,
-      division: "",
-      room,
-      interview_count: 1,
-      manual: false,
-      deletable: false,
-    }));
-  }, [roomPanels, summary, assignments, room]);
+    return ids
+      .filter((id) => panelDayLetter(id) === dayLetter)
+      .map((id) => ({
+        panel_id: id,
+        division: "",
+        room,
+        interview_count: 1,
+        manual: false,
+        deletable: false,
+      }));
+  }, [roomPanels, dayLetter, summary, assignments, room]);
 
-  /** Chips come from the run-wide summary (most interviews first) so they stay
-   * stable as the day changes; fall back to this day's own divisions if there
-   * is no summary. */
+  /** Chips come from this day's summary (most interviews first) so a room's
+   * "divisions represented" reflects only the day currently selected; fall
+   * back to this day's own assignments if there is no summary. */
   const divisions = useMemo(() => {
     if (summary?.divisions) return summary.divisions;
     const counts = new Map<string, number>();
