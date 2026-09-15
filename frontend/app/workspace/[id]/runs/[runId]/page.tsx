@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { use, useCallback, useEffect, useMemo, useState } from "react";
 import { ApplicantsView } from "@/components/ApplicantsView";
+import { CountView } from "@/components/CountView";
 import { Modal } from "@/components/Modal";
 import { MoveModal } from "@/components/MoveModal";
 import { PanelsView } from "@/components/PanelsView";
@@ -20,6 +21,7 @@ const TABS = [
   { id: "applicants", label: "Applicants" },
   { id: "panels", label: "Panels" },
   { id: "rooms", label: "Rooms" },
+  { id: "count", label: "Count" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -374,6 +376,7 @@ export default function RunPage({
                 <ApplicantsView assignments={assignments} />
               )}
               {tab === "panels" && <PanelsView assignments={assignments} />}
+              {tab === "count" && <CountView assignments={assignments} />}
               {tab === "rooms" && (
                 <RoomsView
                   assignments={assignments}
