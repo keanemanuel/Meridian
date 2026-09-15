@@ -21,6 +21,30 @@ from pydantic import BaseModel, ConfigDict
 
 DEFAULT_WORKSPACE = "default"
 
+# Characters that break a workspace name's double life as a URL path segment
+# (the id in every `/api/workspaces/{id}` route, percent-encoded by the
+# frontend) and as a filesystem directory name (`workspace_root`). A "/"
+# survives encodeURIComponent as "%2F", but ASGI servers decode that back to
+# "/" before route matching, so the name silently splits across path
+# segments and every by-id route 404s — and the same "/" turns
+# `workspace_root(name)` into a nested directory instead of one leaf.
+_UNSAFE_NAME_CHARS = ("/", "\\")
+
+
+def validate_workspace_name(name: str) -> str:
+    """Reject a workspace name that cannot safely be a URL segment and a
+    directory name. Returns the stripped name. Raises ValueError."""
+    stripped = name.strip()
+    if not stripped:
+        raise ValueError("Workspace name must not be blank.")
+    if any(ch in stripped for ch in _UNSAFE_NAME_CHARS):
+        raise ValueError(
+            f"Workspace name must not contain '/' or '\\\\': {name!r}"
+        )
+    if stripped in (".", ".."):
+        raise ValueError(f"Workspace name must not be '{stripped}'.")
+    return stripped
+
 
 _REPO_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
@@ -80,6 +104,7 @@ def create_workspace(
 ) -> WorkspaceMeta:
     """Register a new workspace and lay down its directory skeleton
     (CLAUDE.md repo structure: `interim/`, `runs/`)."""
+    name = validate_workspace_name(name)
     workspaces = load_workspaces(path)
     if find_workspace(name, workspaces) is not None:
         raise ValueError(f"Workspace '{name}' already exists.")
@@ -104,9 +129,7 @@ def rename_workspace(
     the rename is refused rather than guessing which tree is current
     (CLAUDE.md invariant 3).
     """
-    new_name = new_name.strip()
-    if not new_name:
-        raise ValueError("Workspace name must not be blank.")
+    new_name = validate_workspace_name(new_name)
 
     workspaces = load_workspaces(path)
     existing = find_workspace(old_name, workspaces)

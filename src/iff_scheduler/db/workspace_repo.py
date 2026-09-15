@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any
 
 from iff_scheduler.db.client import get_client
-from iff_scheduler.workspace import WorkspaceMeta
+from iff_scheduler.workspace import WorkspaceMeta, validate_workspace_name
 
 _TABLE = "workspaces"
 
@@ -48,6 +48,7 @@ def get_workspace_id(name: str) -> str | None:
 
 
 def create_workspace(name: str, group: str) -> WorkspaceMeta:
+    name = validate_workspace_name(name)
     if get_workspace(name) is not None:
         raise ValueError(f"Workspace '{name}' already exists.")
     resp = get_client().table(_TABLE).insert({"name": name, "group_name": group}).execute()
@@ -57,9 +58,7 @@ def create_workspace(name: str, group: str) -> WorkspaceMeta:
 def rename_workspace(old_name: str, new_name: str) -> WorkspaceMeta:
     """Rename in place. `runs`/`assignments` link by UUID, so they follow the
     row without being touched."""
-    new_name = new_name.strip()
-    if not new_name:
-        raise ValueError("Workspace name must not be blank.")
+    new_name = validate_workspace_name(new_name)
     if new_name != old_name and get_workspace(new_name) is not None:
         raise ValueError(f"Workspace '{new_name}' already exists.")
     resp = get_client().table(_TABLE).update({"name": new_name}).eq("name", old_name).execute()
