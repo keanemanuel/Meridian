@@ -461,10 +461,8 @@ def test_applicants_workbook_mirrors_the_tab(tmp_path: Path) -> None:
             choice2=None,
         ),
     ]
-    preferences = {"A-001": "Thu 17 Sep", "A-002": "Thu 17 Sep; Fri 18 Sep"}
-
     out = tmp_path / "applicants.xlsx"
-    write_applicants_xlsx(out, rows, preferences)
+    write_applicants_xlsx(out, rows)
 
     ws = load_workbook(out).active
     assert [c.value for c in ws[1]] == APPLICANTS_TAB_HEADER
@@ -472,14 +470,19 @@ def test_applicants_workbook_mirrors_the_tab(tmp_path: Path) -> None:
     # Sorted by name (case-insensitive), so "amy brown" (#1) precedes "Zoe Adams" (#2).
     # openpyxl reads an empty string cell back as None.
     body = [[("" if c.value is None else c.value) for c in row] for row in ws.iter_rows(min_row=2)]
-    assert body[0][:3] == [1, "amy brown", "Thu 17 Sep"]
-    assert body[0][3:6] == ["Logistics", "Thu 17 Sep 09:20", "2014"]
+    assert body[0][:3] == [1, "amy brown", "Thursday, 17 September 2026"]
+    assert body[0][3:6] == ["Logistics", "09:20-09:40", "2014"]
     assert body[0][6:9] == ["", "", ""]  # single-choice applicant: blank Div 2 block
     assert body[0][9] == "CLASH"
 
-    assert body[1][:3] == [2, "Zoe Adams", "Thu 17 Sep; Fri 18 Sep"]
-    assert body[1][4] == "Thu 17 Sep 09:00"
-    assert body[1][7] == "Fri 18 Sep 10:20"
+    # Zoe's two interviews land on different days, so both are listed.
+    assert body[1][:3] == [
+        2,
+        "Zoe Adams",
+        "Thursday, 17 September 2026; Friday, 18 September 2026",
+    ]
+    assert body[1][4] == "09:00-09:20"
+    assert body[1][7] == "10:20-10:40"
     assert body[1][9] == ""
 
 
@@ -494,7 +497,7 @@ def test_applicants_workbook_marks_locked_room(tmp_path: Path) -> None:
         )
     ]
     out = tmp_path / "applicants.xlsx"
-    write_applicants_xlsx(out, rows, {})
+    write_applicants_xlsx(out, rows)
 
     ws = load_workbook(out).active
     assert ws.cell(row=2, column=6).value == "2014 \U0001f512"

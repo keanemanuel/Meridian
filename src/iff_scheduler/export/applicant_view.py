@@ -12,9 +12,8 @@ from dataclasses import dataclass
 from datetime import date as Date
 from datetime import time as Time
 
-from iff_scheduler.domain.availability import summarise_availability
 from iff_scheduler.domain.enums import DivisionCode
-from iff_scheduler.domain.models import Applicant, Assignment, ChoiceIndex, Slot
+from iff_scheduler.domain.models import Assignment, ChoiceIndex
 
 
 @dataclass(frozen=True)
@@ -106,12 +105,3 @@ def build_applicant_view(assignments: Sequence[Assignment]) -> list[ApplicantVie
             )
         )
     return rows
-
-
-def applicant_preferences(applicants: Sequence[Applicant], slots: Sequence[Slot]) -> dict[str, str]:
-    """``applicant_id`` -> the declared day/time preference the applicant
-    ticked on the form, rendered for display (FR-51). This is the string the
-    web app shows in the Applicants tab's Preference column and the standalone
-    Applicants export reuses.
-    """
-    return {a.applicant_id: summarise_availability(a.availability_slots, slots) for a in applicants}

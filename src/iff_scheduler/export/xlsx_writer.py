@@ -10,8 +10,9 @@ Three workbooks make up the web app's "Download XLSX" ZIP:
   actually used that day, never a fixed or empty placeholder room — then the
   next day's block below it. The Applicants tab, per-panel running orders and
   the conflicts report are separate outputs, not sheets in this file.
-* `write_applicants_xlsx` — a single-sheet workbook mirroring the web app's
-  Applicants tab exactly as displayed (FR-51).
+* `write_applicants_xlsx` — a single-sheet workbook: one row per applicant,
+  the day they're interviewing, and each interview's division / duration /
+  room (FR-51).
 * `write_rooms_xlsx` — a room-oriented overview: for each day, which
   panels/divisions are running in each room, for someone walking the venue.
 
@@ -290,15 +291,15 @@ def write_xlsx(path: Path, room_views: Sequence[RoomView]) -> None:
     wb.save(path)
 
 
-# The web app's Applicants tab, column for column as it renders (FR-51): a
-# leading row number, the applicant's declared day/time preference, then their
-# two interviews in slot-time order. "Div 1"/"Div 2" are the chronological
-# first/second interview (whichever slot is earlier), not the form-choice
-# order — build_applicant_view already places them that way.
+# The standalone applicants.xlsx export: a leading row number, the day the
+# applicant is interviewing, then their two interviews in slot-time order.
+# "Div 1"/"Div 2" are the chronological first/second interview (whichever
+# slot is earlier), not the form-choice order — build_applicant_view already
+# places them that way.
 APPLICANTS_TAB_HEADER = [
     "#",
     "Name",
-    "Preference",
+    "Day",
     "Div 1",
     "Time 1",
     "Room 1",
@@ -313,13 +314,22 @@ _TAB_CHOICE2_COLS = range(7, 10)
 _TAB_CLASH_COL = 10
 
 
+def _tab_day(row: ApplicantViewRow) -> str:
+    """ "Friday, 18 September 2026" for each distinct day the applicant is
+    actually interviewing (not the form-declared preference) — normally one
+    day, joined with "; " on the rare row where the two interviews land on
+    different days."""
+    days = dict.fromkeys(
+        c.date for c in (row.choice1, row.choice2) if c is not None
+    )
+    return "; ".join(f"{d.strftime('%A')}, {d.day} {d.strftime('%B')} {d.year}" for d in days)
+
+
 def _tab_when(choice: ApplicantChoiceView | None) -> str:
-    """ "Thu 17 Sep 09:00" — the tab's date + start-time cell (`formatDate` +
-    `formatTime` in the frontend)."""
+    """ "19:10-19:30" — the interview's start-end duration."""
     if choice is None:
         return ""
-    d = choice.date
-    return f"{d.strftime('%a')} {d.day} {d.strftime('%b')} {choice.start_time.strftime('%H:%M')}"
+    return f"{choice.start_time.strftime('%H:%M')}-{choice.end_time.strftime('%H:%M')}"
 
 
 def _tab_room(choice: ApplicantChoiceView | None) -> str:
@@ -332,16 +342,11 @@ def _tab_room(choice: ApplicantChoiceView | None) -> str:
 def write_applicants_xlsx(
     path: Path,
     rows: Sequence[ApplicantViewRow],
-    preferences: dict[str, str],
 ) -> None:
-    """Write a standalone one-sheet workbook mirroring the web app's
-    Applicants tab exactly as displayed (FR-51): row number, name, declared
-    preference, then each interview's sub-division / date+time / room in
-    slot-time order, and a clash flag. Rows are ordered by name like the tab;
+    """Write a standalone one-sheet workbook: row number, name, the day the
+    applicant is interviewing, then each interview's sub-division / duration
+    / room in slot-time order, and a clash flag. Rows are ordered by name;
     clash cells are shaded red (FR-54).
-
-    ``preferences`` maps ``applicant_id`` -> the declared-availability string
-    shown in the Preference column; a missing entry renders blank.
     """
     wb = Workbook()
     ws = wb.active
@@ -355,7 +360,7 @@ def write_applicants_xlsx(
             [
                 n,
                 row.full_name,
-                preferences.get(row.applicant_id, ""),
+                _tab_day(row),
                 row.choice1.sub_division if row.choice1 is not None else "",
                 _tab_when(row.choice1),
                 _tab_room(row.choice1),

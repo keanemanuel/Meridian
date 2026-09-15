@@ -34,7 +34,7 @@ from iff_scheduler import workspace as ws
 from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.enums import Severity
 from iff_scheduler.domain.grid import build_slot_grid
-from iff_scheduler.export.applicant_view import applicant_preferences, build_applicant_view
+from iff_scheduler.export.applicant_view import build_applicant_view
 from iff_scheduler.export.html_writer import (
     write_applicant_view_html,
     write_panel_view_html,
@@ -309,11 +309,7 @@ def publish(
 
     if "xlsx" in wanted:
         write_xlsx(publish_dir / "schedule.xlsx", room_views)
-        write_applicants_xlsx(
-            publish_dir / "applicants.xlsx",
-            applicant_rows,
-            applicant_preferences(applicants, grid.slots),
-        )
+        write_applicants_xlsx(publish_dir / "applicants.xlsx", applicant_rows)
         write_rooms_xlsx(publish_dir / "rooms.xlsx", assignments, rooms)
     if "html" in wanted:
         html_dir = publish_dir / "html"
