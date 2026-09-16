@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import zipfile
+from pathlib import Path
 from typing import Annotated, Any
 
 import pandas as pd
@@ -268,20 +269,17 @@ class PublishBody(BaseModel):
     formats: list[str] = ["xlsx", "html"]
 
 
-@router.post("/publish")
-def publish(
-    workspace_id: str, settings: SettingsDep, body: PublishBody | None = None
+def _run_publish(
+    workspace_id: str, settings: Settings, run_dir: Path, wanted: set[str]
 ) -> dict[str, Any]:
-    body = body or PublishBody()
-    run_dir = resolve_run_dir(workspace_id, body.run)
+    """Write this run's published outputs fresh from its *current*
+    `assignments.csv` — the live source of truth a manual drag-move, lock
+    toggle or panel move already wrote straight to. Republishing here rather
+    than trusting whatever `publish` last wrote is what keeps a later
+    download in step with those edits (see `download_bundle`)."""
     assignments_path = run_dir / "assignments.csv"
     if not assignments_path.exists():
         raise HTTPException(status_code=409, detail=f"{assignments_path} not found — solve first.")
-
-    wanted = {f.strip().lower() for f in body.formats if f.strip()}
-    unknown = wanted - {"xlsx", "html"}
-    if unknown:
-        raise HTTPException(status_code=422, detail=f"Unknown format(s): {sorted(unknown)}.")
 
     applicants_path = ws.applicants_clean_path(workspace_id)
     if not applicants_path.exists():
@@ -329,25 +327,40 @@ def publish(
     }
 
 
+@router.post("/publish")
+def publish(
+    workspace_id: str, settings: SettingsDep, body: PublishBody | None = None
+) -> dict[str, Any]:
+    body = body or PublishBody()
+    run_dir = resolve_run_dir(workspace_id, body.run)
+    wanted = {f.strip().lower() for f in body.formats if f.strip()}
+    unknown = wanted - {"xlsx", "html"}
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unknown format(s): {sorted(unknown)}.")
+    return _run_publish(workspace_id, settings, run_dir, wanted)
+
+
 _BUNDLE_MEMBERS = ("schedule.xlsx", "applicants.xlsx", "rooms.xlsx")
 
 
 @router.get("/runs/{run_id}/xlsx")
-def download_bundle(workspace_id: str, run_id: str) -> Response:
+def download_bundle(workspace_id: str, run_id: str, settings: SettingsDep) -> Response:
     """Download this run's published spreadsheets as a single ZIP:
 
     * ``schedule.xlsx`` — one sheet per division, each day's rooms laid out
       as the committee's manual scheduling sheet (Interviewer 1/2 blanks for
       hand-filled names, plus the room and applicant);
     * ``applicants.xlsx`` — the Applicants tab exactly as the web app shows
-      it (row number, declared preference, both interviews in slot-time
-      order); and
+      it (row number, day, both interviews in slot-time order); and
     * ``rooms.xlsx`` — a room-by-room, day-by-day overview of which
       panels/divisions run where, for someone walking the venue.
 
-    All three are written to local disk by `publish` (which `Schedule!`
-    calls automatically), and this endpoint just zips them together so one
-    click yields all three files.
+    Republished from the run's current `assignments.csv` on every download —
+    not just zipped from whatever `publish` last wrote — so a manual
+    drag-move, lock toggle or panel move (which write straight to that CSV,
+    not to the published files) is always in the file the recruiter gets.
+    Falls back to the last-published files only when the run directory isn't
+    on this machine's disk at all (see below).
 
     404s if the run itself doesn't exist (checked against whichever store is
     live); 409s if the run exists but was never published, or its published
@@ -358,6 +371,15 @@ def download_bundle(workspace_id: str, run_id: str) -> Response:
     """
     resolve_workspace(workspace_id)
     resolved_run_id = ensure_run_exists(workspace_id, run_id)
+
+    run_dir = (
+        run_dir_if_present(workspace_id, resolved_run_id)
+        if supabase_enabled()
+        else resolve_run_dir(workspace_id, resolved_run_id)
+    )
+    if run_dir is not None and (run_dir / "assignments.csv").exists():
+        _run_publish(workspace_id, settings, run_dir, {"xlsx"})
+
     run_out = ws.output_dir(workspace_id) / resolved_run_id
     members = [run_out / name for name in _BUNDLE_MEMBERS]
     missing = [p.name for p in members if not p.is_file()]

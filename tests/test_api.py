@@ -318,14 +318,73 @@ def test_download_bundle_zips_all_three_spreadsheets(client: TestClient, wsname:
         assert all(zf.read(name)[:2] == b"PK" for name in zf.namelist())
 
 
-def test_download_bundle_before_publish_is_409(client: TestClient, wsname: str) -> None:
+def test_download_bundle_before_publish_publishes_on_demand(
+    client: TestClient, wsname: str
+) -> None:
+    """A solved run's `assignments.csv` is already on disk, so a download
+    with no prior explicit Publish call still succeeds — it publishes fresh
+    rather than 409ing (see the manual-edit regression test below for why the
+    download always republishes)."""
+    import io
+    import zipfile
+
     _create_ws(client, wsname)
     _ingest_fixture(client, wsname)
     run_id = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
         "run_id"
     ]
     resp = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/xlsx")
-    assert resp.status_code == 409
+    assert resp.status_code == 200, resp.text
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        assert sorted(zf.namelist()) == ["applicants.xlsx", "rooms.xlsx", "schedule.xlsx"]
+
+
+def test_download_bundle_reflects_a_manual_edit_made_after_publish(
+    client: TestClient, wsname: str
+) -> None:
+    """Regression test: a manual lock/move writes straight to the run's
+    `assignments.csv` (FR-41), not to the already-published xlsx files. The
+    downloaded ZIP must reflect that edit even though nothing re-ran
+    `/publish` — this used to silently serve the pre-edit files."""
+    import io
+    import zipfile
+
+    from openpyxl import load_workbook
+
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
+        "run_id"
+    ]
+    # Publish once, exactly like "Schedule!" does — this is the snapshot that
+    # used to go stale.
+    published = client.post(
+        f"/api/workspaces/{wsname}/publish", json={"run": "latest", "formats": ["xlsx"]}
+    )
+    assert published.status_code == 200, published.text
+
+    def applicants_sheet_text() -> str:
+        resp = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/xlsx")
+        assert resp.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            ws = load_workbook(io.BytesIO(zf.read("applicants.xlsx"))).active
+            return "\n".join(
+                str(c.value) for row in ws.iter_rows() for c in row if c.value is not None
+            )
+
+    assert "\U0001f512" not in applicants_sheet_text()  # nothing locked yet
+
+    rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    first = rows[0]
+    locked = client.patch(
+        f"/api/workspaces/{wsname}/runs/{run_id}/assignments/{first['assignment_id']}/lock",
+        json={"locked": True},
+    )
+    assert locked.status_code == 200, locked.text
+
+    # No explicit re-publish in between — the download itself must pick up
+    # the lock the manual edit just wrote to assignments.csv.
+    assert "\U0001f512" in applicants_sheet_text()
 
 
 # --------------------------------------------------------------- schedule edits
