@@ -35,6 +35,7 @@ from iff_scheduler import workspace as ws
 from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.enums import Severity
 from iff_scheduler.domain.grid import build_slot_grid
+from iff_scheduler.domain.models import Assignment
 from iff_scheduler.export.applicant_view import build_applicant_view
 from iff_scheduler.export.html_writer import (
     write_applicant_view_html,
@@ -269,37 +270,75 @@ class PublishBody(BaseModel):
     formats: list[str] = ["xlsx", "html"]
 
 
-def _run_publish(
-    workspace_id: str, settings: Settings, run_dir: Path, wanted: set[str]
-) -> dict[str, Any]:
-    """Write this run's published outputs fresh from its *current*
-    `assignments.csv` — the live source of truth a manual drag-move, lock
-    toggle or panel move already wrote straight to. Republishing here rather
-    than trusting whatever `publish` last wrote is what keeps a later
-    download in step with those edits (see `download_bundle`)."""
+def _current_run_assignments(
+    workspace_id: str, run_id: str, run_dir: Path | None
+) -> tuple[list[Assignment], dict[str, Any] | None]:
+    """This run's assignments exactly as they stand right now, plus its
+    recorded metrics (for panel-set resolution) — from Postgres when the DB
+    backend is live, so a redeploy that wipes this Railway instance's local
+    disk (docs/DEPLOY.md: "Railway's filesystem is wiped on each redeploy")
+    still exports the live, edited schedule instead of a stale or 409'd one.
+    Falls back to the local `assignments.csv` in file-store mode, where that
+    CSV is the only copy that ever existed."""
+    if supabase_enabled():
+        from iff_scheduler.db import assignment_repo, run_repo
+
+        row = run_repo.get_run(workspace_pk(workspace_id), run_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found.")
+        assignments = assignment_repo.list_assignments(str(row["id"]))
+        return assignments, (row.get("metrics") or None)
+
+    if run_dir is None:
+        raise HTTPException(
+            status_code=409, detail=f"No run directory for '{run_id}' — solve first."
+        )
     assignments_path = run_dir / "assignments.csv"
     if not assignments_path.exists():
         raise HTTPException(status_code=409, detail=f"{assignments_path} not found — solve first.")
+    return load_assignments(assignments_path), None
 
-    applicants_path = ws.applicants_clean_path(workspace_id)
-    if not applicants_path.exists():
-        raise HTTPException(status_code=404, detail=f"No applicants at {applicants_path}.")
+
+def _run_publish(
+    workspace_id: str,
+    settings: Settings,
+    run_id: str,
+    run_dir: Path | None,
+    wanted: set[str],
+) -> dict[str, Any]:
+    """Write this run's published outputs fresh from its *current*
+    assignments — the live source of truth a manual drag-move, lock toggle
+    or panel move already wrote straight to. Republishing here rather than
+    trusting whatever `publish` last wrote is what keeps a later download in
+    step with those edits (see `download_bundle`)."""
+    assignments, run_metrics = _current_run_assignments(workspace_id, run_id, run_dir)
 
     grid = build_slot_grid(settings.event)
-    applicants = load_clean_applicants(applicants_path)
-    assignments = load_assignments(assignments_path)
+    # The full applicant roster (including anyone left unscheduled) is a
+    # local-only file with no DB counterpart — needed for conflicts.csv, but
+    # not for the xlsx exports below, which read entirely off `assignments`.
+    # A missing roster (this instance's disk wiped since ingest) degrades
+    # conflicts.csv rather than failing the whole export.
+    applicants_path = ws.applicants_clean_path(workspace_id)
+    applicants = load_clean_applicants(applicants_path) if applicants_path.exists() else []
+
     # The run's actual solved panel set, not the bare committed config — a
     # division the load-balancer grew from one room to several would
     # otherwise render only its baseline room (see _resolve_run_panels).
-    panels = resolve_run_panels(settings, grid, assignments, run_dir=run_dir)
+    panels = resolve_run_panels(
+        settings, grid, assignments, run_dir=run_dir, run_metrics=run_metrics
+    )
     rooms = resolve_rooms(settings.rooms, grid)
 
-    resolved_run_id = run_dir.resolve().name
-    publish_dir = ws.output_dir(workspace_id) / resolved_run_id
+    publish_dir = ws.output_dir(workspace_id) / run_id
     publish_dir.mkdir(parents=True, exist_ok=True)
 
-    conflicts = build_conflicts(assignments, applicants, panels)
-    conflicts_frame(conflicts).to_csv(publish_dir / "conflicts.csv", index=False)
+    clashes_red = warnings_amber = 0
+    if applicants:
+        conflicts = build_conflicts(assignments, applicants, panels)
+        conflicts_frame(conflicts).to_csv(publish_dir / "conflicts.csv", index=False)
+        clashes_red = sum(1 for c in conflicts if c.severity == Severity.RED)
+        warnings_amber = sum(1 for c in conflicts if c.severity == Severity.AMBER)
 
     room_views = build_room_views(assignments, panels, rooms, grid.slots)
     applicant_rows = build_applicant_view(assignments)
@@ -316,15 +355,23 @@ def _run_publish(
         write_panel_view_html(panel_views, html_dir)
 
     return {
-        "run_id": resolved_run_id,
+        "run_id": run_id,
         "output_dir": str(publish_dir),
         "room_views": len(room_views),
         "applicants": len(applicant_rows),
         "panels": len(panel_views),
-        "clashes_red": sum(1 for c in conflicts if c.severity == Severity.RED),
-        "warnings_amber": sum(1 for c in conflicts if c.severity == Severity.AMBER),
+        "clashes_red": clashes_red,
+        "warnings_amber": warnings_amber,
         "formats": sorted(wanted),
     }
+
+
+def _resolve_run_dir_for_publish(workspace_id: str, run_id: str) -> Path | None:
+    return (
+        run_dir_if_present(workspace_id, run_id)
+        if supabase_enabled()
+        else resolve_run_dir(workspace_id, run_id)
+    )
 
 
 @router.post("/publish")
@@ -332,12 +379,13 @@ def publish(
     workspace_id: str, settings: SettingsDep, body: PublishBody | None = None
 ) -> dict[str, Any]:
     body = body or PublishBody()
-    run_dir = resolve_run_dir(workspace_id, body.run)
     wanted = {f.strip().lower() for f in body.formats if f.strip()}
     unknown = wanted - {"xlsx", "html"}
     if unknown:
         raise HTTPException(status_code=422, detail=f"Unknown format(s): {sorted(unknown)}.")
-    return _run_publish(workspace_id, settings, run_dir, wanted)
+    resolved_run_id = ensure_run_exists(workspace_id, body.run)
+    run_dir = _resolve_run_dir_for_publish(workspace_id, resolved_run_id)
+    return _run_publish(workspace_id, settings, resolved_run_id, run_dir, wanted)
 
 
 _BUNDLE_MEMBERS = ("schedule.xlsx", "applicants.xlsx", "rooms.xlsx")
@@ -355,30 +403,29 @@ def download_bundle(workspace_id: str, run_id: str, settings: SettingsDep) -> Re
     * ``rooms.xlsx`` — a room-by-room, day-by-day overview of which
       panels/divisions run where, for someone walking the venue.
 
-    Republished from the run's current `assignments.csv` on every download —
-    not just zipped from whatever `publish` last wrote — so a manual
-    drag-move, lock toggle or panel move (which write straight to that CSV,
-    not to the published files) is always in the file the recruiter gets.
-    Falls back to the last-published files only when the run directory isn't
-    on this machine's disk at all (see below).
+    Republished from the run's *current* assignments on every download — not
+    just zipped from whatever `publish` last wrote — so a manual drag-move,
+    lock toggle or panel move is always in the file the recruiter gets. In
+    Supabase mode that reads straight from Postgres (always authoritative,
+    always current), so this works even when this Railway instance's local
+    disk was wiped by a redeploy since the run was solved — no re-solve
+    needed. Only falls back to whatever was last published when the current
+    schedule can't be loaded from either store.
 
     404s if the run itself doesn't exist (checked against whichever store is
-    live); 409s if the run exists but was never published, or its published
-    output isn't on *this* machine's disk — publish artefacts are a local
-    file, never mirrored to Postgres, so a run solved before a Railway
-    redeploy (an ephemeral filesystem — see docs/DEPLOY.md, "Persist run
-    artefacts") needs Publish run again rather than a fresh Schedule!.
+    live); 409s if nothing was ever published for it and the current
+    schedule can't be regenerated either.
     """
     resolve_workspace(workspace_id)
     resolved_run_id = ensure_run_exists(workspace_id, run_id)
-
-    run_dir = (
-        run_dir_if_present(workspace_id, resolved_run_id)
-        if supabase_enabled()
-        else resolve_run_dir(workspace_id, resolved_run_id)
-    )
-    if run_dir is not None and (run_dir / "assignments.csv").exists():
-        _run_publish(workspace_id, settings, run_dir, {"xlsx"})
+    run_dir = _resolve_run_dir_for_publish(workspace_id, resolved_run_id)
+    try:
+        _run_publish(workspace_id, settings, resolved_run_id, run_dir, {"xlsx"})
+    except HTTPException:
+        # Couldn't regenerate (neither Postgres nor local disk has this run's
+        # assignments) — fall through to whatever was last published, if
+        # anything; the 409 below still fires when there's truly nothing.
+        pass
 
     run_out = ws.output_dir(workspace_id) / resolved_run_id
     members = [run_out / name for name in _BUNDLE_MEMBERS]

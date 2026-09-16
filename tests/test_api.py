@@ -387,6 +387,65 @@ def test_download_bundle_reflects_a_manual_edit_made_after_publish(
     assert "\U0001f512" in applicants_sheet_text()
 
 
+def test_download_bundle_survives_local_run_dir_being_wiped(
+    client: TestClient, wsname: str
+) -> None:
+    """Regression: Railway's filesystem is wiped on every redeploy
+    (docs/DEPLOY.md), so a run solved before one has no `assignments.csv` on
+    this instance any more. In Supabase mode the download must still
+    regenerate the current — possibly since manually edited — schedule from
+    Postgres rather than demanding a re-solve; only the file-store backend is
+    genuinely stuck once its one copy is gone."""
+    import io
+    import shutil
+    import zipfile
+
+    from openpyxl import load_workbook
+
+    from iff_scheduler import workspace as iff_ws
+    from iff_scheduler.db import supabase_enabled
+
+    _create_ws(client, wsname)
+    _ingest_fixture(client, wsname)
+    run_id = client.post(f"/api/workspaces/{wsname}/solve", json={"skip_check": True}).json()[
+        "run_id"
+    ]
+    published = client.post(
+        f"/api/workspaces/{wsname}/publish", json={"run": "latest", "formats": ["xlsx"]}
+    )
+    assert published.status_code == 200, published.text
+
+    rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    first = rows[0]
+    locked = client.patch(
+        f"/api/workspaces/{wsname}/runs/{run_id}/assignments/{first['assignment_id']}/lock",
+        json={"locked": True},
+    )
+    assert locked.status_code == 200, locked.text
+
+    # Simulate a redeploy: this instance's local copies of the run and its
+    # published output are gone.
+    shutil.rmtree(iff_ws.runs_dir(wsname) / run_id, ignore_errors=True)
+    shutil.rmtree(iff_ws.output_dir(wsname) / run_id, ignore_errors=True)
+    assert not (iff_ws.runs_dir(wsname) / run_id).exists()
+
+    resp = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/xlsx")
+    if not supabase_enabled():
+        # File-store mode has no second copy — the run directory *is* the
+        # record, so wiping it makes the run itself unknown (404), same as
+        # before this fix.
+        assert resp.status_code == 404
+        return
+
+    assert resp.status_code == 200, resp.text
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        wb = load_workbook(io.BytesIO(zf.read("applicants.xlsx")))
+        text = "\n".join(
+            str(c.value) for row in wb.active.iter_rows() for c in row if c.value is not None
+        )
+    assert "\U0001f512" in text
+
+
 # --------------------------------------------------------------- schedule edits
 
 
