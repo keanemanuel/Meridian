@@ -1,0 +1,41 @@
+Read CLAUDE.md.
+
+Bug: applicants who submitted a preference for BOTH Thursday
+(17 Sep) and Friday (18 Sep) — or who submitted a single specific
+day — are having their preference incorrectly collapsed/displayed
+as only "17" (Thursday), even when their actual submitted
+preference was 18, or both days.
+
+This affects the day/time preference column (restored in Session
+G5) and likely the underlying ingest/parsing logic that reads the
+day preference from the raw form/CSV data.
+
+Investigate:
+1. Check the ingest/validation code that parses the applicant's
+   day preference from the raw CSV column (likely a free-text or
+   multi-select field like "Thursday, 17 September; Friday, 18
+   September" per earlier examples in this codebase, e.g.
+   "Thu 17 Sep; Fri 18 Sep" format seen in the Applicants tab).
+2. Confirm whether the parser correctly distinguishes and stores
+   BOTH days when both are selected, a single specific day when
+   only one is selected, and doesn't default/fall back to "17"
+   when the actual value is "18" or "both."
+3. Check date parsing logic specifically — a common bug here is
+   date string matching that's too loose (e.g. matching on "Sep"
+   or partial substring rather than the full day+date), or an
+   off-by-one/wrong-index bug when splitting a "day1; day2"
+   string into separate values.
+4. Confirm the SAME bug isn't also present in the solver's
+   availability logic (i.e. is the scheduler ALSO treating an
+   applicant who said "only Friday" as available Thursday
+   instead, which would be a much more serious correctness bug
+   affecting actual scheduling, not just display).
+
+Fix the parsing so day preferences are captured accurately per
+applicant — 17-only, 18-only, or both — with no collapsing/
+defaulting to 17. Add a test with the specific formats seen in
+this codebase (e.g. an applicant preferring only "Fri 18 Sep",
+one preferring only "Thu 17 Sep", and one preferring "Thu 17 Sep;
+Fri 18 Sep") asserting each is captured distinctly and correctly.
+
+Run pytest. If tests pass, commit and push.

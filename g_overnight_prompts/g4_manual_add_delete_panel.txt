@@ -1,0 +1,38 @@
+Read CLAUDE.md.
+
+New feature: manual panel management per room, in the Rooms tab.
+
+## Add panel
+1. Each room card gets a "+" button.
+2. Clicking it opens a dropdown listing all divisions.
+3. If a division already has a panel in that room, its entry in
+   the dropdown is disabled/greyed out (faded text, not
+   selectable) — since room-exclusivity still applies (no two
+   panels of the same division in one room).
+4. Selecting an available (non-faded) division creates a new,
+   empty panel for that division in this room — an empty schedule
+   ready for manual assignment (via drag-and-drop / move dialog
+   from earlier sessions).
+
+## Remove the 4-panel cap for MANUAL adjustments only
+- The solver's INITIAL auto-solve should still target/aim for
+  3-4 panels per room as before (Session G1's balancing target) —
+  this default behavior is unchanged.
+- However, MANUAL actions (adding a panel via the "+" button, or
+  dragging a panel in via Session G3) should NOT be blocked by the
+  4-panel ceiling. A room may end up with 5+ panels if the user
+  deliberately adds/moves them there — this is allowed for manual
+  overrides, even though the automated solve won't produce this
+  by default.
+
+## Delete panel
+1. Each panel (division badge) in a room gets a delete
+   affordance, but ONLY enabled when that panel's schedule is
+   100% empty (zero interviews assigned to it, at any slot).
+2. If the panel has ANY interviews assigned, the delete option is
+   disabled/hidden — panels with applicants must be emptied
+   first (e.g. via move) before they can be deleted.
+3. Deleting an empty panel removes it entirely from that room
+   (and from that division's active panel list for that day).
+
+Run pytest. If tests pass, commit and push.

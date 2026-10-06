@@ -1,0 +1,19 @@
+Read CLAUDE.md.
+
+There's currently a way to lock a candidate's interview slot (used
+by Re-solve: "keeps all N locks"), but no visible way to UNLOCK one
+once it's locked — users can't find or use an unlock control.
+
+Add:
+1. A visible lock/unlock toggle on each candidate's interview
+   entry (wherever locks are currently set — likely Room View,
+   Rooms tab, or Applicants tab), showing clearly whether a given
+   interview is currently locked.
+2. Clicking it should toggle the lock state and persist that
+   change to the workspace immediately (or clearly indicate
+   pending/unsaved state if that's how other edits work here).
+3. The Re-solve summary ("Keeps all N locks and re-optimises the
+   rest") should accurately reflect the current lock count after
+   toggling.
+
+Run pytest. If tests pass, commit and push.

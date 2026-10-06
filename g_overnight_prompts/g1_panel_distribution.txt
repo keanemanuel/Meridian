@@ -1,0 +1,40 @@
+Read CLAUDE.md and docs/SPEC.md (room/panel assignment, rebalance_panels).
+
+Problem: room-to-panel distribution is uneven and not smart about
+consolidation. Example from current output:
+- Room 2016: 5 panels (CREATIVE-BAL-1, FNB-BAL-1, LOGISTICS-BAL-1,
+  MEDMARDOC-BAL-5, PROGRAM-T)
+- Room 2020: only 3 panels
+- Room 3013: only 2 panels
+- CREATIVE-BAL-1 in Room 2016 has only 1 interview all day, while
+  Room 2018 has a Creative panel (CREATIVE-T) with 7 interviews
+  that could easily have absorbed it.
+
+This isn't a hard bug (nothing crashes/violates constraints) but
+the distribution is not smart — it should actively balance panel
+COUNT per room (target 3-4 panels/room, evenly, not 5 vs 2) AND
+merge near-empty panels into same-division panels elsewhere
+(building on the Part 2 consolidation logic from the earlier
+session — that logic apparently isn't catching this
+cross-room case, e.g. Room 2016's 1-interview Creative panel
+should have merged into Room 2018's Creative panel).
+
+Fix, in the room/panel assignment step (near rebalance_panels or
+wherever rooms get assigned to panels):
+1. After initial panel assignment, run a balancing pass that
+   evens out PANEL COUNT per room — target every room landing at
+   3-4 panels, not allowing one room to have 5 while another has 2.
+2. Strengthen the near-empty-panel consolidation (existing Part 2
+   logic) to check ALL same-division panels across ALL rooms, not
+   just siblings that happen to already be considered together —
+   a 1-interview panel should actively search for ANY same-division
+   panel with spare capacity anywhere, not just a specific pairing.
+3. This remains a soft optimization pass — never violate the
+   4-panel room ceiling, room-exclusivity (same division can't
+   share a room), or applicant availability.
+4. Re-run a full solve and report the resulting panel-count
+   distribution per room, confirming it's now balanced (3-4 each,
+   not 5-vs-2 swings) and no isolated 1-2 interview panels remain
+   where consolidation was possible.
+
+Run pytest. If tests pass, commit and push.
