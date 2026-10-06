@@ -28,39 +28,39 @@ export function PanelsView({ assignments }: { assignments: Assignment[] }) {
           return (
             <section
               key={panel.panel_id}
-              className="overflow-hidden rounded-lg border border-neutral-200 bg-white"
+              className="card overflow-hidden"
             >
-              <header className="flex items-baseline justify-between border-b border-neutral-200 px-4 py-2.5">
+              <header className="flex items-baseline justify-between border-b-2 border-purple-deep px-4 py-2.5">
                 <div>
-                  <h3 className="text-sm font-semibold text-neutral-900">
+                  <h3 className="type-label text-sm text-purple-deep">
                     {panel.panel_id}
                   </h3>
-                  <p className="text-xs text-neutral-400">{panel.room}</p>
+                  <p className="text-xs text-ink-muted">{panel.room}</p>
                 </div>
-                <p className="text-xs text-neutral-500">
+                <p className="text-xs text-ink-muted">
                   {runOrder.length} interview{runOrder.length === 1 ? "" : "s"}
                   {clashes > 0 && (
-                    <span className="ml-1 text-red-600">· {clashes} clash</span>
+                    <span className="ml-1 text-danger">· {clashes} clash</span>
                   )}
                 </p>
               </header>
 
-              <ol className="divide-y divide-neutral-100">
+              <ol className="divide-y divide-rule">
                 {runOrder.map((a, i) => (
                   <li
                     key={a.assignment_id}
                     className={`flex items-baseline gap-3 px-4 py-2 text-sm ${
-                      a.is_clash ? "bg-red-100 text-red-600" : ""
+                      a.is_clash ? "bg-danger-wash text-danger" : ""
                     } ${
                       assignmentMatches(a, query)
-                        ? "ring-2 ring-inset ring-amber-500"
+                        ? "ring-2 ring-inset ring-accent-pink-ink"
                         : ""
                     }`}
                   >
-                    <span className="w-5 shrink-0 text-xs text-neutral-400">
+                    <span className="w-5 shrink-0 text-xs text-ink-muted">
                       {i + 1}
                     </span>
-                    <span className="w-24 shrink-0 text-xs text-neutral-500">
+                    <span className="w-24 shrink-0 text-xs text-ink-muted">
                       {formatDate(a.date)} {formatTime(a.start_time)}
                     </span>
                     <span className="min-w-0 flex-1">
@@ -69,7 +69,7 @@ export function PanelsView({ assignments }: { assignments: Assignment[] }) {
                         {a.is_locked && <span className="ml-1">🔒</span>}
                       </span>
                       <span
-                        className={`block truncate text-xs ${a.is_clash ? "text-red-500" : "text-neutral-500"}`}
+                        className={`block truncate text-xs ${a.is_clash ? "text-danger" : "text-ink-muted"}`}
                       >
                         {a.sub_division}
                       </span>

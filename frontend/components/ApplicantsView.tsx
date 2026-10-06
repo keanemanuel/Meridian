@@ -6,9 +6,11 @@ import type { Assignment } from "@/lib/types";
 import { Badge, EmptyState } from "./ui";
 
 function TimeCell({ a }: { a: Assignment | null }) {
-  if (!a) return <span className="text-neutral-300">·</span>;
+  if (!a) return <span className="text-ink-faint">·</span>;
   return (
-    <span className={a.is_clash ? "text-red-600" : "text-neutral-700"}>
+    <span
+      className={`whitespace-nowrap ${a.is_clash ? "text-danger" : "text-ink-soft"}`}
+    >
       {formatDate(a.date)} {formatTime(a.start_time)}
     </span>
   );
@@ -62,9 +64,9 @@ export function ApplicantsView({ assignments }: { assignments: Assignment[] }) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Filter by name, id or email…"
-          className="w-64 rounded-md border border-neutral-300 px-3 py-1.5 text-sm outline-none focus:border-neutral-500"
+          className="input w-64 max-w-full"
         />
-        <label className="flex items-center gap-2 text-sm text-neutral-600">
+        <label className="flex items-center gap-2 text-sm text-ink-soft">
           <input
             type="checkbox"
             checked={clashOnly}
@@ -72,28 +74,28 @@ export function ApplicantsView({ assignments }: { assignments: Assignment[] }) {
           />
           Clashes only
         </label>
-        <label className="flex items-center gap-2 text-sm text-neutral-600">
+        <label className="flex items-center gap-2 text-sm text-ink-soft">
           Interview count
           <select
             value={countFilter}
             onChange={(e) =>
               setCountFilter(e.target.value as InterviewCountFilter)
             }
-            className="rounded-md border border-neutral-300 px-2 py-1 text-sm outline-none focus:border-neutral-500"
+            className="input"
           >
             <option value="all">Any</option>
             <option value="2">2 interviews</option>
             <option value="1">1 interview</option>
           </select>
         </label>
-        <span className="text-xs text-neutral-400">
+        <span className="text-xs text-ink-muted">
           {rows.length} of {all.length} applicants
         </span>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white">
+      <div className="card overflow-x-auto">
         <table className="min-w-full text-sm">
-          <thead className="bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500">
+          <thead className="type-label whitespace-nowrap border-b-2 border-purple-deep bg-paper-sunk text-[11px] text-purple-deep">
             <tr>
               {headers.map((h) => (
                 <th key={h} className="px-4 py-2 text-left font-medium">
@@ -102,67 +104,67 @@ export function ApplicantsView({ assignments }: { assignments: Assignment[] }) {
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-neutral-100">
+          <tbody className="divide-y divide-rule">
             {rows.map((r, i) => (
-              <tr key={r.applicant_id} className={r.hasClash ? "bg-red-50" : ""}>
-                <td className="px-4 py-2 text-right tabular-nums text-neutral-400">
+              <tr key={r.applicant_id} className={r.hasClash ? "bg-danger-wash" : ""}>
+                <td className="px-4 py-2 text-right tabular-nums text-ink-muted">
                   {i + 1}
                 </td>
                 <td className="px-4 py-2">
-                  <span className="block font-medium text-neutral-800">
+                  <span className="block font-medium text-ink">
                     {r.full_name}
                   </span>
-                  <span className="block text-xs text-neutral-400">
+                  <span className="block text-xs text-ink-muted">
                     {r.applicant_id}
                   </span>
                 </td>
 
                 <td
-                  className="px-4 py-2 text-neutral-600"
+                  className="px-4 py-2 text-ink-soft"
                   title="Day / time preference declared on the form"
                 >
-                  {r.availability || <span className="text-neutral-300">·</span>}
+                  {r.availability || <span className="text-ink-faint">·</span>}
                 </td>
 
-                <td className="px-4 py-2 text-neutral-700">
-                  {r.first?.sub_division ?? <span className="text-neutral-300">·</span>}
+                <td className="px-4 py-2 text-ink-soft">
+                  {r.first?.sub_division ?? <span className="text-ink-faint">·</span>}
                 </td>
                 <td className="px-4 py-2">
                   <TimeCell a={r.first} />
                 </td>
-                <td className="px-4 py-2 text-neutral-700">
+                <td className="px-4 py-2 text-ink-soft">
                   {r.first ? (
                     <>
                       {r.first.room}
                       {r.first.is_locked && <span className="ml-1">🔒</span>}
                     </>
                   ) : (
-                    <span className="text-neutral-300">·</span>
+                    <span className="text-ink-faint">·</span>
                   )}
                 </td>
 
-                <td className="px-4 py-2 text-neutral-700">
-                  {r.second?.sub_division ?? <span className="text-neutral-300">·</span>}
+                <td className="px-4 py-2 text-ink-soft">
+                  {r.second?.sub_division ?? <span className="text-ink-faint">·</span>}
                 </td>
                 <td className="px-4 py-2">
                   <TimeCell a={r.second} />
                 </td>
-                <td className="px-4 py-2 text-neutral-700">
+                <td className="px-4 py-2 text-ink-soft">
                   {r.second ? (
                     <>
                       {r.second.room}
                       {r.second.is_locked && <span className="ml-1">🔒</span>}
                     </>
                   ) : (
-                    <span className="text-neutral-300">·</span>
+                    <span className="text-ink-faint">·</span>
                   )}
                 </td>
 
                 <td className="px-4 py-2">
                   {r.hasClash ? (
-                    <Badge tone="red">CLASH</Badge>
+                    <Badge tone="danger">CLASH</Badge>
                   ) : (
-                    <span className="text-neutral-300">·</span>
+                    <span className="text-ink-faint">·</span>
                   )}
                 </td>
               </tr>

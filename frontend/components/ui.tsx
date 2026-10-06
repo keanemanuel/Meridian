@@ -18,14 +18,15 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 };
 
 const VARIANTS: Record<NonNullable<ButtonProps["variant"]>, string> = {
+  // Solid purple with a hard offset shadow; pressing in on hover.
   primary:
-    "bg-neutral-900 text-white border-neutral-900 hover:bg-neutral-700 hover:border-neutral-700",
+    "border-purple-deep bg-purple-vivid text-white shadow-hard enabled:hover:translate-x-0.5 enabled:hover:translate-y-0.5 enabled:hover:shadow-hard-sm enabled:active:translate-x-1 enabled:active:translate-y-1 enabled:active:shadow-none",
   secondary:
-    "bg-white text-neutral-800 border-neutral-300 hover:bg-neutral-50 hover:border-neutral-400",
+    "border-purple-vivid bg-transparent text-purple-vivid enabled:hover:bg-purple-wash",
   danger:
-    "bg-white text-red-600 border-red-300 hover:bg-red-50 hover:border-red-400",
+    "border-danger bg-transparent text-danger enabled:hover:bg-danger-wash",
   ghost:
-    "bg-transparent text-neutral-600 border-transparent hover:bg-neutral-100",
+    "border-transparent bg-transparent text-purple-vivid enabled:hover:bg-purple-wash",
 };
 
 export function Button({
@@ -40,7 +41,7 @@ export function Button({
     <button
       {...rest}
       disabled={disabled || loading}
-      className={`inline-flex items-center justify-center gap-2 rounded-md border px-3.5 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${VARIANTS[variant]} ${className}`}
+      className={`type-label inline-flex items-center justify-center gap-2 border-2 px-4 pb-2 pt-2.5 text-xs leading-none transition-[transform,box-shadow,background-color] duration-100 disabled:cursor-not-allowed disabled:opacity-50 ${VARIANTS[variant]} ${className}`}
     >
       {loading && <Spinner />}
       {children}
@@ -53,17 +54,18 @@ export function Badge({
   tone = "neutral",
 }: {
   children: ReactNode;
-  tone?: "neutral" | "red" | "green" | "amber";
+  tone?: "neutral" | "danger" | "purple" | "pink" | "blue";
 }) {
   const tones = {
-    neutral: "bg-neutral-100 text-neutral-600 border-neutral-200",
-    red: "bg-red-100 text-red-600 border-red-200",
-    green: "bg-green-50 text-green-700 border-green-200",
-    amber: "bg-amber-50 text-amber-700 border-amber-200",
+    neutral: "border-accent-grey bg-paper-sunk text-ink-soft",
+    danger: "border-danger bg-danger-wash text-danger",
+    purple: "border-purple-vivid bg-purple-wash text-purple-vivid",
+    pink: "border-accent-pink bg-accent-pink-wash text-accent-pink-ink",
+    blue: "border-accent-blue bg-accent-blue-wash text-accent-blue",
   };
   return (
     <span
-      className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium ${tones[tone]}`}
+      className={`type-label inline-flex items-center border px-2 pb-0.5 pt-1 text-[11px] leading-none ${tones[tone]}`}
     >
       {children}
     </span>
@@ -89,16 +91,47 @@ export function SearchBar({
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
       aria-label={placeholder}
-      className="mb-3 w-64 rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-800 outline-none placeholder:text-neutral-400 focus:border-neutral-500"
+      className="input mb-3 w-64 max-w-full"
     />
   );
 }
 
 export function EmptyState({ title, hint }: { title: string; hint?: string }) {
   return (
-    <div className="rounded-lg border border-dashed border-neutral-300 bg-white px-6 py-10 text-center">
-      <p className="text-sm font-medium text-neutral-700">{title}</p>
-      {hint && <p className="mt-1 text-xs text-neutral-500">{hint}</p>}
+    <div className="card overflow-hidden">
+      <div className="filmstrip h-7" aria-hidden="true" />
+      <div className="px-6 pb-2 pt-8 text-center">
+        <p className="section-title">{title}</p>
+        {hint && <p className="mt-2 text-sm text-ink-muted">{hint}</p>}
+      </div>
+      <div className="halftone h-12" aria-hidden="true" />
     </div>
+  );
+}
+
+/** A row of tabs. Each is a typewriter label over a thick bar; the active
+ * tab's bar is filled, the rest stay grey. */
+export function TabBar({ children }: { children: ReactNode }) {
+  return <div className="flex flex-wrap gap-x-3 gap-y-2">{children}</div>;
+}
+
+export function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-current={active ? "true" : undefined}
+      className={`tab inline-flex items-center ${active ? "tab-active" : ""}`}
+    >
+      {children}
+    </button>
   );
 }

@@ -10,7 +10,7 @@ import { PanelsView } from "@/components/PanelsView";
 import { RoomView, type MoveRequest } from "@/components/RoomView";
 import { RoomsView } from "@/components/RoomsView";
 import { useToast } from "@/components/Toast";
-import { Badge, Button, Spinner } from "@/components/ui";
+import { Badge, Button, Spinner, TabBar, TabButton } from "@/components/ui";
 import { ApiError, api, saveBlob } from "@/lib/api";
 import { formatRunId, formatTime, interviewBreakdown } from "@/lib/schedule";
 import type { Assignment, RoomPanel } from "@/lib/types";
@@ -274,16 +274,16 @@ export default function RunPage({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-8">
         <Link
           href={`/workspace/${encodeURIComponent(workspaceId)}`}
-          className="text-xs text-neutral-500 hover:text-neutral-800"
+          className="eyebrow underline-offset-2 hover:underline"
         >
           ‹ {workspaceId}
         </Link>
 
-        <div className="mt-1 flex flex-wrap items-center gap-3">
-          <h1 className="text-lg font-semibold text-neutral-900">
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+          <h1 className="display text-2xl sm:text-3xl">
             {formatRunId(runId)}
           </h1>
           <button
@@ -291,14 +291,14 @@ export default function RunPage({
             onClick={() => setShowBreakdown(true)}
             disabled={assignments.length === 0}
             title="Show how these interviews split across applicants"
-            className="rounded transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 disabled:cursor-not-allowed disabled:opacity-50"
+            className="transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Badge>{assignments.length} interviews ▾</Badge>
           </button>
-          {clashes > 0 && <Badge tone="red">{clashes} clash</Badge>}
-          {locks > 0 && <Badge tone="amber">{locks} 🔒 locked</Badge>}
+          {clashes > 0 && <Badge tone="danger">{clashes} clash</Badge>}
+          {locks > 0 && <Badge tone="pink">{locks} 🔒 locked</Badge>}
 
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex flex-wrap items-center gap-2">
             <Button
               onClick={undoLastMove}
               disabled={history.length === 0 || busy}
@@ -321,30 +321,27 @@ export default function RunPage({
           </div>
         </div>
 
-        <div className="mt-5 flex gap-1 border-b border-neutral-200">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
-                tab === t.id
-                  ? "border-neutral-900 text-neutral-900"
-                  : "border-transparent text-neutral-500 hover:text-neutral-800"
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
+        <div className="mt-6">
+          <TabBar>
+            {TABS.map((t) => (
+              <TabButton
+                key={t.id}
+                active={tab === t.id}
+                onClick={() => setTab(t.id)}
+              >
+                {t.label}
+              </TabButton>
+            ))}
+          </TabBar>
         </div>
 
         <div className="mt-5">
           {loading ? (
-            <p className="flex items-center gap-2 text-sm text-neutral-500">
+            <p className="flex items-center gap-2 text-sm text-ink-muted">
               <Spinner /> Loading assignments…
             </p>
           ) : loadError ? (
-            <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <div className="border-2 border-danger bg-danger-wash px-4 py-3 text-sm text-danger">
               {loadError}
             </div>
           ) : (
@@ -358,8 +355,8 @@ export default function RunPage({
                     onToggleLock={toggleLock}
                     moving={moving}
                   />
-                  <p className="mt-2 text-xs text-neutral-500">
-                    Drag an interview onto a blue slot to move it, or an amber
+                  <p className="mt-2 text-xs text-ink-muted">
+                    Drag an interview onto a blue slot to move it, or a pink
                     slot to move it outside the applicant&apos;s stated
                     availability (recorded as a clash). Only blank slots on the
                     applicant&apos;s own division show as targets. Click an
@@ -391,17 +388,17 @@ export default function RunPage({
       </div>
 
       {resolving && (
-        <div className="flex shrink-0 items-center gap-2 border-t border-blue-200 bg-blue-50 px-8 py-3 text-sm text-blue-800">
+        <div className="flex shrink-0 items-center gap-2 border-t-2 border-accent-blue bg-accent-blue-wash px-5 py-3 sm:px-8 text-sm text-accent-blue">
           <Spinner />
           Solving schedule, this can take up to 2 minutes. Keep this tab open.
         </div>
       )}
 
-      <div className="flex shrink-0 items-center gap-2 border-t border-neutral-200 bg-white px-8 py-3">
+      <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-t-2 border-purple-deep bg-paper-raised px-5 py-3 sm:px-8">
         <Button onClick={() => reSolve(false)} loading={resolving} disabled={busy}>
           Re-solve
         </Button>
-        <span className="mr-auto text-xs text-neutral-500">
+        <span className="mr-auto text-xs text-ink-muted">
           Keeps all {locks} lock{locks === 1 ? "" : "s"} and re-optimises the rest.
         </span>
       </div>
@@ -422,7 +419,7 @@ export default function RunPage({
           title="Interview breakdown"
           onClose={() => setShowBreakdown(false)}
         >
-          <p className="text-sm text-neutral-700">
+          <p className="text-sm text-ink-soft">
             <span className="font-semibold tabular-nums">{breakdown.total}</span>{" "}
             interviews across{" "}
             <span className="font-semibold tabular-nums">
@@ -430,7 +427,7 @@ export default function RunPage({
             </span>{" "}
             scheduled applicant{breakdown.scheduled === 1 ? "" : "s"}.
           </p>
-          <ul className="mt-3 space-y-1.5 text-sm text-neutral-700">
+          <ul className="mt-3 space-y-1.5 text-sm text-ink-soft">
             <li className="flex items-baseline justify-between gap-4">
               <span>Applicants with 2 interviews</span>
               <span className="font-semibold tabular-nums">
@@ -441,7 +438,7 @@ export default function RunPage({
               <span>Applicants with 1 interview</span>
               <span
                 className={`font-semibold tabular-nums ${
-                  breakdown.withOne > 0 ? "text-amber-700" : ""
+                  breakdown.withOne > 0 ? "text-accent-pink-ink" : ""
                 }`}
               >
                 {breakdown.withOne}
@@ -450,14 +447,14 @@ export default function RunPage({
             {breakdown.other.map((o) => (
               <li
                 key={o.applicantId}
-                className="flex items-baseline justify-between gap-4 text-red-600"
+                className="flex items-baseline justify-between gap-4 text-danger"
               >
                 <span>{o.fullName} has an unexpected count</span>
                 <span className="font-semibold tabular-nums">{o.count}</span>
               </li>
             ))}
           </ul>
-          <p className="mt-3 border-t border-neutral-200 pt-2 text-xs text-neutral-500 tabular-nums">
+          <p className="mt-3 border-t border-rule pt-2 text-xs text-ink-muted tabular-nums">
             {breakdown.withTwo} × 2 + {breakdown.withOne}
             {breakdown.other.length > 0
               ? ` + ${breakdown.other.reduce((n, o) => n + o.count, 0)}`
@@ -475,7 +472,7 @@ export default function RunPage({
           title="Capacity Advisor says INFEASIBLE"
           onClose={() => setInfeasible(null)}
         >
-          <p className="text-sm leading-relaxed text-neutral-700">{infeasible}</p>
+          <p className="text-sm leading-relaxed text-ink-soft">{infeasible}</p>
           <div className="mt-4 flex justify-end gap-2">
             <Button onClick={() => setInfeasible(null)}>Cancel</Button>
             <Button variant="danger" onClick={() => void reSolve(true)}>

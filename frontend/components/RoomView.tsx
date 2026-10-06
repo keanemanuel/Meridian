@@ -36,7 +36,7 @@ type TargetKind = "ok" | "clash" | null;
  *
  * When `onMove` is supplied an interview can be dragged onto any blank slot on
  * a panel of its own division (FR-40). A clean target is highlighted blue; a
- * target outside the applicant's declared availability is highlighted amber and
+ * target outside the applicant's declared availability is highlighted pink and
  * still accepted, landing as a clash the recruiter chose (FR-34). The one blank
  * cell that is *not* a target is the slot holding the applicant's other
  * interview — moving there would double-book them (C3).
@@ -115,11 +115,11 @@ export function RoomView({
           onClick={() => setRawDay(dayIndex - 1)}
           disabled={dayIndex === 0}
           aria-label="Previous day"
-          className="rounded-md border border-neutral-300 bg-white px-2.5 py-1 text-sm text-neutral-700 transition-colors hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-35"
+          className="border-2 border-purple-vivid px-2.5 py-0.5 text-sm text-purple-vivid transition-colors enabled:hover:bg-purple-wash disabled:cursor-not-allowed disabled:opacity-35"
         >
           ‹
         </button>
-        <span className="min-w-[10rem] text-center text-sm font-semibold text-neutral-900">
+        <span className="type-label min-w-[10rem] pt-0.5 text-center text-sm text-purple-deep">
           {formatDayLabel(days[dayIndex])}
         </span>
         <button
@@ -127,22 +127,22 @@ export function RoomView({
           onClick={() => setRawDay(dayIndex + 1)}
           disabled={dayIndex >= days.length - 1}
           aria-label="Next day"
-          className="rounded-md border border-neutral-300 bg-white px-2.5 py-1 text-sm text-neutral-700 transition-colors hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-35"
+          className="border-2 border-purple-vivid px-2.5 py-0.5 text-sm text-purple-vivid transition-colors enabled:hover:bg-purple-wash disabled:cursor-not-allowed disabled:opacity-35"
         >
           ›
         </button>
-        <span className="text-xs text-neutral-500">
+        <span className="text-xs text-ink-muted">
           Day {dayIndex + 1} of {days.length}
         </span>
         {dragging && (
-          <span className="ml-auto text-xs font-medium text-blue-600">
-            Drop {dragging.full_name} on a blue slot, or an amber one to move
+          <span className="ml-auto text-xs font-medium text-accent-blue">
+            Drop {dragging.full_name} on a blue slot, or a pink one to move
             them outside their stated availability.
           </span>
         )}
       </div>
 
-      <div className="overflow-hidden rounded-lg border border-neutral-200 bg-white">
+      <div className="card overflow-hidden">
         <div
           className="flex transition-transform duration-300 ease-out"
           style={{ transform: `translateX(-${dayIndex * 100}%)` }}
@@ -217,16 +217,16 @@ function DayGrid({
       <table className="min-w-full border-collapse text-xs">
         <thead>
           <tr>
-            <th className="sticky left-0 top-0 z-20 w-32 border-b border-r border-neutral-200 bg-neutral-50 px-3 py-2 text-left font-medium text-neutral-500">
+            <th className="sticky left-0 top-0 z-20 w-32 border-b border-r border-rule bg-paper-sunk px-3 py-2 text-left font-medium text-purple-deep">
               Slot
             </th>
             {panels.map((p) => (
               <th
                 key={p.panel_id}
-                className="sticky top-0 z-10 min-w-[10rem] border-b border-r border-neutral-200 bg-neutral-50 px-3 py-2 text-left font-medium text-neutral-700"
+                className="sticky top-0 z-10 min-w-[10rem] border-b border-r border-rule bg-paper-sunk px-3 py-2 text-left font-semibold text-purple-deep"
               >
                 <span className="block">{p.panel_id}</span>
-                <span className="block font-normal text-neutral-400">
+                <span className="block font-normal text-ink-muted">
                   Room {p.room}
                 </span>
               </th>
@@ -238,9 +238,9 @@ function DayGrid({
             <tr key={slot.slot_id}>
               <th
                 scope="row"
-                className="sticky left-0 z-10 border-b border-r border-neutral-100 bg-neutral-50 px-3 py-2 text-left align-top font-normal"
+                className="sticky left-0 z-10 border-b border-r border-rule bg-paper-sunk px-3 py-2 text-left align-top font-normal"
               >
-                <span className="block font-medium text-neutral-700">
+                <span className="block font-medium text-ink-soft">
                   {formatTime(slot.start_time)}–{formatTime(slot.end_time)}
                 </span>
               </th>
@@ -283,20 +283,20 @@ function DayGrid({
                         slotId: slot.slot_id,
                       });
                     }}
-                    className={`border-b border-r border-neutral-100 p-0 align-top transition-colors ${
+                    className={`border-b border-r border-rule p-0 align-top transition-colors ${
                       kind === "ok"
-                        ? "bg-blue-50 ring-1 ring-inset ring-blue-400"
+                        ? "bg-accent-blue-wash ring-1 ring-inset ring-accent-blue"
                         : kind === "clash"
-                          ? "bg-amber-50 ring-1 ring-inset ring-amber-400"
+                          ? "bg-accent-pink-wash ring-1 ring-inset ring-accent-pink-ink"
                           : ""
                     }`}
                   >
                     {here.length === 0 ? (
-                      <div className="h-full min-h-[3rem] px-3 py-2 text-neutral-300">
+                      <div className="h-full min-h-[3rem] px-3 py-2 text-ink-faint">
                         {kind === "ok" ? (
-                          <span className="text-blue-500">Drop here</span>
+                          <span className="text-accent-blue">Drop here</span>
                         ) : kind === "clash" ? (
-                          <span className="text-amber-600">
+                          <span className="text-accent-pink-ink">
                             Drop here · clash
                           </span>
                         ) : (
@@ -328,11 +328,11 @@ function DayGrid({
                                 : ""
                             } ${
                               a.is_clash
-                                ? "bg-red-100 text-red-600 hover:bg-red-200"
-                                : "text-neutral-800 hover:bg-neutral-100"
+                                ? "bg-danger-wash text-danger hover:bg-danger-wash-strong"
+                                : "text-ink hover:bg-purple-wash"
                             } ${
                               assignmentMatches(a, query)
-                                ? "ring-2 ring-inset ring-amber-500"
+                                ? "ring-2 ring-inset ring-accent-pink-ink"
                                 : ""
                             }`}
                           >
@@ -340,7 +340,7 @@ function DayGrid({
                               {a.full_name}
                             </span>
                             <span
-                              className={`block truncate ${a.is_clash ? "text-red-500" : "text-neutral-500"}`}
+                              className={`block truncate ${a.is_clash ? "text-danger" : "text-ink-muted"}`}
                             >
                               {a.sub_division}
                             </span>
@@ -364,7 +364,7 @@ function DayGrid({
                                   ? "Locked — every re-solve keeps this. Click to unlock."
                                   : "Unlocked — a re-solve may move this. Click to lock."
                               }
-                              className={`absolute right-0.5 top-0.5 rounded px-1 py-0.5 text-[11px] leading-none transition-opacity hover:bg-white/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 disabled:cursor-not-allowed disabled:opacity-40 ${
+                              className={`absolute right-0.5 top-0.5 px-1 py-0.5 text-[11px] leading-none transition-opacity hover:bg-paper-raised/70 disabled:cursor-not-allowed disabled:opacity-40 ${
                                 a.is_locked ? "opacity-100" : "opacity-30 hover:opacity-80"
                               }`}
                             >

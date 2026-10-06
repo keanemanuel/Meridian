@@ -1,11 +1,24 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Jost, Rubik_Distressed, Special_Elite } from "next/font/google";
 import "./globals.css";
 import { Sidebar } from "@/components/Sidebar";
 import { ToastProvider } from "@/components/Toast";
 import { WorkspacesProvider } from "@/components/WorkspacesProvider";
 
-const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
+// Body copy and data. Geometric sans, close to the reference's Futura.
+const jost = Jost({ variable: "--font-jost", subsets: ["latin"] });
+// Labels, nav, buttons, metadata.
+const specialElite = Special_Elite({
+  variable: "--font-special-elite",
+  weight: "400",
+  subsets: ["latin"],
+});
+// Page titles only.
+const rubikDistressed = Rubik_Distressed({
+  variable: "--font-rubik-distressed",
+  weight: "400",
+  subsets: ["latin"],
+});
 
 export const metadata: Metadata = {
   title: "IFF Recruitment",
@@ -14,19 +27,28 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${inter.variable} h-full antialiased`}>
+    <html
+      lang="en"
+      className={`${jost.variable} ${specialElite.variable} ${rubikDistressed.variable} h-full antialiased`}
+    >
       <body className="h-full">
         <ToastProvider>
           <WorkspacesProvider>
             <div className="flex h-full flex-col">
-              <header className="flex h-12 shrink-0 items-center border-b border-neutral-200 bg-white px-5">
-                <span className="text-sm font-semibold tracking-tight text-neutral-900">
+              <header className="filmstrip flex h-16 shrink-0 items-center justify-between gap-4 px-5">
+                <span className="type-label pt-0.5 text-sm text-paper">
                   IFF Recruitment
                 </span>
+                <span
+                  className="rec hidden pt-0.5 text-purple-tint sm:inline-flex"
+                  aria-hidden="true"
+                >
+                  REC 00:00:00
+                </span>
               </header>
-              <div className="flex min-h-0 flex-1">
+              <div className="flex min-h-0 flex-1 flex-col md:flex-row">
                 <Sidebar />
-                <main className="min-w-0 flex-1 overflow-y-auto">
+                <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
                   {children}
                 </main>
               </div>
