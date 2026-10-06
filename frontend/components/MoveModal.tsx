@@ -96,15 +96,15 @@ export function MoveModal({
       width="w-[32rem]"
     >
       <div className="space-y-4">
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-sm">
-          <dt className="text-neutral-500">Choice</dt>
-          <dd className="text-neutral-800">
+        <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 border-2 border-rule bg-paper-sunk px-3 py-2.5 text-sm">
+          <dt className="text-ink-muted">Choice</dt>
+          <dd className="text-ink">
             #{assignment.choice_index} · {assignment.sub_division}
           </dd>
-          <dt className="text-neutral-500">Division</dt>
-          <dd className="text-neutral-800">{assignment.division}</dd>
-          <dt className="text-neutral-500">Currently</dt>
-          <dd className="text-neutral-800">
+          <dt className="text-ink-muted">Division</dt>
+          <dd className="text-ink">{assignment.division}</dd>
+          <dt className="text-ink-muted">Currently</dt>
+          <dd className="text-ink">
             {assignment.panel_id} · {assignment.room} ·{" "}
             {formatDate(assignment.date)} {formatTime(assignment.start_time)}
           </dd>
@@ -113,7 +113,7 @@ export function MoveModal({
         <div>
           <label
             htmlFor="move-panel"
-            className="mb-1.5 block text-xs font-medium text-neutral-600"
+            className="field-label"
           >
             Panel · {assignment.division} only
           </label>
@@ -121,7 +121,7 @@ export function MoveModal({
             id="move-panel"
             value={panelId}
             onChange={(e) => setPanelId(e.target.value)}
-            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500"
+            className="input w-full"
           >
             {panels.map((p) => (
               <option key={p.panel_id} value={p.panel_id}>
@@ -134,7 +134,7 @@ export function MoveModal({
         <div>
           <label
             htmlFor="move-slot"
-            className="mb-1.5 block text-xs font-medium text-neutral-600"
+            className="field-label"
           >
             Slot
           </label>
@@ -142,7 +142,7 @@ export function MoveModal({
             id="move-slot"
             value={slotId}
             onChange={(e) => setSlotId(e.target.value)}
-            className="w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-500"
+            className="input w-full"
           >
             {slots.map((s) => {
               const taken = (cells.get(cellKey(panelId, s.slot_id)) ?? []).filter(
@@ -174,26 +174,26 @@ export function MoveModal({
         </div>
 
         {check.occupied && (
-          <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <p className="border-2 border-danger bg-danger-wash px-3 py-2 text-xs text-danger">
             {check.occupied.full_name} already holds that panel and slot — a
             panel can only run one interview at a time (C2). Pick a free slot.
           </p>
         )}
         {check.doubleBook && (
-          <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <p className="border-2 border-danger bg-danger-wash px-3 py-2 text-xs text-danger">
             That is the same slot as {assignment.full_name}&apos;s other
             interview, so it would double-book them (C3). Pick another slot.
           </p>
         )}
         {check.offPreference && !blocked && (
-          <p className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <p className="border-2 border-accent-pink bg-accent-pink-wash px-3 py-2 text-xs text-accent-pink-ink">
             This slot is outside {assignment.full_name}&apos;s stated
             availability. The move is allowed and will be recorded as a clash
             (FR-34) — your call.
           </p>
         )}
 
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-ink-muted">
           A saved move is locked, so every later solve keeps it in place (C6).
         </p>
 

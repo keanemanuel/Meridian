@@ -45,7 +45,7 @@ function NewWorkspaceModal({
         <div>
           <label
             htmlFor="workspace-name"
-            className="mb-1.5 block text-xs font-medium text-neutral-600"
+            className="field-label"
           >
             Name
           </label>
@@ -55,17 +55,17 @@ function NewWorkspaceModal({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="IFF 2026 Intake"
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
+            className="input w-full"
           />
         </div>
         <div>
-          <p className="mb-1.5 text-xs font-medium text-neutral-600">Group</p>
-          <p className="rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-700">
+          <p className="field-label">Group</p>
+          <p className="border-2 border-rule bg-paper-sunk px-3 py-1.5 text-sm text-ink-soft">
             {group}
           </p>
         </div>
         {saving && connecting && (
-          <p className="text-xs text-neutral-400">
+          <p className="text-xs text-ink-muted">
             Connecting to backend. The API may be waking up, which can take up
             to 30 seconds.
           </p>
@@ -135,7 +135,7 @@ function RenameWorkspaceModal({
         <div>
           <label
             htmlFor="rename-workspace"
-            className="mb-1.5 block text-xs font-medium text-neutral-600"
+            className="field-label"
           >
             New name
           </label>
@@ -144,7 +144,7 @@ function RenameWorkspaceModal({
             autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500"
+            className="input w-full"
           />
         </div>
         <div className="flex justify-end gap-2 pt-1">
@@ -197,7 +197,7 @@ function DeleteWorkspaceModal({
 
   return (
     <Modal title={`Delete "${workspace.name}"?`} onClose={onClose}>
-      <p className="text-sm leading-relaxed text-neutral-700">
+      <p className="text-sm leading-relaxed text-ink-soft">
         Are you sure? This removes the workspace and everything under it:
         imported applicants, every solve and the send ledger. It cannot be
         undone.
@@ -245,19 +245,19 @@ function RowMenu({
           e.stopPropagation();
           setOpen((v) => !v);
         }}
-        className="rounded px-1.5 py-0.5 text-neutral-400 opacity-0 transition-opacity hover:bg-neutral-200 hover:text-neutral-700 focus:opacity-100 group-hover:opacity-100"
+        className="px-1.5 py-0.5 text-ink-muted opacity-0 transition-opacity hover:bg-purple-tint hover:text-ink focus:opacity-100 group-hover:opacity-100 max-md:opacity-100"
       >
         ⋯
       </button>
       {open && (
-        <div className="absolute right-0 top-6 z-30 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-lg">
+        <div className="card absolute right-0 top-6 z-30 w-44 overflow-hidden py-1 shadow-hard-sm">
           <button
             type="button"
             onClick={() => {
               setOpen(false);
               onRename();
             }}
-            className="block w-full px-3 py-1.5 text-left text-sm text-neutral-700 hover:bg-neutral-100"
+            className="block w-full px-3 py-1.5 text-left text-sm text-ink-soft hover:bg-purple-wash"
           >
             Rename
           </button>
@@ -267,7 +267,7 @@ function RowMenu({
               setOpen(false);
               onDelete();
             }}
-            className="block w-full px-3 py-1.5 text-left text-sm text-red-600 hover:bg-red-50"
+            className="block w-full px-3 py-1.5 text-left text-sm text-danger hover:bg-danger-wash"
           >
             Delete
           </button>
@@ -296,14 +296,20 @@ function Section({
   const items = workspaces
     .filter((w) => w.group === group)
     .sort((a, b) => a.name.localeCompare(b.name));
+  // Styling only: the group's bar fills when it holds the open workspace.
+  const holdsActive = items.some((w) => w.name === activeId);
 
   return (
-    <div className="mb-4">
+    <div className="mb-5 px-3">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs font-semibold uppercase tracking-wide text-neutral-500 hover:text-neutral-800"
+        className={`type-label flex w-full items-center gap-1.5 border-b-4 pb-1.5 pt-1 text-left text-xs transition-colors hover:text-ink ${
+          holdsActive
+            ? "border-purple-vivid text-ink"
+            : "border-accent-grey text-ink-muted"
+        }`}
       >
         <span
           className={`inline-block transition-transform ${open ? "rotate-90" : ""}`}
@@ -312,15 +318,15 @@ function Section({
           ›
         </span>
         <span className="flex-1">{group}</span>
-        <span className="font-normal normal-case text-neutral-400">
+        <span className="text-ink-muted">
           {items.length}
         </span>
       </button>
 
       {open && (
-        <div className="mt-1">
+        <div className="mt-2">
           {items.length === 0 && (
-            <p className="px-3 py-1.5 text-xs italic text-neutral-400">
+            <p className="px-3 py-1.5 text-xs italic text-ink-muted">
               No workspaces yet
             </p>
           )}
@@ -329,16 +335,16 @@ function Section({
             return (
               <div
                 key={w.name}
-                className={`group flex items-center gap-1 rounded-md pr-1.5 transition-colors ${
+                className={`group flex items-center gap-1 border-l-4 pr-1.5 transition-colors ${
                   active
-                    ? "bg-neutral-200 font-medium text-neutral-900"
-                    : "text-neutral-700 hover:bg-neutral-100"
+                    ? "border-purple-vivid bg-purple-wash font-medium text-ink"
+                    : "border-transparent text-ink-soft hover:bg-purple-wash"
                 }`}
               >
                 <Link
                   href={`/workspace/${encodeURIComponent(w.name)}`}
                   title={w.name}
-                  className="min-w-0 flex-1 truncate px-3 py-1.5 text-sm"
+                  className="min-w-0 flex-1 truncate px-2 py-1.5 text-sm"
                 >
                   {w.name}
                 </Link>
@@ -353,7 +359,7 @@ function Section({
           <button
             type="button"
             onClick={() => onNew(group)}
-            className="mt-0.5 w-full rounded-md px-3 py-1.5 text-left text-sm text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800"
+            className="type-label mt-1 w-full px-3 pb-1 pt-1.5 text-left text-[11px] text-purple-vivid hover:bg-purple-wash"
           >
             + New
           </button>
@@ -373,30 +379,30 @@ export function Sidebar() {
   const [dismissedError, setDismissedError] = useState<string | null>(null);
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-neutral-200 bg-neutral-50">
-      <nav className="flex-1 overflow-y-auto py-3">
+    <aside className="flex max-h-48 w-full shrink-0 flex-col border-b-2 border-purple-deep bg-paper-sunk/40 md:max-h-none md:w-60 md:border-b-0 md:border-r-2">
+      <nav className="flex-1 overflow-y-auto py-4">
         {loading && (
-          <p className="flex items-center gap-2 px-3 py-2 text-xs text-neutral-500">
+          <p className="flex items-center gap-2 px-3 py-2 text-xs text-ink-muted">
             <Spinner />{" "}
             {connecting ? "Connecting to backend…" : "Loading workspaces…"}
           </p>
         )}
 
         {connecting && (
-          <p className="mx-3 mt-1 text-xs text-neutral-400">
+          <p className="mx-3 mt-1 text-xs text-ink-muted">
             The scheduler API is waking up. This can take up to half a minute
             on the first request.
           </p>
         )}
 
         {error && !loading && error !== dismissedError && (
-          <div className="mx-3 flex items-start gap-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <div className="mx-3 mb-3 flex items-start gap-2 border-2 border-danger bg-danger-wash px-3 py-2 text-xs text-danger">
             <p className="flex-1 leading-snug">{error}</p>
             <button
               type="button"
               onClick={() => setDismissedError(error)}
               aria-label="Dismiss error"
-              className="-m-1 shrink-0 rounded p-1 leading-none opacity-60 transition-opacity hover:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-current"
+              className="-m-1 shrink-0 p-1 leading-none opacity-70 transition-opacity hover:opacity-100"
             >
               &times;
             </button>

@@ -107,11 +107,11 @@ export function RoomsView({
           onClick={() => setRawDay(dayIndex - 1)}
           disabled={dayIndex === 0}
           aria-label="Previous day"
-          className="rounded-md border border-neutral-300 bg-white px-2.5 py-1 text-sm text-neutral-700 transition-colors hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-35"
+          className="border-2 border-purple-vivid px-2.5 py-0.5 text-sm text-purple-vivid transition-colors enabled:hover:bg-purple-wash disabled:cursor-not-allowed disabled:opacity-35"
         >
           ‹
         </button>
-        <span className="min-w-[10rem] text-center text-sm font-semibold text-neutral-900">
+        <span className="type-label min-w-[10rem] pt-0.5 text-center text-sm text-purple-deep">
           {formatDayLabel(date)}
         </span>
         <button
@@ -119,11 +119,11 @@ export function RoomsView({
           onClick={() => setRawDay(dayIndex + 1)}
           disabled={dayIndex >= days.length - 1}
           aria-label="Next day"
-          className="rounded-md border border-neutral-300 bg-white px-2.5 py-1 text-sm text-neutral-700 transition-colors hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-35"
+          className="border-2 border-purple-vivid px-2.5 py-0.5 text-sm text-purple-vivid transition-colors enabled:hover:bg-purple-wash disabled:cursor-not-allowed disabled:opacity-35"
         >
           ›
         </button>
-        <span className="text-xs text-neutral-500">
+        <span className="text-xs text-ink-muted">
           Day {dayIndex + 1} of {days.length}
         </span>
       </div>
@@ -314,20 +314,20 @@ function RoomCard({
   return (
     <section
       {...dropProps}
-      className={`overflow-hidden rounded-lg border bg-white ${
+      className={`overflow-hidden border-2 bg-paper-raised ${
         dragOver
-          ? "border-sky-400 ring-2 ring-inset ring-sky-300"
-          : "border-neutral-200"
+          ? "border-accent-blue ring-2 ring-inset ring-accent-blue"
+          : "border-purple-deep"
       }`}
     >
-      <header className="flex items-start justify-between border-b border-neutral-200 px-4 py-2.5">
+      <header className="flex items-start justify-between border-b-2 border-purple-deep px-4 py-2.5">
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-neutral-900">
+          <h3 className="type-label text-sm text-purple-deep">
             Room {room}
           </h3>
           <div className="mt-1 flex flex-wrap items-center gap-1">
             {badgePanels.length === 0 ? (
-              <span className="text-xs text-neutral-400">no panels</span>
+              <span className="text-xs text-ink-muted">no panels</span>
             ) : (
               badgePanels.map((p) => (
                 <span
@@ -356,12 +356,12 @@ function RoomCard({
                           ? "Manually added — empty, safe to delete"
                           : undefined
                   }
-                  className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium ${
+                  className={`inline-flex items-center gap-1 border px-1.5 py-0.5 text-[11px] font-medium ${
                     onMovePanel ? "cursor-grab active:cursor-grabbing" : ""
                   } ${
                     p.manual
-                      ? "border-sky-200 bg-sky-50 text-sky-700"
-                      : "border-neutral-200 bg-neutral-100 text-neutral-600"
+                      ? "border-accent-blue bg-accent-blue-wash text-accent-blue"
+                      : "border-rule bg-paper-sunk text-ink-soft"
                   }`}
                 >
                   {p.panel_id}
@@ -370,7 +370,7 @@ function RoomCard({
                       type="button"
                       onClick={() => onDeletePanel(p.panel_id)}
                       aria-label={`Delete empty panel ${p.panel_id}`}
-                      className="-mr-0.5 leading-none text-sky-400 transition-colors hover:text-red-600"
+                      className="-mr-0.5 leading-none text-accent-blue transition-colors hover:text-danger"
                     >
                       ×
                     </button>
@@ -387,17 +387,17 @@ function RoomCard({
             )}
           </div>
         </div>
-        <p className="shrink-0 pl-2 text-xs text-neutral-500">
+        <p className="shrink-0 pl-2 text-xs text-ink-muted">
           {interviewCount} interview{interviewCount === 1 ? "" : "s"}
           {clashes > 0 && (
-            <span className="ml-1 text-red-600">· {clashes} clash</span>
+            <span className="ml-1 text-danger">· {clashes} clash</span>
           )}
         </p>
       </header>
 
       {divisions.length > 0 && (
-        <div className="border-b border-neutral-100 px-4 py-3">
-          <p className="mb-2 text-xs uppercase tracking-wide text-neutral-400">
+        <div className="border-b border-rule px-4 py-3">
+          <p className="type-label mb-2 text-[11px] text-ink-muted">
             Divisions represented ({divisions.length}) — pick one
           </p>
           <ul className="flex flex-wrap gap-1.5" role="tablist">
@@ -410,16 +410,16 @@ function RoomCard({
                     role="tab"
                     aria-selected={active}
                     onClick={() => setPicked(d.division)}
-                    className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium transition-colors ${
+                    className={`inline-flex items-center border px-2 py-0.5 text-xs font-medium transition-colors ${
                       active
-                        ? "border-neutral-800 bg-neutral-800 text-white"
-                        : "border-neutral-200 bg-neutral-100 text-neutral-600 hover:bg-neutral-200"
+                        ? "border-purple-vivid bg-purple-vivid text-white"
+                        : "border-rule bg-paper-sunk text-ink-soft hover:bg-purple-wash"
                     }`}
                   >
                     {d.division}
                     <span
                       className={`ml-1 tabular-nums ${
-                        active ? "text-neutral-300" : "text-neutral-400"
+                        active ? "text-white/80" : "text-ink-muted"
                       }`}
                     >
                       {d.count}
@@ -433,21 +433,21 @@ function RoomCard({
       )}
 
       {slots.length === 0 ? (
-        <p className="px-4 py-3 text-xs text-neutral-400">
+        <p className="px-4 py-3 text-xs text-ink-muted">
           Nothing scheduled in this room today.
         </p>
       ) : multiPanel ? (
         <div className="overflow-x-auto">
           <table className="min-w-full border-collapse text-xs">
             <thead>
-              <tr className="border-b border-neutral-200">
-                <th className="w-24 border-r border-neutral-100 bg-neutral-50 px-3 py-2 text-left font-medium uppercase tracking-wide text-neutral-400">
+              <tr className="border-b border-rule">
+                <th className="w-24 border-r border-rule type-label bg-paper-sunk px-3 py-2 text-left text-[11px] font-normal text-purple-deep">
                   Slot
                 </th>
                 {divisionPanels.map((panelId) => (
                   <th
                     key={panelId}
-                    className="min-w-[9rem] border-r border-neutral-100 bg-neutral-50 px-3 py-2 text-left font-medium text-neutral-700 last:border-r-0"
+                    className="min-w-[9rem] border-r border-rule bg-paper-sunk px-3 py-2 text-left font-semibold text-purple-deep last:border-r-0"
                   >
                     {panelId}
                   </th>
@@ -460,13 +460,13 @@ function RoomCard({
                 return (
                   <tr
                     key={slot.slot_id}
-                    className="border-b border-neutral-100 last:border-0"
+                    className="border-b border-rule last:border-0"
                   >
                     <SlotTimeHeader slot={slot} />
                     {divisionPanels.map((panelId) => (
                       <td
                         key={panelId}
-                        className="border-r border-neutral-100 p-0 align-top last:border-r-0"
+                        className="border-r border-rule p-0 align-top last:border-r-0"
                       >
                         <ScheduleCell
                           items={here.filter((a) => a.panel_id === panelId)}
@@ -489,7 +489,7 @@ function RoomCard({
               return (
                 <tr
                   key={slot.slot_id}
-                  className="border-b border-neutral-100 last:border-0"
+                  className="border-b border-rule last:border-0"
                 >
                   <SlotTimeHeader slot={slot} />
                   <td className="p-0 align-top">
@@ -515,12 +515,12 @@ function SlotTimeHeader({ slot }: { slot: SlotAxis }) {
   return (
     <th
       scope="row"
-      className="w-24 border-r border-neutral-100 bg-neutral-50 px-3 py-2 text-left align-top font-normal"
+      className="w-24 border-r border-rule bg-paper-sunk px-3 py-2 text-left align-top font-normal"
     >
-      <span className="block font-medium tabular-nums text-neutral-700">
+      <span className="block font-medium tabular-nums text-ink-soft">
         {formatTime(slot.start_time)}
       </span>
-      <span className="block tabular-nums text-neutral-400">
+      <span className="block tabular-nums text-ink-muted">
         {formatTime(slot.end_time)}
       </span>
     </th>
@@ -539,7 +539,7 @@ function ScheduleCell({
   onSelect: (a: Assignment) => void;
 }) {
   if (items.length === 0) {
-    return <div className="min-h-[2.75rem] px-3 py-2 text-neutral-300">·</div>;
+    return <div className="min-h-[2.75rem] px-3 py-2 text-ink-faint">·</div>;
   }
   return (
     <>
@@ -551,17 +551,17 @@ function ScheduleCell({
           title={buildTitle(a)}
           className={`block min-h-[2.75rem] w-full px-3 py-2 text-left transition-colors ${
             a.is_clash
-              ? "bg-red-100 text-red-600 hover:bg-red-200"
-              : "text-neutral-800 hover:bg-neutral-100"
+              ? "bg-danger-wash text-danger hover:bg-danger-wash-strong"
+              : "text-ink hover:bg-purple-wash"
           } ${
             assignmentMatches(a, query)
-              ? "ring-2 ring-inset ring-amber-500"
+              ? "ring-2 ring-inset ring-accent-pink-ink"
               : ""
           }`}
         >
           <span className="block truncate pr-4 font-medium">{a.full_name}</span>
           <span
-            className={`block truncate ${a.is_clash ? "text-red-500" : "text-neutral-500"}`}
+            className={`block truncate ${a.is_clash ? "text-danger" : "text-ink-muted"}`}
           >
             {a.sub_division}
           </span>
@@ -594,7 +594,7 @@ function AddPanelMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="Add a panel to this room"
-        className="inline-flex h-[22px] w-[22px] items-center justify-center rounded border border-dashed border-neutral-300 text-sm leading-none text-neutral-500 transition-colors hover:border-neutral-400 hover:bg-neutral-50 hover:text-neutral-800"
+        className="inline-flex h-[22px] w-[22px] items-center justify-center border border-dashed border-purple-vivid text-sm leading-none text-purple-vivid transition-colors hover:border-solid hover:bg-purple-wash"
       >
         +
       </button>
@@ -610,7 +610,7 @@ function AddPanelMenu({
           />
           <ul
             role="menu"
-            className="absolute left-0 z-20 mt-1 max-h-64 w-44 overflow-y-auto rounded-md border border-neutral-200 bg-white py-1 shadow-lg"
+            className="card absolute left-0 z-20 mt-1 max-h-64 w-44 overflow-y-auto py-1 shadow-hard-sm"
           >
             {divisions.map((d) => {
               const used = usedDivisions.has(d);
@@ -631,8 +631,8 @@ function AddPanelMenu({
                     }
                     className={`block w-full px-3 py-1.5 text-left text-xs ${
                       used
-                        ? "cursor-not-allowed text-neutral-300"
-                        : "text-neutral-700 hover:bg-neutral-100"
+                        ? "cursor-not-allowed text-ink-faint"
+                        : "text-ink-soft hover:bg-purple-wash"
                     }`}
                   >
                     {d}

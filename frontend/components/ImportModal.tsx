@@ -39,7 +39,7 @@ export function ImportModal({
   return (
     <Modal title="Import data" onClose={onClose} width="w-[32rem]">
       <div className="space-y-3">
-        <p className="text-sm text-neutral-500">
+        <p className="text-sm text-ink-muted">
           One-shot import of a Google Form CSV export. Download the form
           responses as CSV (<span className="whitespace-nowrap">File → Download → CSV</span>)
           and upload the file here.
@@ -49,7 +49,7 @@ export function ImportModal({
           type="file"
           accept=".csv,text/csv"
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-neutral-100 file:px-2 file:py-1 file:text-xs"
+          className="input w-full"
         />
 
         <div className="flex justify-end gap-2 pt-1">

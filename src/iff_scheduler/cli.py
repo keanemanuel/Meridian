@@ -90,7 +90,14 @@ from iff_scheduler.scheduling.postprocess import (
     diff_schedules,
 )
 from iff_scheduler.scheduling.solver_cpsat import CpSatSolver
-from iff_scheduler.settings import DEFAULT_CONFIG_DIR, PanelsConfig, Settings, load_settings
+from iff_scheduler.settings import (
+    DEFAULT_CONFIG_DIR,
+    DEFAULT_ROOM_SCENARIO,
+    PanelsConfig,
+    Settings,
+    load_settings,
+    resolve_room_scenario_dir,
+)
 from iff_scheduler.workspace import DEFAULT_WORKSPACE, load_workspaces
 from iff_scheduler.workspace import create_workspace as _create_workspace
 
@@ -102,6 +109,17 @@ app.add_typer(workspace_app, name="workspace")
 console = Console()
 
 WORKSPACE_OPTION = typer.Option(DEFAULT_WORKSPACE, "--workspace", help="Isolated data namespace.")
+ROOM_SCENARIO_OPTION = typer.Option(
+    DEFAULT_ROOM_SCENARIO,
+    "--room-scenario",
+    help=(
+        "Alternate room layout to solve against (SPEC.md §3.3): 'default' "
+        "(committed rooms.yaml/panels.yaml) or a name under "
+        "config/scenarios/ (e.g. 'extended_waiting_rooms'). Selecting one "
+        "does not change any committed file — see settings.py "
+        "resolve_room_scenario_dir."
+    ),
+)
 
 INVITE_TEMPLATE = "invite"
 
@@ -238,6 +256,7 @@ def check(
         "(default: data/workspaces/<workspace>/interim/applicants.clean.csv)",
     ),
     config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
+    room_scenario: str = ROOM_SCENARIO_OPTION,
     workspace: str = WORKSPACE_OPTION,
 ) -> None:
     """Capacity Advisor — demand vs. panel-slot supply per division (SPEC.md §5.5).
@@ -253,7 +272,7 @@ def check(
         )
         raise typer.Exit(code=1)
 
-    settings = load_settings(config_dir)
+    settings = load_settings(resolve_room_scenario_dir(config_dir, room_scenario))
     grid = build_slot_grid(settings.event)
     applicants = _load_clean_applicants(resolved_input_path)
 
@@ -485,6 +504,7 @@ def solve(
         None, "--runs-dir", help="Default: data/workspaces/<workspace>/runs"
     ),
     config_dir: Path = typer.Option(DEFAULT_CONFIG_DIR, "--config-dir"),
+    room_scenario: str = ROOM_SCENARIO_OPTION,
     skip_check: bool = typer.Option(
         False, "--skip-check", help="Solve even if the Capacity Advisor says INFEASIBLE (E-06)."
     ),
@@ -513,7 +533,8 @@ def solve(
         )
         raise typer.Exit(code=1)
 
-    settings = load_settings(config_dir)
+    resolved_config_dir = resolve_room_scenario_dir(config_dir, room_scenario)
+    settings = load_settings(resolved_config_dir)
     grid = build_slot_grid(settings.event)
     applicants = _load_clean_applicants(resolved_input_path)
 
@@ -580,6 +601,7 @@ def solve(
     conflicts = build_conflicts(result.assignments, problem.applicants, problem.panels)
     metrics = compute_metrics(result, problem) | {
         "run_id": run_id,
+        "room_scenario": room_scenario,
         "panel_adjustments": autoscale_notes,
         # The exact panel set solved with — committed panels plus anything
         # `rebalance_panels`/`autoscale_panels` added (ids like `MEDMARDOC-A2`,
@@ -593,7 +615,7 @@ def solve(
     _conflicts_frame(conflicts).to_csv(run_dir / "conflicts.csv", index=False)
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     (run_dir / "solve.log").write_text("\n".join(result.log) + "\n", encoding="utf-8")
-    _snapshot_config(config_dir, run_dir)
+    _snapshot_config(resolved_config_dir, run_dir)
     if autoscale_notes:
         (run_dir / "autoscale.json").write_text(
             json.dumps(

@@ -45,9 +45,9 @@ type ToastContextValue = {
 const ToastContext = createContext<ToastContextValue | null>(null);
 
 const STYLES: Record<ToastKind, string> = {
-  success: "border-green-200 bg-green-50 text-green-800",
-  error: "border-red-200 bg-red-50 text-red-700",
-  info: "border-neutral-200 bg-white text-neutral-700",
+  success: "border-purple-deep border-l-8 border-l-purple-vivid bg-paper-raised text-ink",
+  error: "border-danger border-l-8 bg-danger-wash text-danger",
+  info: "border-purple-deep border-l-8 border-l-accent-grey bg-paper-raised text-ink-soft",
 };
 
 const AUTO_DISMISS_MS = 5000;
@@ -158,17 +158,17 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-96 flex-col gap-2">
+      <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-96 max-w-[calc(100vw-2rem)] flex-col gap-2">
         {toasts.map((t) => (
           <div
             key={t.id}
-            className={`pointer-events-auto rounded border px-4 py-3 text-sm shadow-sm ${STYLES[t.kind]}`}
+            className={`pointer-events-auto border-2 px-4 py-3 text-sm shadow-hard-sm ${STYLES[t.kind]}`}
           >
             <div className="flex items-start gap-3">
               <p className="flex-1 leading-snug">
                 {t.message}
                 {t.count > 1 && (
-                  <span className="ml-1.5 rounded-full bg-black/10 px-1.5 text-xs font-semibold tabular-nums">
+                  <span className="ml-1.5 bg-ink/10 px-1.5 text-xs font-semibold tabular-nums">
                     &times;{t.count}
                   </span>
                 )}
@@ -176,7 +176,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               <button
                 type="button"
                 onClick={() => dismiss(t.id)}
-                className="-m-1.5 shrink-0 rounded p-1.5 text-xs leading-none opacity-60 transition-opacity hover:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-current"
+                className="-m-1.5 shrink-0 p-1.5 text-xs leading-none opacity-70 transition-opacity hover:opacity-100"
                 aria-label="Dismiss notification"
               >
                 &times;

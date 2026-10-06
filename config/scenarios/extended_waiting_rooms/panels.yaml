@@ -1,0 +1,53 @@
+# Room-scenario "extended_waiting_rooms" baseline panel seed.
+#
+# Identical in spirit to config/panels.yaml (one panel per division per
+# event day; `rebalance_panels`/`autoscale_panels` grow this at solve time —
+# SPEC.md §5.5, CLAUDE.md "this is a CONFIG change, not new algorithm
+# logic"). The only difference from config/panels.yaml: the two baseline
+# panels that lived in 3013 (Thursday) and 3033 (Friday) are reseeded into
+# rooms still in this scenario's interview pool, since 3013/3033 are waiting
+# rooms here (rooms.yaml) and `validate_problem` (scheduling/base.py) rejects
+# a panel whose room isn't configured for its division.
+#
+# Panel ids follow the same `[DIVISION]-[DAY][N]` convention as the default
+# (DAY "A" = Thursday, "B" = Friday; N counts that division's panels on that
+# day from 1).
+panels:
+  # ---------------- Thursday 2026-09-17 — one per division ----------------
+  # 4 rooms for 6 divisions: 2016 and 2019 each host two baseline panels.
+  - {id: PROGRAM-A1,   division: PROGRAM,   room: "2016"}
+  - {id: MEDMARDOC-A1, division: MEDMARDOC, room: "2017"}
+  - {id: FNB-A1,       division: FNB,       room: "2020"}
+  # LOGISTICS-A1 was in 3013 by default; 3013 is a waiting room in this
+  # scenario, so it moves in with PROGRAM-A1 (2016 has headroom under the
+  # unchanged 5-panel ceiling).
+  - {id: LOGISTICS-A1, division: LOGISTICS, room: "2016"}
+  - id: CREATIVE-A1
+    division: CREATIVE
+    room: "2019"
+    active_windows: [{date: 2026-09-17, start: "18:30", end: "21:30"}]
+  - id: LIAISON-A1
+    division: LIAISON
+    room: "2019"
+    active_windows: [{date: 2026-09-17, start: "18:30", end: "21:30"}]
+
+  # ----------------- Friday 2026-09-18 — one per division -----------------
+  # 3 rooms for 6 divisions: 2014 and 2019 each host two baseline panels.
+  - {id: PROGRAM-B1,   division: PROGRAM,   room: "2014"}
+  - {id: MEDMARDOC-B1, division: MEDMARDOC, room: "2015"}
+  # FNB-B1 was in 3033 by default; 3033 is a waiting room in this scenario,
+  # so it moves in with MEDMARDOC-B1 (2015 has headroom under the unchanged
+  # 5-panel ceiling).
+  - {id: FNB-B1,       division: FNB,       room: "2015"}
+  - id: LOGISTICS-B1
+    division: LOGISTICS
+    room: "2019"
+    active_windows: [{date: 2026-09-18, start: "17:30", end: "21:30"}]
+  - id: CREATIVE-B1
+    division: CREATIVE
+    room: "2019"
+    active_windows: [{date: 2026-09-18, start: "17:30", end: "21:30"}]
+  - id: LIAISON-B1
+    division: LIAISON
+    room: "2014"
+    active_windows: [{date: 2026-09-18, start: "17:30", end: "21:30"}]

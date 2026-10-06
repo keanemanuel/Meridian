@@ -1,16 +1,295 @@
 @import "tailwindcss";
 
-@theme inline {
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+/* ------------------------------------------------------------------ *
+ * Design tokens — the single source of truth for the IFF look.
+ * Colours were sampled from the Indonesian Film Festival reference.
+ * Components reference these through Tailwind utilities (bg-paper,
+ * text-purple-vivid, shadow-hard …); no hex values live in components.
+ * ------------------------------------------------------------------ */
+@theme {
+  /* Drop the stock Tailwind palette so nothing off-brand can creep in. */
+  --color-*: initial;
+  --color-white: #ffffff;
+
+  /* Paper — the page ground and the surfaces that sit on it. */
+  --color-paper: #d6d0c3;
+  --color-paper-raised: #e5e0d5;
+  --color-paper-sunk: #cac3b4;
+
+  /* Ink — body text. `faint` is decorative only (fails AA by design). */
+  --color-ink: #141414;
+  --color-ink-soft: #36322d;
+  --color-ink-muted: #4e4942;
+  --color-ink-faint: #8c8679;
+
+  /* Purple — the brand. */
+  --color-purple-deep: #380a68;
+  --color-purple-vivid: #6d05b5;
+  --color-purple-mid: #632e85;
+  --color-purple-tint: #b79ae8;
+  --color-purple-wash: #d4c5dc;
+
+  /* Accents — category / status chips only. */
+  --color-accent-blue: #0645b5;
+  --color-accent-blue-wash: #c8ccd1;
+  --color-accent-pink: #f218ac;
+  --color-accent-pink-ink: #940e6e;
+  --color-accent-pink-wash: #e7c2cf;
+  --color-accent-grey: #b4aea2;
+
+  /* Danger — clashes and errors. Deliberately outside the brand hues. */
+  --color-danger: #9a1c0c;
+  --color-danger-wash: #dac5b9;
+  --color-danger-wash-strong: #d7bbaf;
+
+  /* Hairline for dense tables and inner dividers. */
+  --color-rule: #bfb1bd;
+
+  /* Hard offset shadows (no blur) — the print-poster look. */
+  --shadow-hard-sm: 2px 2px 0 var(--color-purple-deep);
+  --shadow-hard: 4px 4px 0 var(--color-purple-deep);
+  --shadow-hard-lg: 6px 6px 0 var(--color-purple-deep);
+
+  --tracking-label: 0.1em;
 }
+
+@theme inline {
+  --font-sans: var(--font-jost), "Futura", "Century Gothic", ui-sans-serif,
+    system-ui, sans-serif;
+  --font-type: var(--font-special-elite), "Courier New", Courier, monospace;
+  --font-mono: var(--font-special-elite), "Courier New", Courier, monospace;
+  --font-display: var(--font-rubik-distressed), "Anton", "Impact",
+    "Arial Black", sans-serif;
+}
+
+:root {
+  /* Paper grain: fine speckle plus a slow, wide crease. One small SVG. */
+  --texture-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='600'%3E%3Cfilter id='g' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .22 0 0 0 0 .18 0 0 0 0 .12 .7 0 0 0 -.29'/%3E%3C/filter%3E%3Cfilter id='c' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.008 .022' numOctaves='3' seed='7' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .2 0 0 0 0 .16 0 0 0 0 .1 .5 0 0 0 -.22'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23c)'/%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+  /* Halftone dots, for hero and empty-state decoration only. */
+  --texture-halftone: radial-gradient(
+    circle at center,
+    var(--color-purple-vivid) 1.3px,
+    transparent 1.7px
+  );
+  /* One sprocket hole; repeated along a film strip's edges as a mask. */
+  --mask-sprocket: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='8'%3E%3Crect x='6' width='12' height='8' rx='2.5'/%3E%3C/svg%3E");
+}
+
+/* ------------------------------------------------------------------ *
+ * Global styles
+ * ------------------------------------------------------------------ */
 
 /* Internal tool, committed to a single light look — no dark variant. */
 html,
 body {
-  background: #fafafa;
-  color: #171717;
+  background-color: var(--color-paper);
+  color: var(--color-ink);
 }
 
 body {
+  background-image: var(--texture-grain);
   font-family: var(--font-sans);
+  line-height: 1.6;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--color-purple-vivid);
+}
+
+::selection {
+  background: var(--color-purple-tint);
+  color: var(--color-ink);
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-purple-vivid);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Shared component classes
+ * ------------------------------------------------------------------ */
+@layer components {
+  /* Typewriter label: nav, buttons, metadata, table headers. */
+  .type-label {
+    font-family: var(--font-type);
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+  }
+
+  /* Small purple line above a title, e.g. "EVENT 03 / 04". */
+  .eyebrow {
+    font-family: var(--font-type);
+    font-size: 0.75rem;
+    line-height: 1.4;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    color: var(--color-purple-vivid);
+  }
+
+  /* Page titles only. Never use on dense data. */
+  .display {
+    font-family: var(--font-display);
+    font-size: clamp(1.75rem, 1.1rem + 2.6vw, 3rem);
+    line-height: 0.95;
+    text-transform: uppercase;
+    letter-spacing: 0.01em;
+    color: var(--color-purple-mid);
+    overflow-wrap: anywhere;
+  }
+
+  /* Section headings inside a page: typewriter, deep purple. */
+  .section-title {
+    font-family: var(--font-type);
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    color: var(--color-purple-deep);
+  }
+
+  /* Film-frame panel. */
+  .card {
+    background-color: var(--color-paper-raised);
+    border: 2px solid var(--color-purple-deep);
+  }
+
+  /* Inputs, selects, file pickers. */
+  .input {
+    background-color: var(--color-paper-raised);
+    border: 2px solid var(--color-purple-deep);
+    padding: 0.375rem 0.75rem;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--color-ink);
+  }
+  .input::placeholder {
+    color: var(--color-ink-muted);
+  }
+  .input:focus-visible {
+    outline: 3px solid var(--color-purple-vivid);
+    outline-offset: 1px;
+  }
+  .input::file-selector-button {
+    margin-right: 0.75rem;
+    border: 0;
+    background-color: var(--color-purple-wash);
+    padding: 0.25rem 0.5rem;
+    font-family: var(--font-type);
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    color: var(--color-purple-deep);
+  }
+
+  .field-label {
+    display: block;
+    margin-bottom: 0.375rem;
+    font-family: var(--font-type);
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    color: var(--color-purple-deep);
+  }
+
+  /* Tabs: a typewriter label over a thick bar. Grey until active. */
+  .tab {
+    min-width: 5.5rem;
+    border-bottom: 4px solid var(--color-accent-grey);
+    padding: 0.375rem 0.25rem 0.5rem 0;
+    text-align: left;
+    font-family: var(--font-type);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: var(--tracking-label);
+    color: var(--color-ink-muted);
+    transition:
+      color 120ms,
+      border-color 120ms;
+  }
+  .tab:hover {
+    color: var(--color-ink);
+    border-bottom-color: var(--color-purple-tint);
+  }
+  .tab-active,
+  .tab-active:hover {
+    color: var(--color-ink);
+    border-bottom-color: var(--color-purple-vivid);
+  }
+
+  /* Deep-purple film strip with sprocket holes on both edges. Decoration
+   * and the app header band; keep content vertically centred between the
+   * two rows of holes. */
+  .filmstrip {
+    position: relative;
+    background-color: var(--color-purple-deep);
+    color: var(--color-paper);
+  }
+  .filmstrip::before,
+  .filmstrip::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 6px;
+    background-color: var(--color-paper);
+    -webkit-mask: var(--mask-sprocket) repeat-x left center / 24px 6px;
+    mask: var(--mask-sprocket) repeat-x left center / 24px 6px;
+    pointer-events: none;
+  }
+  .filmstrip::before {
+    top: 5px;
+  }
+  .filmstrip::after {
+    bottom: 5px;
+  }
+
+  /* Purple halftone that fades out toward the top. Decorative only —
+   * never place text on it. */
+  .halftone {
+    background-image: var(--texture-halftone);
+    background-size: 7px 7px;
+    -webkit-mask-image: linear-gradient(to top, #000 10%, transparent 100%);
+    mask-image: linear-gradient(to top, #000 10%, transparent 100%);
+    pointer-events: none;
+  }
+
+  /* "● REC 00:00:00" — a static, decorative timecode. */
+  .rec {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--font-type);
+    font-size: 0.75rem;
+    letter-spacing: var(--tracking-label);
+    white-space: nowrap;
+  }
+  .rec::before {
+    content: "";
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 9999px;
+    background-color: currentColor;
+    animation: rec-blink 1.6s steps(2, jump-none) infinite;
+  }
+}
+
+@keyframes rec-blink {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.25;
+  }
 }

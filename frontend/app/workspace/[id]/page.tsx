@@ -7,7 +7,14 @@ import { ImportModal } from "@/components/ImportModal";
 import { Modal } from "@/components/Modal";
 import { RoomView } from "@/components/RoomView";
 import { useToast } from "@/components/Toast";
-import { Badge, Button, EmptyState, Spinner } from "@/components/ui";
+import {
+  Badge,
+  Button,
+  EmptyState,
+  Spinner,
+  TabBar,
+  TabButton,
+} from "@/components/ui";
 import { ApiError, api, saveBlob } from "@/lib/api";
 import { formatRunId } from "@/lib/schedule";
 import type {
@@ -195,7 +202,7 @@ export default function WorkspacePage({
 
   if (loading) {
     return (
-      <p className="flex items-center gap-2 px-8 py-8 text-sm text-neutral-500">
+      <p className="flex items-center gap-2 px-5 py-8 text-sm text-ink-muted sm:px-8">
         <Spinner /> Loading workspace…
       </p>
     );
@@ -203,8 +210,8 @@ export default function WorkspacePage({
 
   if (loadError || !meta) {
     return (
-      <div className="px-8 py-8">
-        <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+      <div className="px-5 py-8 sm:px-8">
+        <div className="border-2 border-danger bg-danger-wash px-4 py-3 text-sm text-danger">
           {loadError ?? `Workspace "${workspaceId}" not found.`}
         </div>
       </div>
@@ -215,13 +222,16 @@ export default function WorkspacePage({
     `/workspace/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}`;
 
   return (
-    <div className="mx-auto max-w-5xl px-8 py-8">
-      <div className="flex items-center gap-3">
-        <h1 className="text-lg font-semibold text-neutral-900">{meta.name}</h1>
+    <div className="mx-auto max-w-5xl px-5 py-8 sm:px-8">
+      <p className="eyebrow" aria-hidden="true">
+        Workspace
+      </p>
+      <div className="mt-2 flex flex-wrap items-end gap-x-4 gap-y-2">
+        <h1 className="display">{meta.name}</h1>
         <Badge>{meta.group}</Badge>
       </div>
 
-      <div className="mt-6 flex flex-wrap gap-2">
+      <div className="mt-7 flex flex-wrap gap-3">
         <Button
           onClick={() => setShowImport(true)}
           loading={busy === "import"}
@@ -255,25 +265,25 @@ export default function WorkspacePage({
       </div>
 
       {ingested === false && (
-        <p className="mt-2 text-xs text-neutral-500">
+        <p className="mt-2 text-xs text-ink-muted">
           Import applicant data to enable Schedule.
         </p>
       )}
 
       {busy === "solve" && (
-        <div className="mt-5 flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+        <div className="mt-6 flex items-center gap-2 border-2 border-accent-blue bg-accent-blue-wash px-4 py-3 text-sm text-accent-blue">
           <Spinner />
           Solving schedule, this can take up to 2 minutes. Keep this tab open.
         </div>
       )}
 
       {lastSolve && (
-        <div className="mt-5 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg border border-neutral-200 bg-white px-4 py-3">
-          <span className="text-2xl font-semibold tabular-nums text-neutral-900">
+        <div className="card mt-6 flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3 shadow-hard-sm">
+          <span className="text-2xl font-semibold tabular-nums text-purple-deep">
             {lastSolve.interviews_placed} / {lastSolve.interviews_required}
           </span>
-          <span className="text-sm text-neutral-600">interviews placed</span>
-          <span className="ml-auto text-xs text-neutral-500">
+          <span className="text-sm text-ink-soft">interviews placed</span>
+          <span className="ml-auto text-xs text-ink-muted">
             {lastSolve.clashes} clash{lastSolve.clashes === 1 ? "" : "es"} ·{" "}
             {lastSolve.locked} locked · {lastSolve.solve_seconds}s ·{" "}
             {lastSolve.status}
@@ -282,21 +292,23 @@ export default function WorkspacePage({
       )}
 
       <section className="mt-10">
-        <div className="mb-3 flex items-center gap-1 border-b border-neutral-200">
-          <TabButton active={tab === "runs"} onClick={() => setTab("runs")}>
-            Run history
-          </TabButton>
-          <TabButton
-            active={tab === "rejected"}
-            onClick={() => setTab("rejected")}
-          >
-            Rejected
-            {rejected.length > 0 && (
-              <span className="ml-1.5 rounded-full bg-red-100 px-1.5 text-xs font-semibold text-red-700 tabular-nums">
-                {rejected.length}
-              </span>
-            )}
-          </TabButton>
+        <div className="mb-4">
+          <TabBar>
+            <TabButton active={tab === "runs"} onClick={() => setTab("runs")}>
+              Run history
+            </TabButton>
+            <TabButton
+              active={tab === "rejected"}
+              onClick={() => setTab("rejected")}
+            >
+              Rejected
+              {rejected.length > 0 && (
+                <span className="ml-1.5 bg-danger px-1.5 pt-0.5 text-[11px] leading-tight tabular-nums text-white">
+                  {rejected.length}
+                </span>
+              )}
+            </TabButton>
+          </TabBar>
         </div>
 
         {tab === "runs" &&
@@ -306,24 +318,24 @@ export default function WorkspacePage({
               hint="Import applicants, check capacity, then press Schedule! to produce the first timetable."
             />
           ) : (
-            <ul className="divide-y divide-neutral-200 overflow-hidden rounded-lg border border-neutral-200 bg-white">
+            <ul className="card divide-y divide-rule overflow-hidden">
               {runs.map((run, i) => (
                 <li key={run.run_id}>
                   <Link
                     href={runHref(run.run_id)}
-                    className="flex items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-neutral-50"
+                    className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-sm transition-colors hover:bg-purple-wash"
                   >
-                    <span className="flex-1 font-medium text-neutral-800">
+                    <span className="flex-1 font-medium text-ink">
                       {formatRunId(run.run_id)}
                     </span>
-                    {i === 0 && <Badge tone="green">latest</Badge>}
+                    {i === 0 && <Badge tone="purple">latest</Badge>}
                     {!run.has_assignments && (
-                      <Badge tone="amber">no assignments</Badge>
+                      <Badge tone="pink">no assignments</Badge>
                     )}
-                    <span className="font-mono text-xs text-neutral-400">
+                    <span className="font-mono text-xs text-ink-muted">
                       {run.run_id}
                     </span>
-                    <span className="text-neutral-300">›</span>
+                    <span className="text-purple-vivid" aria-hidden="true">›</span>
                   </Link>
                 </li>
               ))}
@@ -342,13 +354,13 @@ export default function WorkspacePage({
       {schedule && schedule.assignments.length > 0 && (
         <section className="mt-10">
           <div className="mb-3 flex flex-wrap items-center gap-3">
-            <h2 className="text-sm font-semibold text-neutral-900">Schedule</h2>
-            <span className="text-xs text-neutral-500">
+            <h2 className="section-title">Schedule</h2>
+            <span className="text-xs text-ink-muted">
               {formatRunId(schedule.runId)}
             </span>
             <Link
               href={runHref(schedule.runId)}
-              className="ml-auto text-xs font-medium text-neutral-600 hover:text-neutral-900"
+              className="ml-auto text-xs font-medium text-purple-vivid underline-offset-2 hover:underline"
             >
               Open full view to edit, re-solve or send ›
             </Link>
@@ -377,8 +389,8 @@ export default function WorkspacePage({
 
       {infeasible && (
         <Modal title="Capacity Advisor says INFEASIBLE" onClose={() => setInfeasible(null)}>
-          <p className="text-sm leading-relaxed text-neutral-700">{infeasible}</p>
-          <p className="mt-3 text-xs text-neutral-500">
+          <p className="text-sm leading-relaxed text-ink-soft">{infeasible}</p>
+          <p className="mt-3 text-xs text-ink-muted">
             Solving anyway will produce a schedule, but it is likely to contain
             forced clashes. Adding panels is the better fix.
           </p>
@@ -391,30 +403,6 @@ export default function WorkspacePage({
         </Modal>
       )}
     </div>
-  );
-}
-
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`-mb-px flex items-center border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
-        active
-          ? "border-neutral-900 text-neutral-900"
-          : "border-transparent text-neutral-500 hover:text-neutral-800"
-      }`}
-    >
-      {children}
-    </button>
   );
 }
 
@@ -437,9 +425,9 @@ function RejectedTable({
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-neutral-200 bg-white">
+    <div className="card overflow-x-auto">
       <table className="w-full text-sm">
-        <thead className="bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500">
+        <thead className="type-label border-b-2 border-purple-deep bg-paper-sunk text-[11px] text-purple-deep">
           <tr>
             {[
               "CSV Row",
@@ -456,31 +444,31 @@ function RejectedTable({
             ))}
           </tr>
         </thead>
-        <tbody className="divide-y divide-neutral-100">
+        <tbody className="divide-y divide-rule">
           {rows.map((row) => (
             <tr key={row.row_number}>
-              <td className="px-4 py-2 font-mono text-xs tabular-nums text-neutral-500">
+              <td className="px-4 py-2 font-mono text-xs tabular-nums text-ink-muted">
                 {row.csv_row}
               </td>
-              <td className="px-4 py-2 font-medium text-neutral-800">
-                {row.full_name || <span className="text-neutral-400">—</span>}
+              <td className="px-4 py-2 font-medium text-ink">
+                {row.full_name || <span className="text-ink-muted">—</span>}
               </td>
-              <td className="px-4 py-2 text-neutral-700">
-                {row.email || <span className="text-neutral-400">—</span>}
+              <td className="px-4 py-2 text-ink-soft">
+                {row.email || <span className="text-ink-muted">—</span>}
               </td>
-              <td className="px-4 py-2 text-neutral-700">
+              <td className="px-4 py-2 text-ink-soft">
                 {row.sub_division_1 || (
-                  <span className="text-neutral-400">—</span>
+                  <span className="text-ink-muted">—</span>
                 )}
               </td>
-              <td className="px-4 py-2 text-neutral-700">
+              <td className="px-4 py-2 text-ink-soft">
                 {row.sub_division_2 || (
-                  <span className="text-neutral-400">—</span>
+                  <span className="text-ink-muted">—</span>
                 )}
               </td>
               <td className="px-4 py-2">
                 <span
-                  className="font-medium text-red-600"
+                  className="font-medium text-danger"
                   title={row.message}
                 >
                   {row.reason_code}
@@ -497,7 +485,7 @@ function RejectedTable({
                   </Button>
                 ) : (
                   <span
-                    className="text-xs text-neutral-400"
+                    className="text-xs text-ink-muted"
                     title={
                       row.reason_code === "MISSING_EMAIL" ||
                       row.reason_code === "INVALID_EMAIL"

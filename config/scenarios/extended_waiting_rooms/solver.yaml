@@ -1,0 +1,27 @@
+# Room-scenario "extended_waiting_rooms" (see rooms.yaml in this dir).
+# Identical to config/solver.yaml — copied, not overridden, because Settings
+# loads one whole config dir at a time (settings.py:load_settings). If
+# config/solver.yaml changes, mirror the change here too
+# (test_room_scenarios.py::test_extended_waiting_rooms_shares_non_room_config
+# fails loudly if the two drift apart).
+solver: cpsat
+random_seed: 42
+time_limit_seconds: 60
+two_phase: true            # try zero-clash first, then relax
+phase1_time_fraction: 0.5  # share of the time budget the zero-clash phase may use (§5.4)
+weights:
+  clash:    10000          # dominant — never trade an extra clash for anything
+  different_day: 100       # prefer both of an applicant's interviews on the same day (FR-36b)
+  repeat_panel: 50         # C8: same panel for both interviews of a same-parent pair
+  spread:      10
+  same_day_gap: 4         # FR-36: penalty on the *widest* gap any applicant has between
+                          # two same-day interviews (a bottleneck term on top of the linear
+                          # `spread`) — stops one applicant being left a long "gap between
+                          # classes" while others go back-to-back. Keep it small enough that
+                          # same_day_gap * (slots on the longest day - 1) < different_day, so
+                          # it never forces a cross-day split. Phase 2 only.
+  balance:      5
+  subdivision_switch: 3   # cluster each sub-division into contiguous blocks / its own room
+  lateness:     1
+applicant_cap: 120         # confirmed cap; Capacity Advisor plans against this
+target_utilisation: 0.83   # baseline: 12 panels x 24 slots vs 240 interviews

@@ -1,0 +1,42 @@
+# Room-scenario "extended_waiting_rooms" (see rooms.yaml in this dir).
+# Identical to config/notify.yaml — copied, not overridden, because Settings
+# loads one whole config dir at a time (settings.py:load_settings). If
+# config/notify.yaml changes, mirror the change here too
+# (test_room_scenarios.py::test_extended_waiting_rooms_shares_non_room_config
+# fails loudly if the two drift apart).
+# Sender identity and template map for the notify stage (FR-60..FR-67).
+# Values below are placeholders — fill in before running `iffsched notify`.
+# See docs/SPEC.md §10 for how sending method and quotas are chosen.
+
+sender_name: ""             # e.g. "IFF Recruitment Committee"
+sender_email: ""             # e.g. "recruitment@iff.example"
+reply_to: ""                  # e.g. "recruitment@iff.example"
+# Pause between sends. At 2s that is ~150 emails/hour, so a full 300-email
+# round (120 invites + results) takes about two hours and stays far inside the
+# Gmail API's per-day send quota: ~500/day on a consumer account, 2000/day on
+# Workspace. Both ceilings are per 24 hours, so 300/day has ample headroom.
+throttle_seconds: 2.0
+
+templates:
+  invite_html: "templates/email/invite.html.j2"
+  invite_text: "templates/email/invite.txt.j2"
+  result_accepted: "templates/email/result_accepted.html.j2"
+  result_waitlist: "templates/email/result_waitlist.html.j2"
+  result_rejected: "templates/email/result_rejected.html.j2"
+
+# Invite email content (FR-60, SPEC.md §10.3) — nothing about arrival,
+# contact or the RSVP deadline is hard-coded in the template.
+contact_name: ""              # e.g. "Jane (Recruitment Lead)"
+contact_channel: ""           # e.g. "WhatsApp +62 812-0000-0000"
+rsvp_deadline: ""             # e.g. "Tue 15 Sep, 18:00 WIB" — fixed unless a reply arrives by then
+arrival_minutes_early: 15     # how early to tell applicants to arrive
+what_to_bring: []              # e.g. ["Printed CV", "Student ID"]
+
+# Result email content (FR-65, SPEC.md §10.4). Each next_steps_* value must
+# be filled in before `iffsched notify result --send` will proceed — a blank
+# value hard-fails the pre-send audit (a rejection with no real next step is
+# exactly what SPEC.md §10.4 says not to send).
+result_deadline: ""            # e.g. "Fri 19 Sep, 18:00 WIB" — accepted applicants confirm by then
+next_steps_accepted: ""        # e.g. "Reply to this email to confirm your place, and join the WhatsApp group at ..."
+next_steps_waitlist: ""        # e.g. "We will contact you within 3 days of the event if a place opens up."
+next_steps_rejected: ""        # e.g. "We'd love your feedback: [form link]. Applications for the next intake open in March."

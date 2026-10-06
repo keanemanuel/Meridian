@@ -18,22 +18,22 @@ export function CountView({ assignments }: { assignments: Assignment[] }) {
   const rows = [...counts.entries()].sort((a, b) => b[1] - a[1]);
 
   return (
-    <div className="max-w-md overflow-hidden rounded-lg border border-neutral-200 bg-white">
+    <div className="card max-w-md overflow-hidden">
       <table className="w-full text-sm">
-        <tbody className="divide-y divide-neutral-100">
+        <tbody className="divide-y divide-rule">
           {rows.map(([subDivision, count]) => (
             <tr key={subDivision}>
-              <td className="px-4 py-2 text-neutral-700">{subDivision}</td>
-              <td className="px-4 py-2 text-right font-medium tabular-nums text-neutral-900">
+              <td className="px-4 py-2 text-ink-soft">{subDivision}</td>
+              <td className="px-4 py-2 text-right font-medium tabular-nums text-ink">
                 {count}
               </td>
             </tr>
           ))}
         </tbody>
         <tfoot>
-          <tr className="border-t border-neutral-200 bg-neutral-50">
-            <td className="px-4 py-2 font-semibold text-neutral-900">Total</td>
-            <td className="px-4 py-2 text-right font-semibold tabular-nums text-neutral-900">
+          <tr className="border-t-2 border-purple-deep bg-paper-sunk">
+            <td className="px-4 py-2 font-semibold text-purple-deep">Total</td>
+            <td className="px-4 py-2 text-right font-semibold tabular-nums text-purple-deep">
               {assignments.length}
             </td>
           </tr>

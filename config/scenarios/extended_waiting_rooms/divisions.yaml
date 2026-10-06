@@ -1,0 +1,48 @@
+# Room-scenario "extended_waiting_rooms" (see rooms.yaml in this dir).
+# Identical to config/divisions.yaml — copied, not overridden, because Settings
+# loads one whole config dir at a time (settings.py:load_settings). If
+# config/divisions.yaml changes, mirror the change here too
+# (test_room_scenarios.py::test_extended_waiting_rooms_shares_non_room_config
+# fails loudly if the two drift apart).
+divisions:
+  - code: MEDMARDOC
+    display: "Media Marketing & Documentation"
+  - code: CREATIVE
+    display: "Creative"
+  - code: LOGISTICS
+    display: "Logistics"
+  - code: LIAISON
+    display: "Liaison"
+  - code: FNB
+    display: "Finance & Booth"
+  - code: PROGRAM
+    display: "Program"
+
+# Every string the applicant can actually pick in "First Preference" /
+# "Second Preference" on the live IFF form, plus the shorter labels earlier
+# exports used. Lookup is case- and whitespace-insensitive (see
+# `DivisionsConfig.canonical_sub_division_mapping`) but never fuzzy: a value
+# that is not listed here is rejected as UNKNOWN_SUBDIVISION rather than
+# guessed at (CLAUDE.md invariant 3).
+#
+# Note the two Creative and the two Media entries map to one parent each.
+# That is deliberate: an applicant may pick both, and the scheduling unit is
+# the choice, not the division (CLAUDE.md invariant 2).
+sub_division_mapping:
+  # ---- live IFF form values ----
+  "Logistics":                                            LOGISTICS
+  "Creative and Decor (Design and Decor)":                 CREATIVE
+  "Creative and Decor (WebMaster)":                        CREATIVE
+  "Media Marketing and Documentation (Documentation)":     MEDMARDOC
+  "Media Marketing and Documentation (Media Marketing)":   MEDMARDOC
+  "Finance and Booth":                                     FNB
+  "Program":                                               PROGRAM
+  "Liaison":                                               LIAISON
+
+  # ---- shorter labels kept for older exports and fixtures ----
+  "Media Marketing":     MEDMARDOC
+  "Media Documentation": MEDMARDOC
+  "Creative":            CREATIVE
+  "Design and Decor":    CREATIVE
+  "WebMaster":           CREATIVE
+  "Finance & Booth":     FNB
