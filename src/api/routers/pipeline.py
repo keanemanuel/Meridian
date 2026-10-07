@@ -33,12 +33,12 @@ from api.dependencies import (
     workspace_pk,
 )
 from api.privacy import RevealDep, disguise_assignment, disguise_report_row
-from api.services import execute_solve, read_run_metrics
+from api.services import backfill_availability, execute_solve, read_run_metrics
 from iff_scheduler import workspace as ws
 from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.enums import Severity
 from iff_scheduler.domain.grid import build_slot_grid
-from iff_scheduler.domain.models import Assignment
+from iff_scheduler.domain.models import Applicant, Assignment
 from iff_scheduler.export.applicant_view import build_applicant_view
 from iff_scheduler.export.html_writer import (
     write_applicant_view_html,
@@ -134,6 +134,32 @@ def _rejected_from_report(report_path) -> list[dict[str, Any]]:  # type: ignore[
     return out
 
 
+def _record_availability_on_runs(workspace_id: str, applicants: list[Applicant]) -> None:
+    """After an ingest, complete the `applicant_availability` record of every
+    run in this workspace that is missing entries (`backfill_availability`).
+
+    Postgres only: there the applicant file is a local artefact a redeploy
+    wipes, so a run solved before the record existed loses its Preference
+    column for good unless the next import of the same CSV puts it back. In
+    the file store the applicant file never goes away."""
+    if not supabase_enabled():
+        return
+    from iff_scheduler.db import assignment_repo, run_repo
+
+    roster = {a.applicant_id: a for a in applicants}
+    for row in run_repo.list_runs(workspace_pk(workspace_id)):
+        metrics = dict(row.get("metrics") or {})
+        completed = backfill_availability(
+            metrics.get("applicant_availability") or {},
+            assignment_repo.list_assignments(str(row["id"])),
+            roster,
+        )
+        if completed is not None:
+            run_repo.update_run(
+                str(row["id"]), metrics={**metrics, "applicant_availability": completed}
+            )
+
+
 @router.post("/ingest")
 async def ingest(
     workspace_id: str,
@@ -176,6 +202,7 @@ async def ingest(
         grid=grid,
     )
     write_outputs(result, clean_path=clean_path, report_path=report_path)
+    _record_availability_on_runs(workspace_id, result.applicants)
     return _ingest_summary(result.applicants, result.report, revealed)
 
 
@@ -259,6 +286,7 @@ def recover(
         report_path=report_path,
     )
     _save_recovered_rows(workspace_id, recovered)
+    _record_availability_on_runs(workspace_id, result.applicants)
 
     summary = _ingest_summary(result.applicants, result.report, revealed)
     summary["recovered_row"] = row_number

@@ -193,6 +193,15 @@ deployed value lives only in the Vercel project's env vars.
 - **CORS is wide open** (`allow_origins=["*"]` in `src/api/main.py`).
   Required now that the frontend and API are different origins; tighten to
   the Vercel domain if the API is ever exposed more broadly.
+- **A redeploy wipes the ingested applicant list.** Railway's disk does not
+  survive a deploy, and `applicants.clean.csv` lives on it — afterwards the
+  workspace reads as "not ingested" and **Schedule!** needs the CSV imported
+  again. Existing runs keep their Preference column regardless: each solve
+  records every applicant's declared availability with the run in Postgres
+  (`metrics.applicant_availability`). A run solved before that record existed
+  gets it the next time the *same* CSV is imported (same people under the
+  same applicant ids — recover the same rejected rows first, or the ids
+  shift and the import is ignored for that run).
 - **CLI still works against local files.** `iffsched solve --workspace <name>`
   on a laptop is unaffected by any of this and needs no Supabase or Railway
   config — it runs file-mode as in alpha.

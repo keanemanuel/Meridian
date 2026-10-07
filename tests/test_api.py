@@ -1247,3 +1247,174 @@ def test_unverified_download_carries_aliases_and_leaves_real_exports_alone(
     assert published.read_bytes() == before
 
     assert names_in(client.get(url, headers=_reveal_headers(client)).content) == real_names
+
+
+# ------------------------------------------- preferences survive a wiped host
+
+
+def test_preference_column_survives_losing_the_applicant_file(
+    client: TestClient, wsname: str
+) -> None:
+    """The API host's disk is wiped on every redeploy, taking
+    `applicants.clean.csv` with it. The run records what each applicant
+    declared at solve time, so the Preference column must not go blank."""
+    from iff_scheduler import workspace as ws
+
+    run_id = _solved_run(client, wsname)
+    url = f"/api/workspaces/{wsname}/runs/{run_id}/assignments"
+    before = client.get(url).json()
+    assert all(r["declared_availability"] for r in before)
+
+    ws.applicants_clean_path(wsname).unlink()
+    after = client.get(url).json()
+    assert [(r["declared_availability"], r["availability_slots"]) for r in after] == [
+        (r["declared_availability"], r["availability_slots"]) for r in before
+    ]
+
+
+def _record_availability(name: str, run_id: str, applicant_id: str, slots: list[str]) -> None:
+    """Overwrite one applicant's entry in the run's availability record, in
+    whichever store is live."""
+    from iff_scheduler import workspace as ws
+    from iff_scheduler.db import supabase_enabled
+
+    if supabase_enabled():
+        from api.dependencies import workspace_pk
+        from iff_scheduler.db import run_repo
+
+        row = run_repo.get_run(workspace_pk(name), run_id)
+        assert row is not None
+        metrics = dict(row["metrics"])
+        metrics["applicant_availability"] = {
+            **metrics["applicant_availability"],
+            applicant_id: slots,
+        }
+        run_repo.update_run(row["id"], metrics=metrics)
+        return
+    path = ws.runs_dir(name) / run_id / "metrics.json"
+    metrics = json.loads(path.read_text(encoding="utf-8"))
+    metrics["applicant_availability"][applicant_id] = slots
+    path.write_text(json.dumps(metrics), encoding="utf-8")
+
+
+def test_a_move_is_checked_against_the_runs_own_availability_record(
+    client: TestClient, wsname: str
+) -> None:
+    """Without the applicant file a move used to keep whatever clash flag the
+    interview already had. It is now judged against the run's record: outside
+    the recorded slots sets the flag, back inside clears it."""
+    from iff_scheduler import workspace as ws
+
+    run_id = _solved_run(client, wsname)
+    base = f"/api/workspaces/{wsname}/runs/{run_id}"
+    rows = client.get(f"{base}/assignments").json()
+    ws.applicants_clean_path(wsname).unlink()
+
+    # An interview with a free slot later the same evening on its own panel.
+    taken = {(r["panel_id"], r["slot_id"]) for r in rows}
+    target, dest = next(
+        (r, s)
+        for r in rows
+        for s in r["availability_slots"]
+        if s.startswith(r["date"])
+        and (r["panel_id"], s) not in taken
+        and s not in {o["slot_id"] for o in rows if o["applicant_id"] == r["applicant_id"]}
+    )
+    assert target["is_clash"] is False
+
+    # The applicant is now on record as free for nothing but where they sit.
+    _record_availability(wsname, run_id, target["applicant_id"], [target["slot_id"]])
+    listed = client.get(f"{base}/assignments").json()
+    assert {
+        tuple(r["availability_slots"])
+        for r in listed
+        if r["applicant_id"] == target["applicant_id"]
+    } == {(target["slot_id"],)}
+
+    moved = client.patch(
+        f"{base}/assignments/{target['assignment_id']}",
+        json={"panel_id": target["panel_id"], "slot_id": dest},
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["assignment"]["is_clash"] is True
+
+    back = client.patch(
+        f"{base}/assignments/{target['assignment_id']}",
+        json={"panel_id": target["panel_id"], "slot_id": target["slot_id"]},
+    )
+    assert back.status_code == 200, back.text
+    assert back.json()["assignment"]["is_clash"] is False
+
+
+def test_backfill_availability_fills_gaps_but_never_from_the_wrong_roster(
+    client: TestClient, wsname: str
+) -> None:
+    from api.cli_helpers import load_assignments, load_clean_applicants
+    from api.services import backfill_availability
+    from iff_scheduler import workspace as ws
+
+    run_id = _solved_run(client, wsname)
+    assignments = load_assignments(ws.runs_dir(wsname) / run_id / "assignments.csv")
+    roster = {a.applicant_id: a for a in load_clean_applicants(ws.applicants_clean_path(wsname))}
+    full = {
+        i: list(a.availability_slots)
+        for i, a in roster.items()
+        if i in {x.applicant_id for x in assignments}
+    }
+
+    # Nothing recorded yet: the whole roster is filled in.
+    assert backfill_availability({}, assignments, roster) == full
+    # Already complete: nothing to do.
+    assert backfill_availability(full, assignments, roster) is None
+    # An entry the run already carries (a hand correction) wins over the CSV.
+    someone = assignments[0].applicant_id
+    assert backfill_availability({someone: ["corrected"]}, assignments, roster) == {
+        **full,
+        someone: ["corrected"],
+    }
+    # Same ids, different people (another CSV): refuse rather than mis-attach.
+    other = assignments[-1].applicant_id
+    assert other != someone
+    swapped = {**roster, someone: roster[other].model_copy(update={"applicant_id": someone})}
+    assert backfill_availability({}, assignments, swapped) is None
+    # A roster that lacks someone the run scheduled is not this run's roster.
+    assert backfill_availability({}, assignments, {someone: roster[someone]}) is None
+
+
+def test_reimporting_the_csv_restores_preferences_on_runs_that_lost_them(
+    client: TestClient, wsname: str
+) -> None:
+    """Postgres only: a run solved before availability was recorded with it
+    gets the record back the next time the same CSV is imported."""
+    from iff_scheduler.db import supabase_enabled
+
+    if not supabase_enabled():
+        pytest.skip("the backfill only exists for the Postgres store")
+    from api.dependencies import workspace_pk
+    from iff_scheduler import workspace as ws
+    from iff_scheduler.db import run_repo
+
+    run_id = _solved_run(client, wsname)
+    url = f"/api/workspaces/{wsname}/runs/{run_id}/assignments"
+    before = client.get(url).json()
+
+    # Put the run in the state production was found in: no record, no file.
+    row = run_repo.get_run(workspace_pk(wsname), run_id)
+    assert row is not None
+    metrics = dict(row["metrics"])
+    metrics.pop("applicant_availability")
+    someone = before[0]["applicant_id"]
+    run_repo.update_run(row["id"], metrics={**metrics, "applicant_availability": {someone: []}})
+    ws.applicants_clean_path(wsname).unlink()
+    blank = client.get(url).json()
+    assert not any(r["declared_availability"] for r in blank)
+
+    assert _ingest_fixture(client, wsname).status_code == 200
+    ws.applicants_clean_path(wsname).unlink()
+    restored = client.get(url).json()
+    for was, now in zip(before, restored, strict=True):
+        if now["applicant_id"] == someone:
+            assert now["availability_slots"] == []  # the existing entry is kept
+        else:
+            assert now["availability_slots"] == was["availability_slots"]
+            assert now["declared_availability"] == was["declared_availability"]

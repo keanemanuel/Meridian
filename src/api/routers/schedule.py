@@ -33,7 +33,7 @@ from api.dependencies import (
     run_dir_if_present,
 )
 from api.privacy import RevealDep, disguise_assignment
-from api.services import execute_solve
+from api.services import execute_solve, read_run_metrics
 from iff_scheduler import workspace as ws
 from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.availability import summarise_availability
@@ -223,26 +223,50 @@ def _run_panels(
     return panels
 
 
+def _run_metrics(workspace_id: str, run_id: str, run_dir: Path | None) -> dict[str, Any]:
+    """The run's recorded metrics, from whichever store is live."""
+    if supabase_enabled():
+        from api.dependencies import workspace_pk
+        from iff_scheduler.db import run_repo
+
+        row = run_repo.get_run(workspace_pk(workspace_id), run_id)
+        if row is not None:
+            return dict(row.get("metrics") or {})
+    if run_dir is not None:
+        return dict(read_run_metrics(run_dir)["metrics"])
+    return {}
+
+
 def _applicant_availability(
-    workspace_id: str, settings: Settings
+    workspace_id: str, settings: Settings, run_metrics: dict[str, Any]
 ) -> tuple[dict[str, str], dict[str, list[str]]]:
     """(preference summary, raw available slot-ids) per applicant.
 
     The summary feeds the Applicants view's declared-availability column
     (FR-51); the raw slot-id list lets the move dialog and drag-and-drop flag a
     target that sits outside the applicant's stated availability as a clash
-    without blocking it (FR-40, FR-34). Best-effort: when the clean applicant
-    list is not on this instance both are left empty rather than guessed
-    (CLAUDE.md invariant 3)."""
+    without blocking it (FR-40, FR-34).
+
+    The run's own `applicant_availability` record (written at solve time, see
+    `execute_solve`) is the source; the clean applicant list on this instance
+    only fills in anyone that record lacks — a run solved before the record
+    existed. The clean list is a local file a redeploy wipes, so relying on it
+    alone blanked the column for every applicant. Anyone in neither is left
+    out rather than guessed (CLAUDE.md invariant 3)."""
+    available: dict[str, list[str]] = {}
     path = ws.applicants_clean_path(workspace_id)
-    if not path.exists():
-        return {}, {}
-    slots = build_slot_grid(settings.event).slots
-    applicants = load_clean_applicants(path)
+    if path.exists():
+        available = {
+            a.applicant_id: list(a.availability_slots) for a in load_clean_applicants(path)
+        }
+    recorded = run_metrics.get("applicant_availability") or {}
+    available |= {str(applicant_id): list(slots) for applicant_id, slots in recorded.items()}
+
+    grid_slots = build_slot_grid(settings.event).slots
     declared = {
-        a.applicant_id: summarise_availability(a.availability_slots, slots) for a in applicants
+        applicant_id: summarise_availability(slots, grid_slots)
+        for applicant_id, slots in available.items()
     }
-    available = {a.applicant_id: list(a.availability_slots) for a in applicants}
     return declared, available
 
 
@@ -250,9 +274,10 @@ def _applicant_availability(
 def get_assignments(
     workspace_id: str, run_id: str, settings: SettingsDep, revealed: RevealDep
 ) -> list[dict[str, Any]]:
-    declared, available = _applicant_availability(workspace_id, settings)
-
-    def serialise(assignments: list[Assignment]) -> list[dict[str, Any]]:
+    def serialise(assignments: list[Assignment], run_dir: Path | None) -> list[dict[str, Any]]:
+        declared, available = _applicant_availability(
+            workspace_id, settings, _run_metrics(workspace_id, run_id, run_dir)
+        )
         return [
             {
                 **_serialise(a, revealed),
@@ -266,12 +291,14 @@ def get_assignments(
         from iff_scheduler.db import assignment_repo
 
         run_pk = resolve_run_pk(workspace_id, run_id)
-        return serialise(assignment_repo.list_assignments(run_pk))
+        return serialise(
+            assignment_repo.list_assignments(run_pk), run_dir_if_present(workspace_id, run_id)
+        )
     run_dir = resolve_run_dir(workspace_id, run_id)
     path = run_dir / "assignments.csv"
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"{path} not found — solve first.")
-    return serialise(load_assignments(path))
+    return serialise(load_assignments(path), run_dir)
 
 
 class AssignmentEdit(BaseModel):
@@ -353,18 +380,13 @@ def patch_assignment(
     panel = panels_by_id[body.panel_id]
     slot = slots_by_id[body.slot_id]
 
-    applicants = {
-        a.applicant_id: a
-        for a in (
-            load_clean_applicants(ws.applicants_clean_path(workspace_id))
-            if ws.applicants_clean_path(workspace_id).exists()
-            else []
-        )
-    }
-    applicant = applicants.get(target.applicant_id)
+    _, available = _applicant_availability(
+        workspace_id, settings, _run_metrics(workspace_id, run_id, run_dir)
+    )
+    declared_slots = available.get(target.applicant_id)
     is_clash = (
-        body.slot_id not in set(applicant.availability_slots)
-        if applicant is not None
+        body.slot_id not in set(declared_slots)
+        if declared_slots is not None
         else target.is_clash
     )
 

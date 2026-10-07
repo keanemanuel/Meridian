@@ -30,6 +30,7 @@ from iff_scheduler.cli import (
 )
 from iff_scheduler.db import supabase_enabled
 from iff_scheduler.domain.grid import build_slot_grid
+from iff_scheduler.domain.models import Applicant, Assignment
 from iff_scheduler.scheduling.base import USABLE_STATUSES, Lock, SolveResult
 from iff_scheduler.scheduling.feasibility import (
     autoscale_panels,
@@ -131,6 +132,13 @@ def execute_solve(
         # validated against this, not the committed config, so a move onto a
         # load-balanced panel is not rejected as "Unknown panel" (FR-40..FR-42).
         "solved_panels": [p.model_dump(mode="json") for p in settings.panels.panels],
+        # What each applicant said they could attend, as solved against. The
+        # Applicants tab's Preference column and the clash check on a manual
+        # move read it from here, so they keep working after the API host's
+        # disk — and `applicants.clean.csv` with it — is wiped by a redeploy.
+        "applicant_availability": {
+            a.applicant_id: list(a.availability_slots) for a in problem.applicants
+        },
     }
 
     _assignments_frame(result.assignments).to_csv(run_dir / "assignments.csv", index=False)
@@ -195,6 +203,32 @@ def _persist_run_to_db(
         raise HTTPException(status_code=404, detail=f"Workspace '{workspace_id}' not found.")
     run_row = run_repo.create_run(pk, run_label, status="complete", metrics=metrics)
     assignment_repo.replace_assignments(run_row["id"], assignments)
+
+
+def backfill_availability(
+    recorded: dict[str, list[str]],
+    assignments: list[Assignment],
+    roster: dict[str, Applicant],
+) -> dict[str, list[str]] | None:
+    """Fill in a run's `applicant_availability` record from a freshly ingested
+    roster, for a run solved before that record existed (or whose applicant
+    file was lost before it could be read).
+
+    Returns the completed record, or ``None`` when there is nothing to add.
+    Entries the run already carries win — one may be a hand correction.
+    Applicant ids are only ingest sequence numbers, so the roster is used only
+    if every interview in the run resolves to the same email under the same
+    id; a different CSV (or the same one minus a recovered row) numbers people
+    differently and would attach one person's preference to another
+    (CLAUDE.md invariant 3)."""
+    missing = {a.applicant_id for a in assignments} - set(recorded)
+    if not missing:
+        return None
+    for a in assignments:
+        person = roster.get(a.applicant_id)
+        if person is None or person.email != a.email:
+            return None
+    return {**{i: list(roster[i].availability_slots) for i in sorted(missing)}, **recorded}
 
 
 def read_run_metrics(run_dir: Path) -> dict[str, Any]:
