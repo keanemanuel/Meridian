@@ -34,7 +34,7 @@ from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 
-from api.routers import pipeline, schedule, workspaces  # noqa: E402
+from api.routers import pipeline, reveal, schedule, workspaces  # noqa: E402
 
 app = FastAPI(
     title="Meridian API",
@@ -113,6 +113,7 @@ def debug() -> dict[str, Any]:
     }
 
 
+app.include_router(reveal.router)
 app.include_router(workspaces.router)
 app.include_router(pipeline.router)
 app.include_router(schedule.router)

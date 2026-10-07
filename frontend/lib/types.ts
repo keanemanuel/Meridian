@@ -11,6 +11,20 @@ export type WorkspaceMeta = {
   created_at: string;
 };
 
+/** `GET /reveal` — whether applicant names are disguised on this deployment
+ * and whether this viewer has already entered the password. */
+export type RevealStatus = {
+  masking_enabled: boolean;
+  revealed: boolean;
+};
+
+/** `POST /reveal` — sent back as the `X-Reveal-Token` header from then on. */
+export type RevealToken = {
+  token: string;
+  /** Epoch seconds. */
+  expires_at: number;
+};
+
 /** `GET /runs` — one entry per solve. */
 export type RunSummary = {
   run_id: string;
@@ -23,6 +37,8 @@ export type Assignment = {
   /** `${applicant_id}:${choice_index}` — colon-bearing, so URL-encode it. */
   assignment_id: string;
   applicant_id: string;
+  /** A `CAND0001`-style alias, and `email` a placeholder, until the viewer is
+   * verified on a name-disguised deployment (`RevealStatus`). */
   full_name: string;
   email: string;
   choice_index: 1 | 2;

@@ -42,6 +42,9 @@ FIXTURE_CSV = Path(__file__).parent / "fixtures" / "applicants_raw.csv"
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("IFFSCHED_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.chdir(tmp_path)
+    # Name disguise off unless a test turns it on: set to empty rather than
+    # deleted so a developer's own `.env` cannot switch it back on mid-suite.
+    monkeypatch.setenv("REVEAL_PASSWORD", "")
     return TestClient(app)
 
 
@@ -1076,3 +1079,171 @@ def test_an_iff_submissions_workspace_can_be_renamed(client: TestClient, wsname:
     renamed = client.patch(f"/api/workspaces/{wsname}", json={"name": new_name})
     assert renamed.status_code == 200
     assert renamed.json()["group"] == "IFF Submissions"
+
+
+# ------------------------------------------------------- name disguise (reveal)
+
+_TEST_PASSWORD = "open-sesame"
+
+
+def _solved_run(client: TestClient, name: str) -> str:
+    _create_ws(client, name)
+    _ingest_fixture(client, name)
+    solved = client.post(f"/api/workspaces/{name}/solve", json={"skip_check": True})
+    assert solved.status_code == 200, solved.text
+    return str(solved.json()["run_id"])
+
+
+def _reveal_headers(client: TestClient) -> dict[str, str]:
+    resp = client.post("/api/reveal", json={"password": _TEST_PASSWORD})
+    assert resp.status_code == 200, resp.text
+    return {"X-Reveal-Token": resp.json()["token"]}
+
+
+def test_names_are_not_disguised_when_no_password_is_configured(
+    client: TestClient, wsname: str
+) -> None:
+    run_id = _solved_run(client, wsname)
+    assert client.get("/api/reveal").json() == {"masking_enabled": False, "revealed": True}
+    rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    assert not any(r["full_name"].startswith("CAND") for r in rows)
+    assert client.post("/api/reveal", json={"password": "anything"}).status_code == 409
+
+
+def test_unverified_viewer_only_ever_sees_aliases(
+    client: TestClient, wsname: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import re
+
+    run_id = _solved_run(client, wsname)
+    base = f"/api/workspaces/{wsname}"
+    real = client.get(f"{base}/runs/{run_id}/assignments").json()
+    real_rejected = client.get(f"{base}/rejected").json()
+    secrets = {r["full_name"] for r in real} | {r["email"] for r in real}
+    secrets |= {r["full_name"] for r in real_rejected} | {r["email"] for r in real_rejected}
+    secrets.discard("")
+
+    monkeypatch.setenv("REVEAL_PASSWORD", _TEST_PASSWORD)
+    assert client.get("/api/reveal").json() == {"masking_enabled": True, "revealed": False}
+
+    masked = client.get(f"{base}/runs/{run_id}/assignments")
+    assert masked.status_code == 200
+    rows = masked.json()
+    assert len(rows) == len(real)
+    assert all(re.fullmatch(r"CAND\d{4}", r["full_name"]) for r in rows)
+    assert {r["email"] for r in rows} == {"hidden"}
+    # The alias follows the applicant, so both of their interviews share it
+    # and everything that is not identity is untouched.
+    assert {(r["applicant_id"], r["full_name"]) for r in rows} == {
+        (r["applicant_id"], f"CAND{int(r['applicant_id'][1:]):04d}") for r in real
+    }
+    assert [(r["assignment_id"], r["panel_id"], r["slot_id"]) for r in rows] == [
+        (r["assignment_id"], r["panel_id"], r["slot_id"]) for r in real
+    ]
+
+    rejected = client.get(f"{base}/rejected")
+    target = rows[0]
+    locked = client.patch(
+        f"{base}/runs/{run_id}/assignments/{target['assignment_id']}/lock",
+        json={"locked": True},
+    )
+    assert locked.status_code == 200, locked.text
+    assert locked.json()["assignment"]["full_name"] == target["full_name"]
+    reingested = _ingest_fixture(client, wsname)
+    assert reingested.status_code == 200
+
+    for resp in (masked, rejected, locked, reingested):
+        leaked = [s for s in secrets if s in resp.text]
+        assert not leaked, f"{resp.request.url} leaked {leaked}"
+
+
+def test_password_reveals_real_names(
+    client: TestClient, wsname: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _solved_run(client, wsname)
+    url = f"/api/workspaces/{wsname}/runs/{run_id}/assignments"
+    real = client.get(url).json()
+
+    monkeypatch.setenv("REVEAL_PASSWORD", _TEST_PASSWORD)
+    wrong = client.post("/api/reveal", json={"password": "not-it"})
+    assert wrong.status_code == 401
+    assert "token" not in wrong.json()
+
+    headers = _reveal_headers(client)
+    assert client.get("/api/reveal", headers=headers).json() == {
+        "masking_enabled": True,
+        "revealed": True,
+    }
+    assert client.get(url, headers=headers).json() == real
+
+    # A made-up token, and one minted under a since-changed password, reveal nothing.
+    forged = client.get(url, headers={"X-Reveal-Token": "9999999999.deadbeef"}).json()
+    assert all(r["full_name"].startswith("CAND") for r in forged)
+    monkeypatch.setenv("REVEAL_PASSWORD", "rotated")
+    stale = client.get(url, headers=headers).json()
+    assert all(r["full_name"].startswith("CAND") for r in stale)
+
+
+def test_reveal_token_expires(monkeypatch: pytest.MonkeyPatch) -> None:
+    from api import privacy
+
+    monkeypatch.setenv("REVEAL_PASSWORD", _TEST_PASSWORD)
+    token, expires_at = privacy.issue_token(now=1_000)
+    assert expires_at == 1_000 + privacy.TOKEN_TTL_SECONDS
+    assert privacy.token_valid(token, now=expires_at - 1)
+    assert not privacy.token_valid(token, now=expires_at)
+    assert not privacy.token_valid(None)
+    assert not privacy.token_valid("garbage")
+
+
+def test_disguised_report_row_scrubs_the_message_too() -> None:
+    from api.privacy import disguise_report_row
+
+    row = {
+        "row_number": 6,
+        "csv_row": 7,
+        "full_name": "Eka Putri",
+        "email": "eka-at-example.com",
+        "reason_code": "INVALID_EMAIL",
+        "message": "'eka-at-example.com' is not a valid email address.",
+    }
+    masked = disguise_report_row(row)
+    assert masked["full_name"] == "ROW0007"
+    assert masked["email"] == "hidden"
+    assert masked["message"] == "'hidden' is not a valid email address."
+    # A blank stays blank, so "missing name" still reads as missing.
+    assert disguise_report_row({**row, "full_name": ""})["full_name"] == ""
+
+
+def test_unverified_download_carries_aliases_and_leaves_real_exports_alone(
+    client: TestClient, wsname: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    import zipfile
+
+    from openpyxl import load_workbook
+
+    from iff_scheduler import workspace as ws
+
+    def names_in(content: bytes) -> set[str]:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            assert sorted(zf.namelist()) == ["applicants.xlsx", "rooms.xlsx", "schedule.xlsx"]
+            sheet = load_workbook(io.BytesIO(zf.read("applicants.xlsx"))).active
+        return {str(row[1]) for row in sheet.iter_rows(min_row=2, values_only=True)}
+
+    run_id = _solved_run(client, wsname)
+    url = f"/api/workspaces/{wsname}/runs/{run_id}/xlsx"
+    real_names = names_in(client.get(url).content)
+    published = ws.output_dir(wsname) / run_id / "applicants.xlsx"
+    before = published.read_bytes()
+
+    monkeypatch.setenv("REVEAL_PASSWORD", _TEST_PASSWORD)
+    resp = client.get(url)
+    assert resp.status_code == 200, resp.text
+    aliases = names_in(resp.content)
+    assert len(aliases) == len(real_names)
+    assert all(n.startswith("CAND") for n in aliases)
+    assert not aliases & real_names
+    assert published.read_bytes() == before
+
+    assert names_in(client.get(url, headers=_reveal_headers(client)).content) == real_names

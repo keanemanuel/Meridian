@@ -12,12 +12,15 @@ import type {
   PublishResult,
   RecoverResult,
   RejectedRow,
+  RevealStatus,
+  RevealToken,
   RoomPanel,
   RunPanels,
   RunSummary,
   SolveResult,
   WorkspaceMeta,
 } from "./types";
+import { revealHeaders } from "./reveal";
 
 // "/api" everywhere: on Vercel, vercel.json routes /api/* straight to the
 // Python function (same origin); locally, next.config.ts rewrites the same
@@ -134,6 +137,9 @@ async function attemptOnce<T>(
         ...(init?.body instanceof FormData
           ? {}
           : { "Content-Type": "application/json" }),
+        // Present only once the viewer has entered the password; without it
+        // the API answers with aliases in place of real applicant names.
+        ...revealHeaders(),
         ...init?.headers,
       },
     });
@@ -198,6 +204,14 @@ export type CreateWorkspaceOpts = RetryHooks;
 
 export const api = {
   health: () => request<{ status: string }>("/health"),
+
+  /** Does this deployment disguise applicant names, and is this viewer
+   * already verified? Drives the "Are you verified?" control in the header. */
+  revealStatus: () => request<RevealStatus>("/reveal"),
+
+  /** Trade the password for a reveal token. 401s on a wrong password. */
+  reveal: (password: string) =>
+    request<RevealToken>("/reveal", json({ password })),
 
   // First contact after an idle period pays the Railway cold start, so this
   // and createWorkspace ride the retry loop; every later call assumes a warm
@@ -352,7 +366,7 @@ export const api = {
   ): Promise<{ blob: Blob; filename: string }> => {
     const res = await fetch(
       `${API_URL}/workspaces/${seg(id)}/runs/${seg(runId)}/xlsx`,
-      { cache: "no-store" },
+      { cache: "no-store", headers: revealHeaders() },
     );
     if (!res.ok) {
       let body: unknown = null;

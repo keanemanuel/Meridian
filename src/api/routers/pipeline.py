@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Annotated, Any
@@ -31,6 +32,7 @@ from api.dependencies import (
     run_dir_if_present,
     workspace_pk,
 )
+from api.privacy import RevealDep, disguise_assignment, disguise_report_row
 from api.services import execute_solve, read_run_metrics
 from iff_scheduler import workspace as ws
 from iff_scheduler.db import supabase_enabled
@@ -67,13 +69,14 @@ router = APIRouter(prefix="/api/workspaces/{workspace_id}", tags=["pipeline"])
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
-def _ingest_summary(applicants: list[Any], report: list[Any]) -> dict[str, Any]:
+def _ingest_summary(applicants: list[Any], report: list[Any], revealed: bool) -> dict[str, Any]:
+    rows = [r.model_dump(mode="json") for r in report]
     return {
         "applicants": len(applicants),
         "rejected": sum(1 for r in report if r.outcome == "REJECTED"),
         "collapsed": sum(1 for r in report if r.outcome == "COLLAPSED"),
         "warnings": sum(1 for r in report if r.outcome == "WARNING"),
-        "report": [r.model_dump(mode="json") for r in report],
+        "report": rows if revealed else [disguise_report_row(r) for r in rows],
     }
 
 
@@ -135,6 +138,7 @@ def _rejected_from_report(report_path) -> list[dict[str, Any]]:  # type: ignore[
 async def ingest(
     workspace_id: str,
     settings: SettingsDep,
+    revealed: RevealDep,
     source: Annotated[str, Form()] = "csv",
     file: Annotated[UploadFile | None, File()] = None,
 ) -> dict[str, Any]:
@@ -172,7 +176,7 @@ async def ingest(
         grid=grid,
     )
     write_outputs(result, clean_path=clean_path, report_path=report_path)
-    return _ingest_summary(result.applicants, result.report)
+    return _ingest_summary(result.applicants, result.report, revealed)
 
 
 @router.get("/ingest-status")
@@ -196,17 +200,20 @@ def ingest_status(workspace_id: str) -> dict[str, Any]:
 
 
 @router.get("/rejected")
-def list_rejected(workspace_id: str) -> list[dict[str, Any]]:
+def list_rejected(workspace_id: str, revealed: RevealDep) -> list[dict[str, Any]]:
     """The rejected rows of the latest validation report, for the workspace
     page's Rejected tab. `recoverable` says whether the "Recover" action
     applies (a missing/invalid email or an unmappable sub-division cannot be
     waved through)."""
     resolve_workspace(workspace_id)
-    return _rejected_from_report(ws.validation_report_path(workspace_id))
+    rows = _rejected_from_report(ws.validation_report_path(workspace_id))
+    return rows if revealed else [disguise_report_row(r) for r in rows]
 
 
 @router.post("/recover/{row_number}")
-def recover(workspace_id: str, row_number: int, settings: SettingsDep) -> dict[str, Any]:
+def recover(
+    workspace_id: str, row_number: int, settings: SettingsDep, revealed: RevealDep
+) -> dict[str, Any]:
     """Force a recoverable rejected row into the clean applicant list and
     re-run ingest over the stored CSV upload. The committee still has to
     re-run Schedule! for the recovered applicant to be placed."""
@@ -253,7 +260,7 @@ def recover(workspace_id: str, row_number: int, settings: SettingsDep) -> dict[s
     )
     _save_recovered_rows(workspace_id, recovered)
 
-    summary = _ingest_summary(result.applicants, result.report)
+    summary = _ingest_summary(result.applicants, result.report, revealed)
     summary["recovered_row"] = row_number
     summary["message"] = "Applicant recovered. Re-run Schedule! to include them."
     return summary
@@ -334,13 +341,23 @@ def _run_publish(
     run_id: str,
     run_dir: Path | None,
     wanted: set[str],
+    *,
+    publish_dir: Path | None = None,
+    disguise: bool = False,
 ) -> dict[str, Any]:
     """Write this run's published outputs fresh from its *current*
     assignments — the live source of truth a manual drag-move, lock toggle
     or panel move already wrote straight to. Republishing here rather than
     trusting whatever `publish` last wrote is what keeps a later download in
-    step with those edits (see `download_bundle`)."""
+    step with those edits (see `download_bundle`).
+
+    `disguise` swaps every applicant's name for their alias (api.privacy) and
+    must come with its own `publish_dir`, so a disguised export never lands
+    on top of the real published files."""
     assignments, run_metrics = _current_run_assignments(workspace_id, run_id, run_dir)
+    if disguise:
+        assert publish_dir is not None
+        assignments = [disguise_assignment(a) for a in assignments]
 
     grid = build_slot_grid(settings.event)
     # The full applicant roster (including anyone left unscheduled) is a
@@ -359,7 +376,7 @@ def _run_publish(
     )
     rooms = resolve_rooms(settings.rooms, grid)
 
-    publish_dir = ws.output_dir(workspace_id) / run_id
+    publish_dir = publish_dir or ws.output_dir(workspace_id) / run_id
     publish_dir.mkdir(parents=True, exist_ok=True)
 
     clashes_red = warnings_amber = 0
@@ -420,8 +437,35 @@ def publish(
 _BUNDLE_MEMBERS = ("schedule.xlsx", "applicants.xlsx", "rooms.xlsx")
 
 
+def _zip_bundle(source_dir: Path, workspace_id: str, run_id: str) -> Response:
+    """The three published spreadsheets in `source_dir` as one ZIP download."""
+    members = [source_dir / name for name in _BUNDLE_MEMBERS]
+    missing = [p.name for p in members if not p.is_file()]
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"No published {', '.join(missing)} for run '{run_id}'. "
+                "Publish this run (Schedule! does this automatically) and try again."
+            ),
+        )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for member in members:
+            zf.write(member, arcname=member.name)
+    filename = f"{workspace_id} schedule {run_id}.zip"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/runs/{run_id}/xlsx")
-def download_bundle(workspace_id: str, run_id: str, settings: SettingsDep) -> Response:
+def download_bundle(
+    workspace_id: str, run_id: str, settings: SettingsDep, revealed: RevealDep
+) -> Response:
     """Download this run's published spreadsheets as a single ZIP:
 
     * ``schedule.xlsx`` — one sheet per division, each day's rooms laid out
@@ -444,10 +488,28 @@ def download_bundle(workspace_id: str, run_id: str, settings: SettingsDep) -> Re
     404s if the run itself doesn't exist (checked against whichever store is
     live); 409s if nothing was ever published for it and the current
     schedule can't be regenerated either.
+
+    An unverified viewer of a name-disguised deployment (api.privacy) gets
+    the same three workbooks with aliases in place of names, built in a
+    throwaway directory — never the real published files, and so with no
+    "last published" fallback either.
     """
     resolve_workspace(workspace_id)
     resolved_run_id = ensure_run_exists(workspace_id, run_id)
     run_dir = _resolve_run_dir_for_publish(workspace_id, resolved_run_id)
+    if not revealed:
+        with tempfile.TemporaryDirectory() as tmp:
+            _run_publish(
+                workspace_id,
+                settings,
+                resolved_run_id,
+                run_dir,
+                {"xlsx"},
+                publish_dir=Path(tmp),
+                disguise=True,
+            )
+            return _zip_bundle(Path(tmp), workspace_id, resolved_run_id)
+
     try:
         _run_publish(workspace_id, settings, resolved_run_id, run_dir, {"xlsx"})
     except HTTPException:
@@ -456,28 +518,7 @@ def download_bundle(workspace_id: str, run_id: str, settings: SettingsDep) -> Re
         # anything; the 409 below still fires when there's truly nothing.
         pass
 
-    run_out = ws.output_dir(workspace_id) / resolved_run_id
-    members = [run_out / name for name in _BUNDLE_MEMBERS]
-    missing = [p.name for p in members if not p.is_file()]
-    if missing:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"No published {', '.join(missing)} for run '{resolved_run_id}'. "
-                "Publish this run (Schedule! does this automatically) and try again."
-            ),
-        )
-
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for member in members:
-            zf.write(member, arcname=member.name)
-    filename = f"{workspace_id} schedule {resolved_run_id}.zip"
-    return Response(
-        content=buf.getvalue(),
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    return _zip_bundle(ws.output_dir(workspace_id) / resolved_run_id, workspace_id, resolved_run_id)
 
 
 @router.get("/runs")

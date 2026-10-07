@@ -53,6 +53,7 @@ This assumes the one-time setup is done:
    | `GMAIL_OAUTH_CREDENTIALS` | Paste the **entire contents** of the Gmail OAuth client-secret JSON |
    | `GMAIL_TOKEN_CACHE` | Paste the **entire contents** of a token generated locally (see below) — or leave unset until the deployed app needs to send email |
    | `GMAIL_SENDER_EMAIL` | The Gmail address invites/results send from |
+   | `REVEAL_PASSWORD` | Password that unlocks real applicant names. While it is set, the API sends `CAND0001`-style aliases (and no emails) to anyone who has not entered it via the header's **Names hidden · Verify** button. **Leave it unset and every visitor sees real names.** |
 
    > **Paste each credential exactly once.** Pasting the same value twice is the
    > easy slip: the value is then two JSON documents, and `json.load` fails
@@ -161,6 +162,11 @@ project settings.
    CP-SAT on Railway and writes a run row to Postgres. A short spinner then
    a "Solved: 240/240 interviews placed…" toast means the whole chain is
    live.
+4. If the site is public, confirm names are disguised:
+   `curl https://<your-railway-domain>/api/reveal` must answer
+   `{"masking_enabled":true,"revealed":false}`. `masking_enabled: false`
+   means `REVEAL_PASSWORD` is not set on Railway and real names are being
+   served to everyone.
 
 ---
 

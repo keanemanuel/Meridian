@@ -32,6 +32,7 @@ from api.dependencies import (
     resolve_run_pk,
     run_dir_if_present,
 )
+from api.privacy import RevealDep, disguise_assignment
 from api.services import execute_solve
 from iff_scheduler import workspace as ws
 from iff_scheduler.db import supabase_enabled
@@ -53,8 +54,11 @@ def _assignment_id(a: Assignment) -> str:
     return f"{a.applicant_id}:{a.choice_index}"
 
 
-def _serialise(a: Assignment) -> dict[str, Any]:
-    return {"assignment_id": _assignment_id(a), **a.model_dump(mode="json")}
+def _serialise(a: Assignment, revealed: bool) -> dict[str, Any]:
+    """`revealed` is False for an unverified viewer of a name-disguised
+    deployment (api.privacy) — the real name and email never leave the server."""
+    shown = a if revealed else disguise_assignment(a)
+    return {"assignment_id": _assignment_id(a), **shown.model_dump(mode="json")}
 
 
 # --------------------------------------------------------- manual panels
@@ -243,13 +247,15 @@ def _applicant_availability(
 
 
 @router.get("/assignments")
-def get_assignments(workspace_id: str, run_id: str, settings: SettingsDep) -> list[dict[str, Any]]:
+def get_assignments(
+    workspace_id: str, run_id: str, settings: SettingsDep, revealed: RevealDep
+) -> list[dict[str, Any]]:
     declared, available = _applicant_availability(workspace_id, settings)
 
     def serialise(assignments: list[Assignment]) -> list[dict[str, Any]]:
         return [
             {
-                **_serialise(a),
+                **_serialise(a, revealed),
                 "declared_availability": declared.get(a.applicant_id, ""),
                 "availability_slots": available.get(a.applicant_id, []),
             }
@@ -280,6 +286,7 @@ def patch_assignment(
     assignment_id: str,
     body: AssignmentEdit,
     settings: SettingsDep,
+    revealed: RevealDep,
 ) -> dict[str, Any]:
     db_mode = supabase_enabled()
     # The run directory is an artefact, not the record. In Supabase mode a run
@@ -425,7 +432,7 @@ def patch_assignment(
     write_locks(merged, locks_path)
 
     return {
-        "assignment": _serialise(edited),
+        "assignment": _serialise(edited, revealed),
         "locked": True,
         "total_locks": len(merged),
     }
@@ -442,6 +449,7 @@ def set_assignment_lock(
     assignment_id: str,
     body: LockEdit,
     settings: SettingsDep,
+    revealed: RevealDep,
 ) -> dict[str, Any]:
     """Lock or unlock a single interview by hand (FR-41).
 
@@ -515,7 +523,7 @@ def set_assignment_lock(
     write_locks(merged, locks_path)
 
     return {
-        "assignment": _serialise(edited),
+        "assignment": _serialise(edited, revealed),
         "locked": body.locked,
         "total_locks": len(merged),
     }
