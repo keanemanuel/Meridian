@@ -4,7 +4,7 @@ Automated interview scheduling for IFF recruitment. Takes applicant preferences 
 
 Built for **up to 120 applicants × 2 interviews each = 240 interviews** across 2 evenings.
 
-> **Status:** Alpha — planning complete, implementation in progress.
+> **Status:** Complete and in production use for IFF recruitment.
 > Full specification: [`docs/SPEC.md`](docs/SPEC.md)
 
 ---
@@ -22,9 +22,12 @@ This tool does the tetris. It **guarantees** every applicant gets both of their 
 - **Checks capacity** before solving, and tells you how many interviewer panels each division actually needs
 - **Solves** the timetable with constraint programming (Google OR-Tools CP-SAT), proving optimality rather than approximating
 - **Flags clashes** in red where an applicant had to be placed outside their stated availability
-- **Respects manual edits** — recruiter decisions become locks that survive every re-solve
+- **Respects manual edits** — recruiter decisions become locks that survive every re-solve, editable via drag-and-drop in the web UI or by hand in the exported XLSX
 - **Exports** room, applicant and panel views to XLSX, printable HTML and `.ics`
 - **Emails** personalised invites and results, with a send ledger so a crash never causes duplicates
+- **Isolates recruitment rounds** into named workspaces, each with its own applicants, timetable and send history
+- **Disguises applicant names** behind a reveal password, so a shared screen or link doesn't expose who's who until unlocked
+- **Serves a web UI** (Next.js on Vercel) in front of the same pipeline (FastAPI on Railway, CP-SAT, Postgres via Supabase) — the CLI is still there for scripting or a terminal-only run
 
 ## Core guarantees
 
@@ -241,8 +244,7 @@ docs/                    SPEC.md, RUNBOOK.md, FORM_DESIGN.md
 | Lint & format | `ruff` | Enforced code style |
 | Type checking | `mypy` | Strict mode on `domain/` and `scheduling/` |
 
-> **No database** — at 120 applicants, data is a few hundred rows. CSV + YAML on disk is correct: it's inspectable, diffable, and openable in Excel.
-> **No web framework (alpha)** — CLI only. A Streamlit or React UI is planned for beta and the architecture already accommodates it as an added interface layer.
+> CSV + YAML on disk is the file-store backend and still works standalone (CLI only, no network). The deployed version runs on **PostgreSQL via Supabase** instead, behind the same adapter protocols — `src/iff_scheduler/db/` — so neither the domain code nor the CLI commands changed to support it.
 
 ---
 
@@ -278,33 +280,9 @@ Result emails use separate templates per outcome (accepted / waitlisted / reject
 
 ---
 
-## Roadmap
-
-**Alpha (current)**
-- [ ] Config + slot grid
-- [ ] Ingest + validation
-- [ ] Capacity Advisor
-- [ ] CP-SAT solver
-- [ ] Exports (room / applicant / panel views)
-- [ ] Lock engine + re-solve
-- [ ] Invite emails
-- [ ] Result emails
-- [ ] Runbook
-
-**Beta**
-- **Split deployment** — Next.js frontend on Vercel, FastAPI scheduler API on Railway (CP-SAT/`ortools` is too large for Vercel's 250 MB function limit)
-- **PostgreSQL via Supabase** — replaces the CSV/YAML store so data persists across deploys. All I/O sits behind adapter protocols in alpha, so this is a layer swap, not a rewrite.
-- Drag-and-drop timetable editor
-- Live event-day dashboard with attendance tracking
-- WhatsApp notifications
-- Interviewer availability self-service
-- Multi-round recruitment support
-
----
-
 ## Deploy
 
-Beta ships across two hosts: the Next.js frontend on **Vercel** and the
+The app ships across two hosts: the Next.js frontend on **Vercel** and the
 FastAPI scheduler API (with the CP-SAT solver) on **Railway**, with Postgres
 via Supabase in place of the CSV/YAML store. The `ortools` dependency is too
 large for Vercel's Python function limit, so the API needs a host without
