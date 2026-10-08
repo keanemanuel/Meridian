@@ -109,6 +109,16 @@ type RequestInitEx = RequestInit & {
  * itself threw (DNS/connection refused/timeout → status 0) or an edge proxy
  * returned a gateway error while the app was still starting. A 4xx is a real
  * answer — never retry it. */
+/** Every path that touches a specific workspace starts `/workspaces/<id>` —
+ * pull that id back out so a request can carry the right reveal token
+ * (masking is per-workspace, src/api/privacy.py). Paths with no workspace
+ * (health, the workspace list itself) get none, which is correct: there's
+ * nothing to unlock there. */
+function workspaceIdFromPath(path: string): string | null {
+  const match = /^\/workspaces\/([^/]+)/.exec(path);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 function isTransient(err: unknown): boolean {
   return (
     err instanceof ApiError &&
@@ -138,8 +148,9 @@ async function attemptOnce<T>(
           ? {}
           : { "Content-Type": "application/json" }),
         // Present only once the viewer has entered the password; without it
-        // the API answers with aliases in place of real applicant names.
-        ...revealHeaders(),
+        // the API answers with aliases in place of real applicant names
+        // (and only matters at all for a workspace that masks names).
+        ...revealHeaders(workspaceIdFromPath(path)),
         ...init?.headers,
       },
     });
@@ -205,13 +216,20 @@ export type CreateWorkspaceOpts = RetryHooks;
 export const api = {
   health: () => request<{ status: string }>("/health"),
 
-  /** Does this deployment disguise applicant names, and is this viewer
-   * already verified? Drives the "Are you verified?" control in the header. */
-  revealStatus: () => request<RevealStatus>("/reveal"),
+  /** Does this workspace disguise applicant names, and is this viewer
+   * already verified? Drives the "Are you verified?" control in the header.
+   * Masking is per-workspace (src/api/privacy.py) — most workspaces answer
+   * `masking_enabled: false` and show real names outright. */
+  revealStatus: (workspaceId: string) =>
+    request<RevealStatus>(`/workspaces/${encodeURIComponent(workspaceId)}/reveal`),
 
-  /** Trade the password for a reveal token. 401s on a wrong password. */
-  reveal: (password: string) =>
-    request<RevealToken>("/reveal", json({ password })),
+  /** Trade the password for a reveal token. 401s on a wrong password, 409s
+   * if this workspace isn't one that disguises names at all. */
+  reveal: (workspaceId: string, password: string) =>
+    request<RevealToken>(
+      `/workspaces/${encodeURIComponent(workspaceId)}/reveal`,
+      json({ password }),
+    ),
 
   // First contact after an idle period pays the Railway cold start, so this
   // and createWorkspace ride the retry loop; every later call assumes a warm
@@ -366,7 +384,7 @@ export const api = {
   ): Promise<{ blob: Blob; filename: string }> => {
     const res = await fetch(
       `${API_URL}/workspaces/${seg(id)}/runs/${seg(runId)}/xlsx`,
-      { cache: "no-store", headers: revealHeaders() },
+      { cache: "no-store", headers: revealHeaders(id) },
     );
     if (!res.ok) {
       let body: unknown = null;

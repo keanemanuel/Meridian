@@ -1,18 +1,26 @@
 """Name disguise for a publicly reachable deployment.
 
-When `REVEAL_PASSWORD` is set, every response that would carry an applicant's
-identity is disguised *on the server* — `full_name` becomes a stable `CAND0001`
-style alias and `email` is blanked out — unless the request carries a valid
-reveal token. The browser gets that token by posting the password to
-`POST /api/reveal`; the password itself lives only in the environment (never
-in git — CLAUDE.md invariant 7).
+Masking is a *per-workspace* policy, not a deployment-wide switch: only the
+workspaces named in `MASKED_WORKSPACE_NAMES` (default: "IFF 2026-27
+Registration") disguise names at all. Every other workspace — including any
+new one created later — always shows real names, with no password gate in
+front of it.
+
+For a masked workspace, when `REVEAL_PASSWORD` is set, every response that
+would carry an applicant's identity is disguised *on the server* —
+`full_name` becomes a stable `CAND0001` style alias and `email` is blanked
+out — unless the request carries a valid reveal token. The browser gets that
+token by posting the password to `POST /api/workspaces/{workspace_id}/reveal`;
+the password itself lives only in the environment (never in git — CLAUDE.md
+invariant 7).
 
 Masking here rather than in the frontend is the whole point: a disguise applied
 in the browser would still ship the real names in the JSON anyone can read from
 the network tab.
 
-When `REVEAL_PASSWORD` is unset (a laptop, the CLI, the test suite) nothing is
-disguised and the API behaves exactly as before.
+When `REVEAL_PASSWORD` is unset (a laptop, the CLI, the test suite), or the
+workspace isn't one of the masked ones, nothing is disguised and the API
+behaves exactly as before.
 """
 
 from __future__ import annotations
@@ -30,6 +38,12 @@ from fastapi import Depends, Header
 from iff_scheduler.domain.models import Assignment
 
 REVEAL_PASSWORD_ENV = "REVEAL_PASSWORD"
+MASKED_WORKSPACES_ENV = "MASKED_WORKSPACE_NAMES"
+
+# The one workspace this disguise protects by default. Override with a
+# comma-separated MASKED_WORKSPACE_NAMES (e.g. in tests, which use a fresh
+# per-test workspace name and so can't rely on this fixed one).
+DEFAULT_MASKED_WORKSPACE = "IFF 2026-27 Registration"
 
 # How long one successful password entry keeps real names visible.
 TOKEN_TTL_SECONDS = 12 * 60 * 60
@@ -42,9 +56,20 @@ def reveal_password() -> str | None:
     return os.environ.get(REVEAL_PASSWORD_ENV) or None
 
 
-def masking_enabled() -> bool:
-    """True when this deployment disguises names for unverified viewers."""
-    return reveal_password() is not None
+def masked_workspace_names() -> frozenset[str]:
+    """Workspace names that disguise applicant identity. Any workspace not
+    in this set always shows real names — a new workspace never inherits
+    the protection one specific recruitment round needs."""
+    load_dotenv()
+    raw = os.environ.get(MASKED_WORKSPACES_ENV)
+    if raw is None:
+        return frozenset({DEFAULT_MASKED_WORKSPACE})
+    return frozenset(name.strip() for name in raw.split(",") if name.strip())
+
+
+def masking_enabled(workspace_id: str) -> bool:
+    """True when this workspace disguises names for unverified viewers."""
+    return reveal_password() is not None and workspace_id in masked_workspace_names()
 
 
 # ----------------------------------------------------------------- tokens
@@ -89,10 +114,13 @@ def token_valid(token: str | None, now: float | None = None) -> bool:
     return hmac.compare_digest(signature, _signature(password, expires_at))
 
 
-def names_revealed(x_reveal_token: Annotated[str | None, Header()] = None) -> bool:
-    """Whether this request may see real names: always when masking is off,
-    otherwise only with a valid `X-Reveal-Token`."""
-    return not masking_enabled() or token_valid(x_reveal_token)
+def names_revealed(
+    workspace_id: str, x_reveal_token: Annotated[str | None, Header()] = None
+) -> bool:
+    """Whether this request may see real names: always when this workspace
+    isn't masked, otherwise only with a valid `X-Reveal-Token`. `workspace_id`
+    is resolved from the enclosing route's path parameter of the same name."""
+    return not masking_enabled(workspace_id) or token_valid(x_reveal_token)
 
 
 RevealDep = Annotated[bool, Depends(names_revealed)]

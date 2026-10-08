@@ -1094,8 +1094,10 @@ def _solved_run(client: TestClient, name: str) -> str:
     return str(solved.json()["run_id"])
 
 
-def _reveal_headers(client: TestClient) -> dict[str, str]:
-    resp = client.post("/api/reveal", json={"password": _TEST_PASSWORD})
+def _reveal_headers(client: TestClient, workspace_id: str) -> dict[str, str]:
+    resp = client.post(
+        f"/api/workspaces/{workspace_id}/reveal", json={"password": _TEST_PASSWORD}
+    )
     assert resp.status_code == 200, resp.text
     return {"X-Reveal-Token": resp.json()["token"]}
 
@@ -1104,10 +1106,28 @@ def test_names_are_not_disguised_when_no_password_is_configured(
     client: TestClient, wsname: str
 ) -> None:
     run_id = _solved_run(client, wsname)
-    assert client.get("/api/reveal").json() == {"masking_enabled": False, "revealed": True}
+    reveal_url = f"/api/workspaces/{wsname}/reveal"
+    assert client.get(reveal_url).json() == {"masking_enabled": False, "revealed": True}
     rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
     assert not any(r["full_name"].startswith("CAND") for r in rows)
-    assert client.post("/api/reveal", json={"password": "anything"}).status_code == 409
+    assert client.post(reveal_url, json={"password": "anything"}).status_code == 409
+
+
+def test_a_workspace_not_on_the_masked_list_is_never_disguised(
+    client: TestClient, wsname: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Masking is per-workspace: a password configured for the deployment
+    protects only the named workspace(s) — any other, including a brand
+    new one, always shows real names."""
+    run_id = _solved_run(client, wsname)
+    monkeypatch.setenv("REVEAL_PASSWORD", _TEST_PASSWORD)
+    monkeypatch.setenv("MASKED_WORKSPACE_NAMES", "some-other-workspace")
+
+    reveal_url = f"/api/workspaces/{wsname}/reveal"
+    assert client.get(reveal_url).json() == {"masking_enabled": False, "revealed": True}
+    rows = client.get(f"/api/workspaces/{wsname}/runs/{run_id}/assignments").json()
+    assert not any(r["full_name"].startswith("CAND") for r in rows)
+    assert client.post(reveal_url, json={"password": _TEST_PASSWORD}).status_code == 409
 
 
 def test_unverified_viewer_only_ever_sees_aliases(
@@ -1124,7 +1144,8 @@ def test_unverified_viewer_only_ever_sees_aliases(
     secrets.discard("")
 
     monkeypatch.setenv("REVEAL_PASSWORD", _TEST_PASSWORD)
-    assert client.get("/api/reveal").json() == {"masking_enabled": True, "revealed": False}
+    monkeypatch.setenv("MASKED_WORKSPACE_NAMES", wsname)
+    assert client.get(f"{base}/reveal").json() == {"masking_enabled": True, "revealed": False}
 
     masked = client.get(f"{base}/runs/{run_id}/assignments")
     assert masked.status_code == 200
@@ -1162,15 +1183,17 @@ def test_password_reveals_real_names(
 ) -> None:
     run_id = _solved_run(client, wsname)
     url = f"/api/workspaces/{wsname}/runs/{run_id}/assignments"
+    reveal_url = f"/api/workspaces/{wsname}/reveal"
     real = client.get(url).json()
 
     monkeypatch.setenv("REVEAL_PASSWORD", _TEST_PASSWORD)
-    wrong = client.post("/api/reveal", json={"password": "not-it"})
+    monkeypatch.setenv("MASKED_WORKSPACE_NAMES", wsname)
+    wrong = client.post(reveal_url, json={"password": "not-it"})
     assert wrong.status_code == 401
     assert "token" not in wrong.json()
 
-    headers = _reveal_headers(client)
-    assert client.get("/api/reveal", headers=headers).json() == {
+    headers = _reveal_headers(client, wsname)
+    assert client.get(reveal_url, headers=headers).json() == {
         "masking_enabled": True,
         "revealed": True,
     }
@@ -1238,6 +1261,7 @@ def test_unverified_download_carries_aliases_and_leaves_real_exports_alone(
     before = published.read_bytes()
 
     monkeypatch.setenv("REVEAL_PASSWORD", _TEST_PASSWORD)
+    monkeypatch.setenv("MASKED_WORKSPACE_NAMES", wsname)
     resp = client.get(url)
     assert resp.status_code == 200, resp.text
     aliases = names_in(resp.content)
@@ -1246,7 +1270,10 @@ def test_unverified_download_carries_aliases_and_leaves_real_exports_alone(
     assert not aliases & real_names
     assert published.read_bytes() == before
 
-    assert names_in(client.get(url, headers=_reveal_headers(client)).content) == real_names
+    assert (
+        names_in(client.get(url, headers=_reveal_headers(client, wsname)).content)
+        == real_names
+    )
 
 
 # ------------------------------------------- preferences survive a wiped host

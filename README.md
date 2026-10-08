@@ -26,7 +26,7 @@ This tool does the tetris. It **guarantees** every applicant gets both of their 
 - **Exports** room, applicant and panel views to XLSX, printable HTML and `.ics`
 - **Emails** personalised invites and results, with a send ledger so a crash never causes duplicates
 - **Isolates recruitment rounds** into named workspaces, each with its own applicants, timetable and send history
-- **Disguises applicant names** behind a reveal password, so a shared screen or link doesn't expose who's who until unlocked
+- **Disguises applicant names** behind a reveal password in the workspace(s) configured for it (`IFF 2026-27 Registration` by default) — every other workspace shows real names outright
 - **Serves a web UI** (Next.js on Vercel) in front of the same pipeline (FastAPI on Railway, CP-SAT, Postgres via Supabase) — the CLI is still there for scripting or a terminal-only run
 
 ## Core guarantees

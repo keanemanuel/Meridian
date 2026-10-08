@@ -1,5 +1,6 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import {
   createContext,
   Fragment,
@@ -20,13 +21,15 @@ import { Modal } from "./Modal";
 import { useToast } from "./Toast";
 import { Button } from "./ui";
 
-/** The "Are you verified?" gate. On a deployment that disguises applicant
- * names (REVEAL_PASSWORD set on the API), everyone sees CAND0001-style aliases
- * until they enter the password; the API does the disguising, this only holds
- * the token and tells the views when to refetch. */
+/** The "Are you verified?" gate. Masking is per-workspace (src/api/privacy.py):
+ * most workspaces always show real names, and only the one(s) the deployment
+ * names (e.g. "IFF 2026-27 Registration") disguise them as CAND0001-style
+ * aliases until the password is entered. The API does the disguising; this
+ * only tracks which workspace is open, holds its token, and tells the views
+ * when to refetch. */
 type RevealContextValue = {
-  /** False on a deployment that shows real names to everyone — the control
-   * is hidden there. */
+  /** False outside a workspace, or inside one that shows real names to
+   * everyone — the control is hidden there. */
   maskingEnabled: boolean;
   revealed: boolean;
   /** Bumped on every unlock/lock, so views refetch under the new identity. */
@@ -37,49 +40,72 @@ type RevealContextValue = {
 
 const RevealContext = createContext<RevealContextValue | null>(null);
 
+/** Pulls the workspace id back out of `/workspace/<id>` / `/workspace/<id>/...`.
+ * Null everywhere else (home, the workspace list) — there's no workspace to
+ * check masking for there. */
+function workspaceIdFromPathname(pathname: string | null): string | null {
+  if (!pathname) return null;
+  const match = /^\/workspace\/([^/]+)/.exec(pathname);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 export function RevealProvider({ children }: { children: ReactNode }) {
-  const [maskingEnabled, setMaskingEnabled] = useState(false);
-  const [revealed, setRevealed] = useState(false);
+  const workspaceId = workspaceIdFromPathname(usePathname());
+  const [fetchedMasking, setFetchedMasking] = useState(false);
+  const [fetchedRevealed, setFetchedRevealed] = useState(false);
   const [epoch, setEpoch] = useState(0);
 
+  // Outside a workspace (home, the workspace list) there's nothing to
+  // unlock, so these are derived to false at render time rather than reset
+  // via a synchronous setState in the effect below — that avoids carrying
+  // over a previous workspace's masking state without an extra render.
+  const maskingEnabled = workspaceId ? fetchedMasking : false;
+  const revealed = workspaceId ? fetchedRevealed : false;
+
   useEffect(() => {
+    if (!workspaceId) return;
     void (async () => {
       try {
-        const status = await api.revealStatus();
-        setMaskingEnabled(status.masking_enabled);
-        setRevealed(status.masking_enabled && status.revealed);
+        const status = await api.revealStatus(workspaceId);
+        setFetchedMasking(status.masking_enabled);
+        setFetchedRevealed(status.masking_enabled && status.revealed);
         // A stored token the API no longer honours (expired, or the password
         // was rotated) is dead weight; everything fetched with it already
         // came back disguised, so there is nothing to refetch.
-        if (!status.revealed) clearRevealToken();
+        if (!status.revealed) clearRevealToken(workspaceId);
       } catch {
         /* API unreachable — the workspace list surfaces that error */
       }
     })();
-  }, []);
+  }, [workspaceId]);
 
   const lock = useCallback(() => {
-    clearRevealToken();
-    setRevealed(false);
+    if (!workspaceId) return;
+    clearRevealToken(workspaceId);
+    setFetchedRevealed(false);
     setEpoch((n) => n + 1);
-  }, []);
+  }, [workspaceId]);
 
-  const unlock = useCallback(async (password: string) => {
-    const { token, expires_at } = await api.reveal(password);
-    storeRevealToken(token, expires_at);
-    setRevealed(true);
-    setEpoch((n) => n + 1);
-  }, []);
+  const unlock = useCallback(
+    async (password: string) => {
+      if (!workspaceId) return;
+      const { token, expires_at } = await api.reveal(workspaceId, password);
+      storeRevealToken(workspaceId, token, expires_at);
+      setFetchedRevealed(true);
+      setEpoch((n) => n + 1);
+    },
+    [workspaceId],
+  );
 
   // Fall back to aliases the moment the token lapses, rather than leaving a
   // "real names" badge over data the API has quietly started disguising again.
   useEffect(() => {
-    if (!revealed) return;
-    const expiresAt = getRevealExpiry();
+    if (!revealed || !workspaceId) return;
+    const expiresAt = getRevealExpiry(workspaceId);
     if (expiresAt === null) return;
     const timer = setTimeout(lock, Math.max(0, expiresAt * 1000 - Date.now()));
     return () => clearTimeout(timer);
-  }, [revealed, epoch, lock]);
+  }, [revealed, epoch, lock, workspaceId]);
 
   const value = useMemo<RevealContextValue>(
     () => ({ maskingEnabled, revealed, epoch, unlock, lock }),
